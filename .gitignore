@@ -15,7 +15,7 @@ package-lock.json
 Thumbs.db
 
 # DB
-db/pacs.db
+db
 
 # Uploads
 uploads
