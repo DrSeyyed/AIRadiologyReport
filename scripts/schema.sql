@@ -65,7 +65,8 @@ CREATE TABLE
     attending_checked INTEGER NOT NULL DEFAULT 0 CHECK (attending_checked IN (0, 1)),
     dicom_url TEXT,
     description TEXT,
-    patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0)
+    patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0),
+    telegram_chat_id TEXT
   );
 
 

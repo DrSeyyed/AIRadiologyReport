@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
+import { sendStudyMessage } from '$lib/server/telegram.js';
 
 
 export async function GET({ url }) {
@@ -170,6 +171,36 @@ export async function POST({ request }) {
     dicom_url, description
   });
 
-  const study = db.prepare('SELECT * FROM studies WHERE id = ?').get(studyId);
-  return json(study, { status: 201 });
+  const detail = db
+				.prepare(
+					`
+        SELECT
+          s.id AS study_id,
+          s.exam_date_jalali,
+          s.exam_time,
+          s.modality_id,
+          s.exam_type_id,
+          p.firstname  AS patient_first,
+          p.lastname AS patient_last,
+          p.patient_code AS patient_code,
+          r.full_name AS resident_name,
+          a.full_name AS attending_name,
+          m.code AS modality_code,
+          m.name AS modality_name,
+          e.code AS exam_type_code,
+          e.name AS exam_type_name,
+          s.exam_details AS exam_details
+        FROM studies s
+        JOIN patients p ON p.id = s.patient_id
+        LEFT JOIN users r ON r.id = s.corresponding_resident_id
+        LEFT JOIN users a ON a.id = s.corresponding_attending_id
+        LEFT JOIN modalities m ON m.id = s.modality_id
+        LEFT JOIN exam_types e ON e.id = s.exam_type_id
+        WHERE s.id = ?
+      `
+				)
+				.get(studyId);
+
+  sendStudyMessage(detail);      
+  return json(detail, { status: 201 });
 }
