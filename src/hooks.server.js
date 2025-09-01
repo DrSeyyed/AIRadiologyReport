@@ -1,4 +1,5 @@
 import { getSession } from '$lib/server/auth';
+import { startVoiceWorker } from '$lib/server/voice-worker';
 
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 
@@ -13,6 +14,7 @@ if (proxyUrl) {
   console.log('[proxy] Using proxy for server fetch ->', proxyUrl);
 }
 
+startVoiceWorker();
 
 export const handle = async ({ event, resolve }) => {
   // Read cookie

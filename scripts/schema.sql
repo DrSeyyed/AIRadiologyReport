@@ -131,3 +131,13 @@ BEGIN
      )
    WHERE patient_id = NEW.id;
 END;
+
+CREATE TABLE IF NOT EXISTS pending_voice (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  study_id INTEGER NOT NULL,
+  chat_id TEXT NOT NULL,
+  reply_message_id INTEGER NOT NULL,
+  file_id TEXT NOT NULL,
+  process_at INTEGER NOT NULL,     -- unix epoch seconds when it’s due
+  done INTEGER NOT NULL DEFAULT 0
+);
