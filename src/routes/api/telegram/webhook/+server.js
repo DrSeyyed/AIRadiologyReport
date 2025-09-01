@@ -15,9 +15,9 @@ export const POST = async ({ request }) => {
   const db = getDb();
   const study = db
     .prepare(
-      `SELECT id FROM studies WHERE telegram_chat_id = ? AND telegram_message_id = ?`
+      `SELECT id FROM studies WHERE telegram_message_id = ?`
     )
-    .get(chat_id, reply_to_message_id);
+    .get(reply_to_message_id);
 
   if (!study?.id) return json({ ok: true });
 
