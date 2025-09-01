@@ -189,9 +189,9 @@ export async function POST(event) {
 			const msg = [
 				`<b>Final report signed</b>`,
 				`<b>Study #${id}</b> — ${title}`,
-				`Patient: <b>${detail?.patient_first || '-'} ${detail?.patient_last || ''}, code: ${detail?.patient_code || ''}</b>`,
-				`Resident: <b>${detail?.resident_name || '-'}</b>`,
-				`Attending: <b>${detail?.attending_name || '-'}</b>`,
+				`Patient: <b>${detail?.patient_firstname || '-'} ${detail?.patient_lastname || ''}, code: ${detail?.patient_code || ''}</b>`,
+				`Resident: <b>${detail?.resident_fullname || '-'}</b>`,
+				`Attending: <b>${detail?.attending_fullname || '-'}</b>`,
 				`Date/Time: ${detail?.exam_date_jalali || '-'} ${detail?.exam_time || ''}`,
 				`<pre>${markdownToHtml(reportText)}</pre>`
 			]
