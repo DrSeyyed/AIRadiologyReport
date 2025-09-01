@@ -4,14 +4,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!TOKEN) {
-	throw new Error('Missing TELEGRAM_BOT_TOKEN in environment');
-}
-const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID || null;
 
-const API_BASE = `https://api.telegram.org/bot${TOKEN}`;
-const FILE_BASE = `https://api.telegram.org/file/bot${TOKEN}`;
+function getToken(){
+	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+	if (!TOKEN) {
+		throw new Error('Missing TELEGRAM_BOT_TOKEN in environment');
+	}
+	return TOKEN
+}
+
+function getChatID(){
+	const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+	if (!DEFAULT_CHAT_ID) {
+		throw new Error('Missing TELEGRAM_CHAT_ID in environment');
+	}
+	return DEFAULT_CHAT_ID
+}
+
+
+
+
 
 // ---------- utils ----------
 
@@ -20,6 +32,7 @@ function assert(ok, msg) {
 }
 
 async function tgRequest(endpoint, payload) {
+	const API_BASE = `https://api.telegram.org/bot${getToken()}`;
 	const res = await fetch(`${API_BASE}/${endpoint}`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
@@ -88,7 +101,8 @@ export function buildStudyMessage(study) {
 
 // ---------- message send/edit/delete ----------
 
-export async function sendStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
+export async function sendStudyMessage(study, chat_id) {
+	chat_id = chat_id ?? getChatID()
 	assert(chat_id, 'chat_id is required (set TELEGRAM_CHAT_ID or pass explicitly)');
 	const text = buildStudyMessage(study);
 	const res = await tgRequest('sendMessage', {
@@ -101,7 +115,8 @@ export async function sendStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
 	return { chat_id, message_id: res.message_id };
 }
 
-export async function editStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
+export async function editStudyMessage(study, chat_id) {
+	chat_id = chat_id ?? getChatID()
 	let message_id = study.telegram_message_id;
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
@@ -116,7 +131,8 @@ export async function editStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
 	return true;
 }
 
-export async function deleteMessage(message_id, chat_id = DEFAULT_CHAT_ID) {
+export async function deleteMessage(message_id, chat_id) {
+	chat_id = chat_id ?? getChatID()
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
 	await tgRequest('deleteMessage', { chat_id, message_id });
@@ -140,6 +156,7 @@ export async function sendReply(chat_id, text, reply_to_message_id) {
 // ---------- files (voice, etc.) ----------
 
 export async function getFile(file_id) {
+	const FILE_BASE = `https://api.telegram.org/file/bot${getToken()}`;
 	assert(file_id, 'file_id is required');
 	const res = await tgRequest('getFile', { file_id });
 	// res: { file_id, file_unique_id, file_size, file_path }
