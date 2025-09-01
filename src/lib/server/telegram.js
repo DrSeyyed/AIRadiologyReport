@@ -52,6 +52,8 @@ export function buildStudyMessage(study) {
 	lines.push(
 		`Study #${esc(study.id)} — ${esc(study.exam_type_code ?? '')} (${esc(study.modality_code ?? '')})`
 	);
+	if (study.exam_details) lines.push(`Details: ${esc(study.exam_details)}`);
+
 	lines.push(
 		`Patient: <b>${esc(study.patient_firstname ?? '-')} ${esc(study.patient_lastname ?? '-')}</b> ` +
 			`<i>(code ${esc(study.patient_code ?? '-')})</i>`
@@ -66,11 +68,13 @@ export function buildStudyMessage(study) {
 
 	lines.push(`Date/Time: ${esc(study.exam_date_jalali ?? '-')} ${esc(study.exam_time ?? '')}`);
 
-	if (study.exam_details) lines.push(`Details: ${esc(study.exam_details)}`);
 	if (study.description) lines.push(`Note: ${esc(study.description)}`);
 
 	lines.push(`Resident: ${esc(study.resident_fullname ?? '-')}`);
 	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
+
+	lines.push(`Audio : ${study.audio_report_path ? '✔' : '✖'}`);
+	lines.push(`Report: ${study.text_report_path ? '✔' : '✖'}`);
 
 	lines.push(
 		`Status: Resident <b>${study.resident_checked ? '✔' : '✖'}</b> • ` +
@@ -97,7 +101,8 @@ export async function sendStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
 	return { chat_id, message_id: res.message_id };
 }
 
-export async function editStudyMessage(study, chat_id, message_id) {
+export async function editStudyMessage(study, chat_id = DEFAULT_CHAT_ID) {
+	let message_id = study.telegram_message_id;
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
 	const text = buildStudyMessage(study);
@@ -111,7 +116,7 @@ export async function editStudyMessage(study, chat_id, message_id) {
 	return true;
 }
 
-export async function deleteMessage(chat_id, message_id) {
+export async function deleteMessage(message_id, chat_id = DEFAULT_CHAT_ID) {
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
 	await tgRequest('deleteMessage', { chat_id, message_id });

@@ -66,7 +66,7 @@ CREATE TABLE
     dicom_url TEXT,
     description TEXT,
     patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0),
-    telegram_chat_id TEXT
+    telegram_message_id TEXT
   );
 
 

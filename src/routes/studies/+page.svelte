@@ -20,12 +20,12 @@
 
 
 	function onEdited() {
-		ShowEdit = false;
+		//ShowEditModal = false;
 		return invalidateAll();
 	}
 
 	function onCreated() {
-		showNew = false;
+		//showNewModal = false;
 		return invalidateAll();
 	}
 

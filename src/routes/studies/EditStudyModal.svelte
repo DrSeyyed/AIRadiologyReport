@@ -11,14 +11,34 @@
 
 	async function saveEdit(form) {
 		// If code matches an existing patient, ensure link
-		if (form.patient_code) {
-			const p = data.patients.find(
-				(x) => (x.patient_code ?? '').trim() === form.patient_code.trim()
-			);
-			if (p) form.patient_id = p.id;
+		let patientId = form.patient_id;
+
+		if (!patientId) {
+			let birth_year = currentJalaliYear - Number(form.patient_age);
+
+			const pr = await fetch('/api/patients', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					patient_code: form.patient_code,
+					firstname: form.patient_name,
+					lastname: form.patient_family,
+					gender: form.patient_gender,
+					birth_year
+				})
+			});
+			if (!pr.ok) {
+				const err = await pr.json().catch(() => ({}));
+				alert(err?.error || 'Failed to create patient');
+				return;
+			}
+			const newPatient = await pr.json();
+			patientId = newPatient.id;
 		}
 
+
 		const payload = {
+			patient_id: Number(patientId),
 			modality_id: Number(form.modality_id),
 			exam_type_id: Number(form.exam_type_id),
 			exam_details: form.exam_details || null,
@@ -33,7 +53,6 @@
 			dicom_url: form.dicom_url || null,
 			description: form.description || null
 		};
-		if (form.patient_id != null) payload.patient_id = form.patient_id;
 
 		const res = await fetch(`/api/studies/${study.id}`, {
 			method: 'PATCH',

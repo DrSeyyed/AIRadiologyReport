@@ -70,7 +70,7 @@
 				description: form.description || null
 			})
 		});
-
+		console.log(res)
 		if (!res.ok) {
 			const err = await res.json().catch(() => ({}));
 			alert(err?.error || 'Failed to create study');
