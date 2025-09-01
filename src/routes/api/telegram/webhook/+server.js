@@ -24,7 +24,7 @@ export const POST = async ({ request }) => {
   const file_id = msg.voice?.file_id || msg.audio?.file_id;
   if (!file_id) return json({ ok: true });
 
-  const process_at = Math.floor(Date.now() / 1000) + 5 * 60; // 5 min delay
+  const process_at = Math.floor(Date.now() / 1000) + 1 * 60; // 5 min delay
   db.prepare(
     `INSERT INTO pending_voice (study_id, chat_id, reply_message_id, file_id, process_at)
      VALUES (?, ?, ?, ?, ?)`

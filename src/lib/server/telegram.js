@@ -171,6 +171,7 @@ export async function getFile(file_id) {
  */
 export async function downloadFile(file_id, destPath) {
 	const { download_url } = await getFile(file_id);
+	console.log(download_url)
 	const r = await fetch(download_url);
 	if (!r.ok) throw new Error(`Download failed: ${r.status} ${r.statusText}`);
 	const buf = Buffer.from(await r.arrayBuffer());
@@ -178,6 +179,7 @@ export async function downloadFile(file_id, destPath) {
 	const abs = path.resolve(destPath);
 	fs.mkdirSync(path.dirname(abs), { recursive: true });
 	fs.writeFileSync(abs, buf);
+	console.log(abs)
 	return abs;
 }
 
