@@ -147,29 +147,29 @@ export async function POST({ params, locals }) {
 
 	// 2) Transcribe
   
-	// let transcription = '';
-	// try {
-	// 	if (process.env.OPENAI_API_KEY) {
-	// 		transcription = await openaiTranscribe(s.audio_report_path, basename(s.audio_report_path));
-	// 	} else if (process.env.TRANSCRIBE_CMD) {
-	// 		transcription = localCliTranscribe(s.audio_report_path);
-	// 	} else {
-	// 		return new Response(
-	// 			JSON.stringify({
-	// 				error:
-	// 					'No transcription configured. Set OPENAI_API_KEY or TRANSCRIBE_CMD to enable transcription.'
-	// 			}),
-	// 			{ status: 501 }
-	// 		);
-	// 	}
-	// } catch (e) {
-	// 	return new Response(JSON.stringify({ error: e?.message || 'Transcription failed' }), {
-	// 		status: 500
-	// 	});
-	// };
+	let transcription = '';
+	try {
+		if (process.env.OPENAI_API_KEY) {
+			transcription = await openaiTranscribe(s.audio_report_path, basename(s.audio_report_path));
+		} else if (process.env.TRANSCRIBE_CMD) {
+			transcription = localCliTranscribe(s.audio_report_path);
+		} else {
+			return new Response(
+				JSON.stringify({
+					error:
+						'No transcription configured. Set OPENAI_API_KEY or TRANSCRIBE_CMD to enable transcription.'
+				}),
+				{ status: 501 }
+			);
+		}
+	} catch (e) {
+		return new Response(JSON.stringify({ error: e?.message || 'Transcription failed' }), {
+			status: 500
+		});
+	};
 	
-  let transcription =
-		'افیژن سیویر پلورال در سمت راست و مودریت در سمت چپ به همراه پسیف کلاپس ریه مجاور مشهود است. شواهد کاردیومگالی مشاهده می گردد. آسیت مودریت شکمی مشهود است. تصویر ساختار های تی تو غیر اختصاصی به سایز تقریبی 20 در 11 میلیمتر در مجاورت لیگامان فالسيفور مشاهده می شود که نیاز به تطبیق و یافته های سناگرافی دارد. شواهد کلسیستکتامی مشاهده می گردد. دیلاتاسیون مجاری صفرابی داخل کبدی مشهود است. سی بیدی 13 میلیمتر تنگی در قسمت دیستال سی بیدی در ناهی آمپول باطر قابل مشاهده می باشد. تطبیق و یافته های کلینیکی و آزمایشگاهی به درصورت اندیکاسیون بررسی تکمیلی با اندوساناگرافی پیشنهاد می گردد. چند کیست کورتیکال کوچک در هر دو کلیه مشهود است. هیدرونفروز خفیف در کلیه سمت چپ به همراه دیلاتاسیون پروگزیمال حالب در این سمت قابل مشاهده می باشد که مطرح کننده درجاتی از یو پی جی او در این سمت می باشد. فولنس در کلیه سمت راست نیز قابل مشاهده می باشد. ادم زیجلدی در اطراف شکم مشهود است.';
+//   let transcription =
+// 		'افیژن سیویر پلورال در سمت راست و مودریت در سمت چپ به همراه پسیف کلاپس ریه مجاور مشهود است. شواهد کاردیومگالی مشاهده می گردد. آسیت مودریت شکمی مشهود است. تصویر ساختار های تی تو غیر اختصاصی به سایز تقریبی 20 در 11 میلیمتر در مجاورت لیگامان فالسيفور مشاهده می شود که نیاز به تطبیق و یافته های سناگرافی دارد. شواهد کلسیستکتامی مشاهده می گردد. دیلاتاسیون مجاری صفرابی داخل کبدی مشهود است. سی بیدی 13 میلیمتر تنگی در قسمت دیستال سی بیدی در ناهی آمپول باطر قابل مشاهده می باشد. تطبیق و یافته های کلینیکی و آزمایشگاهی به درصورت اندیکاسیون بررسی تکمیلی با اندوساناگرافی پیشنهاد می گردد. چند کیست کورتیکال کوچک در هر دو کلیه مشهود است. هیدرونفروز خفیف در کلیه سمت چپ به همراه دیلاتاسیون پروگزیمال حالب در این سمت قابل مشاهده می باشد که مطرح کننده درجاتی از یو پی جی او در این سمت می باشد. فولنس در کلیه سمت راست نیز قابل مشاهده می باشد. ادم زیجلدی در اطراف شکم مشهود است.';
 
 	const template = db
 		.prepare(
