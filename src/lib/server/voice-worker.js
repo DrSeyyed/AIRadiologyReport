@@ -63,7 +63,7 @@ export function startVoiceWorker() {
                     WHERE s.id = ?
                   `
               )
-              .get(job.id);
+              .get(job.study_id);
               if(detail)
                 await editStudyMessage(detail)
         } catch (err) {
