@@ -1,10 +1,8 @@
 <script>
-	import { toJalaali } from 'jalaali-js';
 	import { date, time, year, datetime } from '$lib/time.client';
 
 	let { data, saveEdit, onClose, setSuccessMsg, successMsg, study } = $props();
 
-	console.log(study)
 	const form = $state({
 		exam_date_jalali: study?.exam_date_jalali ?? $date,
 		exam_time: study?.exam_time ?? $time,
@@ -28,14 +26,14 @@
 
 	function resetPatientFields() {
 		form.patient_id = '';
-		((form.patient_name = ''),
-			(form.patient_family = ''),
-			(form.patient_gender = 'male'),
-			(form.patient_age = ''),
-			(form.exam_type_id = ''),
-			(form.exam_details = ''),
-			(form.dicom_url = ''),
-			(form.description = ''));
+		form.patient_name = '';
+		form.patient_family = '';
+		form.patient_gender = 'male';
+		form.patient_age = '';
+		form.exam_type_id = '';
+		form.exam_details = '';
+		form.dicom_url = '';
+		form.description = '';
 		patient_code_reserved = '';
 	}
 
@@ -71,7 +69,7 @@
 		setSuccessMsg('');
 	}
 
-	async function afterSave(){
+	async function afterSave() {
 		let code = form.patient_code;
 		if (!code) return;
 		busy = true;

@@ -1,7 +1,7 @@
 <script>
 	import { invalidateAll } from '$app/navigation';
 	import { toJalaali } from 'jalaali-js';
-  import StudyForm from './StudyForm.svelte';
+	import StudyForm from './StudyForm.svelte';
 
 	const now = new Date();
 	const { jy: currentJalaliYear } = toJalaali(now.getFullYear(), now.getMonth() + 1, now.getDate());
@@ -14,14 +14,12 @@
 		return now.toLocaleTimeString('en-GB', { hour12: false });
 	}
 
-	let { data, onClose, onCreated} = $props();
+	let { data, onClose, onCreated } = $props();
 	let successMsg = $state('');
 
-  function setSuccessMsg(msg) {
-
-      successMsg = msg
-  }
-
+	function setSuccessMsg(msg) {
+		successMsg = msg;
+	}
 
 	async function saveEdit(form) {
 		let patientId = form.patient_id;
@@ -70,7 +68,7 @@
 				description: form.description || null
 			})
 		});
-		console.log(res)
+		console.log(res);
 		if (!res.ok) {
 			const err = await res.json().catch(() => ({}));
 			alert(err?.error || 'Failed to create study');
@@ -78,8 +76,9 @@
 		}
 
 		successMsg = 'Study created successfully.';
-    if (typeof onCreated === 'function') await onCreated();
+		if (typeof onCreated === 'function') await onCreated();
 		else await invalidateAll();
 	}
 </script>
-<StudyForm {data} {saveEdit} {onClose} {setSuccessMsg} {successMsg}/>
+
+<StudyForm {data} {saveEdit} {onClose} {setSuccessMsg} {successMsg} />
