@@ -32,13 +32,11 @@ function formatYear(d) {
 	);
 }
 
-// Stores
 export const date = writable(formatDate(new Date()));
 export const time = writable(formatTime(new Date()));
 export const year = writable(formatYear(new Date()));
 export const datetime = writable(`${formatDate(new Date())} ${formatTime(new Date())}`);
 
-// Auto update every second
 setInterval(() => {
 	const d = new Date();
 	const dateStr = formatDate(d);

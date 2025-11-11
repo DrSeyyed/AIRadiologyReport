@@ -1,4 +1,3 @@
-// scripts/init-db.mjs
 import Database from 'better-sqlite3';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -17,7 +16,6 @@ db.pragma('foreign_keys = ON');
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 db.exec(schema);
 
-// Seed reference tables if empty
 const modalityCount = db.prepare('SELECT COUNT(*) AS c FROM modalities').get().c;
 if (modalityCount === 0) {
 	const insertMod = db.prepare('INSERT INTO modalities (code, name) VALUES (?, ?)');
@@ -105,9 +103,9 @@ if (examTypeCount === 0) {
 		['FOOT', 'Foot'],
 
 		// Whole body & advanced
-    ['PNS_CHEST', 'PNS & Chest'],
-    ['CHEST_ABDOMEN_PELVIC', 'Chest & Abdomen & Pelvis'],
-    ['NECK_CHEST_ABDOMEN_PELVIC', 'Neck & Chest & Abdomen & Pelvis'],
+    	['PNS_CHEST', 'PNS & Chest'],
+    	['CHEST_ABDOMEN_PELVIC', 'Chest & Abdomen & Pelvis'],
+   	    ['NECK_CHEST_ABDOMEN_PELVIC', 'Neck & Chest & Abdomen & Pelvis'],
 		['WHOLEBODY', 'Whole Body MRI'],
 		['WB_MRA', 'Whole Body MRA'],
 		['FUNCTIONAL_MRI', 'Functional MRI (fMRI)'],
@@ -118,7 +116,7 @@ if (examTypeCount === 0) {
 
 	baseTypes.forEach(([code, name]) => {
 		// Insert base
-		insertType.run([`${code}`, `${name} without contrast`]);
+		insertType.run([`${code}_WO`, `${name} without contrast`]);
 
 		// Insert with contrast
 		insertType.run([`${code}_WC`, `${name} with contrast`]);
