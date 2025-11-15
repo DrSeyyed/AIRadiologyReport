@@ -65,7 +65,6 @@ CREATE TABLE
     attending_checked INTEGER NOT NULL DEFAULT 0 CHECK (attending_checked IN (0, 1)),
     dicom_url TEXT,
     description TEXT,
-    patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0),
     telegram_message_id TEXT
   );
 
@@ -79,59 +78,6 @@ CREATE TABLE
   );
 
 
-  -- After INSERT on studies: compute patient_age
-CREATE TRIGGER IF NOT EXISTS trg_studies_ai_set_age
-AFTER INSERT ON studies
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN (SELECT birth_year FROM patients WHERE id = NEW.patient_id) IS NOT NULL
-              AND substr(NEW.exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(NEW.exam_date_jalali,1,4) AS INTEGER)
-              - (SELECT birth_year FROM patients WHERE id = NEW.patient_id)
-         ELSE NULL
-       END
-     )
-   WHERE id = NEW.id;
-END;
-
--- After UPDATE on studies (when exam date or patient changes): recompute
-CREATE TRIGGER IF NOT EXISTS trg_studies_au_set_age
-AFTER UPDATE OF exam_date_jalali, patient_id ON studies
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN (SELECT birth_year FROM patients WHERE id = NEW.patient_id) IS NOT NULL
-              AND substr(NEW.exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(NEW.exam_date_jalali,1,4) AS INTEGER)
-              - (SELECT birth_year FROM patients WHERE id = NEW.patient_id)
-         ELSE NULL
-       END
-     )
-   WHERE id = NEW.id;
-END;
-
--- If a patient's birth_year changes: propagate to all their studies
-CREATE TRIGGER IF NOT EXISTS trg_patients_au_propagate_age
-AFTER UPDATE OF birth_year ON patients
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN NEW.birth_year IS NOT NULL
-              AND substr(exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(exam_date_jalali,1,4) AS INTEGER) - NEW.birth_year
-         ELSE NULL
-       END
-     )
-   WHERE patient_id = NEW.id;
-END;
-
 CREATE TABLE IF NOT EXISTS pending_voice (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   study_id INTEGER NOT NULL,
@@ -141,3 +87,58 @@ CREATE TABLE IF NOT EXISTS pending_voice (
   process_at INTEGER NOT NULL,     -- unix epoch seconds when it’s due
   done INTEGER NOT NULL DEFAULT 0
 );
+
+
+CREATE VIEW IF NOT EXISTS v_study_details AS
+SELECT
+  s.id                               AS study_id,
+  s.patient_id,
+  p.patient_code,
+  (p.firstname || ' ' || p.lastname) AS patient_full_name,
+  p.gender                           AS patient_gender,
+  p.birth_year                       AS patient_birth_year,
+
+  s.modality_id,
+  m.code                             AS modality_code,
+  m.name                             AS modality_name,
+
+  s.exam_type_id,
+  et.code                            AS exam_type_code,
+  et.name                            AS exam_type_name,
+
+  s.exam_details,
+  s.exam_date_jalali,
+  s.exam_time,
+
+  s.corresponding_resident_id,
+  u_res.full_name                    AS resident_name,
+
+  s.corresponding_attending_id,
+  u_att.full_name                    AS attending_name,
+
+  s.audio_report_path,
+  s.text_report_path,
+  s.resident_checked,
+  s.attending_checked,
+  s.dicom_url,
+  s.description,
+  s.telegram_message_id
+FROM studies s
+JOIN patients   p   ON p.id   = s.patient_id
+JOIN modalities m   ON m.id   = s.modality_id
+JOIN exam_types et  ON et.id  = s.exam_type_id
+LEFT JOIN users u_res ON u_res.id = s.corresponding_resident_id
+LEFT JOIN users u_att ON u_att.id = s.corresponding_attending_id;
+
+
+CREATE VIEW IF NOT EXISTS v_user_sessions AS
+SELECT
+  s.id            AS session_id,
+  s.user_id,
+  u.full_name     AS user_full_name,
+  u.role          AS user_role,
+  u.email         AS user_email,
+  s.created_at,
+  s.expires_at
+FROM sessions s
+JOIN users u ON u.id = s.user_id;
