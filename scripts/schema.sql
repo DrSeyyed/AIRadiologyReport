@@ -15,7 +15,7 @@ CREATE TABLE
     firstname TEXT NOT NULL,
     lastname TEXT NOT NULL,
     gender TEXT NOT NULL CHECK (gender IN ('male', 'female')),
-    birth_year INTEGER
+    birth_year_jalali INTEGER
   );
 
 

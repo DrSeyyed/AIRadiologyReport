@@ -60,43 +60,70 @@ export function esc(s) {
 // ---------- study message formatting ----------
 
 export function buildStudyMessage(study) {
-	const lines = [];
-	lines.push(`<b>🩺 Study</b>`);
-	lines.push(
-		`Study #${esc(study.id)} — ${esc(study.exam_type_code ?? '')} (${esc(study.modality_code ?? '')})`
-	);
-	if (study.exam_details) lines.push(`Details: ${esc(study.exam_details)}`);
+  const lines = [];
+  lines.push(`<b>🩺 Study</b>`);
 
-	lines.push(
-		`Patient: <b>${esc(study.patient_firstname ?? '-')} ${esc(study.patient_lastname ?? '-')}</b> ` +
-			`<i>(code ${esc(study.patient_code ?? '-')})</i>`
-	);
-	const ageGender = [
-		study.patient_age != null ? `Age: ${esc(study.patient_age)}` : null,
-		study.patient_gender ? `Gender: ${esc(study.patient_gender)}` : null
-	]
-		.filter(Boolean)
-		.join(' • ');
-	if (ageGender) lines.push(ageGender);
+  // --- Study info ---
+  lines.push(
+    `Study #${esc(study.study_id)} — ${esc(study.exam_type_code ?? '')} (${esc(study.modality_code ?? '')})`
+  );
+  if (study.exam_details) lines.push(`Details: ${esc(study.exam_details)}`);
 
-	lines.push(`Date/Time: ${esc(study.exam_date_jalali ?? '-')} ${esc(study.exam_time ?? '')}`);
+  // --- Patient info ---
+  lines.push(
+    `Patient: <b>${esc(study.patient_full_name ?? '-')}</b> ` +
+      `<i>(code ${esc(study.patient_code ?? '-' )})</i>`
+  );
 
-	if (study.description) lines.push(`Note: ${esc(study.description)}`);
+  // --- Age (based on Jalali years only) ---
+  let ageAtStudy = null;
+  if (study.patient_birth_year && study.exam_date_jalali) {
+    const [examYear] = study.exam_date_jalali.split('-').map(Number);
+    const birthYear = Number(study.patient_birth_year);
+    if (!isNaN(examYear) && !isNaN(birthYear)) {
+      ageAtStudy = examYear - birthYear;
+    }
+  }
 
-	lines.push(`Resident: ${esc(study.resident_fullname ?? '-')}`);
-	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
+  const ageGender = [
+    ageAtStudy != null ? `Age: ${esc(ageAtStudy)}` : null,
+    study.patient_gender ? `Gender: ${esc(study.patient_gender)}` : null
+  ]
+    .filter(Boolean)
+    .join(' • ');
+  if (ageGender) lines.push(ageGender);
 
-	lines.push(`Audio : ${study.audio_report_path ? '✔' : '✖'}`);
-	lines.push(`Report: ${study.text_report_path ? '✔' : '✖'}`);
+  // --- Exam date/time ---
+  lines.push(`Date/Time: ${esc(study.exam_date_jalali ?? '-')} ${esc(study.exam_time ?? '')}`);
 
-	lines.push(
-		`Status: Resident <b>${study.resident_checked ? '✔' : '✖'}</b> • ` +
-			`Attending <b>${study.attending_checked ? '✔' : '✖'}</b>`
-	);
+  if (study.description) lines.push(`Note: ${esc(study.description)}`);
 
-	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
+  // --- Staff ---
+  lines.push(`Resident: ${esc(study.resident_name ?? '-')}`);
+  lines.push(`Attending: ${esc(study.attending_name ?? '-')}`);
 
-	return lines.join('\n');
+  // --- Reports and status ---
+  const audioMark = study.audio_report_path
+    ? '<b><span style="color:green">✔</span></b>'
+    : '<b><span style="color:red">✖</span></b>';
+  const textMark = study.text_report_path
+    ? '<b><span style="color:green">✔</span></b>'
+    : '<b><span style="color:red">✖</span></b>';
+  lines.push(`Audio : ${audioMark}`);
+  lines.push(`Report: ${textMark}`);
+
+  const resMark = study.resident_checked
+    ? '<b><span style="color:green">✔</span></b>'
+    : '<b><span style="color:red">✖</span></b>';
+  const attMark = study.attending_checked
+    ? '<b><span style="color:green">✔</span></b>'
+    : '<b><span style="color:red">✖</span></b>';
+  lines.push(`Status: Resident ${resMark} • Attending ${attMark}`);
+
+  // --- DICOM link ---
+  if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
+
+  return lines.join('\n');
 }
 
 // ---------- message send/edit/delete ----------
@@ -171,7 +198,6 @@ export async function getFile(file_id) {
  */
 export async function downloadFile(file_id, destPath) {
 	const { download_url } = await getFile(file_id);
-	console.log(download_url)
 	const r = await fetch(download_url);
 	if (!r.ok) throw new Error(`Download failed: ${r.status} ${r.statusText}`);
 	const buf = Buffer.from(await r.arrayBuffer());
@@ -179,7 +205,6 @@ export async function downloadFile(file_id, destPath) {
 	const abs = path.resolve(destPath);
 	fs.mkdirSync(path.dirname(abs), { recursive: true });
 	fs.writeFileSync(abs, buf);
-	console.log(abs)
 	return abs;
 }
 

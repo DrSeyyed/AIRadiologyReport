@@ -33,7 +33,7 @@ export function getSession(sessionId) {
 
   const session = db
     .prepare(
-      `SELECT session_id, user_id, full_name, role, email, created_at, expires_at
+      `SELECT *
        FROM v_user_sessions
        WHERE session_id = ?`
     )
