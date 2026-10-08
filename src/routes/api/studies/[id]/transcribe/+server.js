@@ -1,34 +1,64 @@
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, basename, extname } from 'node:path';
-import { execSync } from 'node:child_process';
+import {
+	existsSync,
+	mkdirSync,
+	writeFileSync,
+	readFileSync
+} from 'node:fs';
+import { join, basename } from 'node:path';
 
 const REPORT_DIR = 'uploads/reports';
 
 function saveReport(db, studyId, text) {
-	if (!existsSync(REPORT_DIR)) mkdirSync(REPORT_DIR, { recursive: true });
+	if (!existsSync(REPORT_DIR)) {
+		mkdirSync(REPORT_DIR, { recursive: true });
+	}
+
 	const path = join(REPORT_DIR, `study_${studyId}.txt`);
-	writeFileSync(path, text ?? '', 'utf-8');
-	db.prepare(`UPDATE studies SET text_report_path = ? WHERE id = ?`).run(path, studyId);
+
+	writeFileSync(path, text, 'utf-8');
+
+	db.prepare(
+		'UPDATE studies SET text_report_path = ? WHERE id = ?'
+	).run(path, studyId);
+
 	return path;
 }
 
 async function openaiTranscribe(filePath, fileName) {
 	const form = new FormData();
+
 	form.append('model', 'gpt-4o-transcribe');
 	form.append('file', new Blob([readFileSync(filePath)]), fileName);
-	const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-		method: 'POST',
-		headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-		body: form
-	});
+
+	const res = await fetch(
+		'https://api.openai.com/v1/audio/transcriptions',
+		{
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+			},
+			body: form
+		}
+	);
+
 	if (!res.ok) {
-		const err = await res.text();
-		throw new Error(`OpenAI transcription failed: ${err}`);
+		const err = await res.text().catch(() => '');
+
+		throw new Error(
+			`OpenAI transcription failed (HTTP ${res.status}): ${err}`
+		);
 	}
+
 	const data = await res.json();
-	return data.text || '';
+	const text = typeof data.text === 'string' ? data.text.trim() : '';
+
+	if (!text) {
+		throw new Error('OpenAI transcription returned no text.');
+	}
+
+	return text;
 }
 
 async function openaiGenerateReport(prompt) {
@@ -46,130 +76,184 @@ async function openaiGenerateReport(prompt) {
 
 	if (!res.ok) {
 		const err = await res.text().catch(() => '');
-		throw new Error(`OpenAI generate failed: ${err}`);
+
+		throw new Error(
+			`OpenAI generation failed (HTTP ${res.status}): ${err}`
+		);
 	}
 
 	const data = await res.json();
 
-	let text = '';
-	if (typeof data.output_text === 'string' && data.output_text.trim()) {
-		text = data.output_text.trim();
-	}
-	/*
-	// 2) New Responses API "output" array with a "message" item containing "content" blocks
-	if (!text && Array.isArray(data.output)) {
-		const msg = data.output.find((o) => o.type === 'message' && Array.isArray(o.content));
-		if (msg) {
-			text = msg.content
-				.map((part) => (typeof part === 'string' ? part : (part?.text ?? '')))
-				.filter(Boolean)
-				.join('\n')
-				.trim();
-		} else {
-			// Sometimes output is other block types that still carry text
-			text = data.output
-				.map((o) => o?.content?.[0]?.text ?? o?.text ?? '')
-				.filter(Boolean)
-				.join('\n')
-				.trim();
-		}
+	if (data.error) {
+		throw new Error(
+			`OpenAI generation failed: ${data.error.message || 'Unknown error'}`
+		);
 	}
 
-	// --- Fallbacks for Chat/Completions-like shapes ---
-	if (!text) {
-		text = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
-		text = typeof text === 'string' ? text.trim() : String(text || '');
-	}*/
-	if (!text) {
-		throw new Error(`Response text from api is empty.`);
+	// Prevent saving an incomplete report.
+	if (data.status !== 'completed') {
+		const reason = data.incomplete_details?.reason;
+
+		throw new Error(
+			`OpenAI response was not completed: ${data.status || 'unknown'}${
+				reason ? ` (${reason})` : ''
+			}`
+		);
 	}
+
+	// Extract text from the raw Responses API JSON.
+	// The first output item can be reasoning rather than a message.
+	const content = (Array.isArray(data.output) ? data.output : [])
+		.filter((item) => item?.type === 'message')
+		.flatMap((item) =>
+			Array.isArray(item.content) ? item.content : []
+		);
+
+	const refusal = content.find((part) => part?.type === 'refusal');
+
+	if (refusal) {
+		throw new Error(
+			`OpenAI refused to generate the report: ${
+				refusal.refusal || 'No reason given'
+			}`
+		);
+	}
+
+	const text = content
+		.filter(
+			(part) =>
+				part?.type === 'output_text' &&
+				typeof part.text === 'string'
+		)
+		.map((part) => part.text)
+		.join('\n')
+		.trim();
+
+	if (!text) {
+		throw new Error(
+			`OpenAI returned no report text (response ID: ${
+				data.id || 'unknown'
+			}).`
+		);
+	}
+
 	return text;
 }
 
 export async function POST({ params, locals }) {
 	if (!locals.user) {
-		return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
 	const id = Number(params.id);
-	const db = getDb();
 
-	// 1) Ensure audio exists
-	const s = db
-		.prepare(
-			`SELECT s.modality_id, s.exam_type_id, s.exam_details, s.audio_report_path, p.gender AS patient_gender
-       FROM studies s
-       JOIN patients p ON p.id = s.patient_id
-       WHERE s.id = ?`
-		)
-		.get(id);
-	if (!s?.audio_report_path) {
-		return new Response(JSON.stringify({ error: 'No audio uploaded for this study' }), {
-			status: 400
-		});
-	}
-	if (!existsSync(s.audio_report_path)) {
-		return new Response(JSON.stringify({ error: 'Audio file not found on server' }), {
-			status: 404
-		});
+	if (!Number.isSafeInteger(id) || id <= 0) {
+		return json({ error: 'Invalid study ID' }, { status: 400 });
 	}
 
-	// 2) Transcribe
+	if (!process.env.OPENAI_API_KEY) {
+		return json(
+			{
+				error:
+					'Set OPENAI_API_KEY to enable transcription and report generation.'
+			},
+			{ status: 501 }
+		);
+	}
 
-	let transcription = '';
 	try {
-		if (process.env.OPENAI_API_KEY) {
-			transcription = await openaiTranscribe(s.audio_report_path, basename(s.audio_report_path));
-		} else {
-			return new Response(
-				JSON.stringify({
-					error: 'No transcription configured. Set OPENAI_API_KEY to enable transcription.'
-				}),
-				{ status: 501 }
+		const db = getDb();
+
+		const s = db
+			.prepare(`
+				SELECT
+					s.modality_id,
+					s.exam_type_id,
+					s.exam_details,
+					s.audio_report_path,
+					p.gender AS patient_gender
+				FROM studies s
+				JOIN patients p ON p.id = s.patient_id
+				WHERE s.id = ?
+			`)
+			.get(id);
+
+		if (!s) {
+			return json({ error: 'Study not found' }, { status: 404 });
+		}
+
+		if (!s.audio_report_path) {
+			return json(
+				{ error: 'No audio uploaded for this study' },
+				{ status: 400 }
 			);
 		}
-	} catch (e) {
-		return new Response(JSON.stringify({ error: e?.message || 'Transcription failed' }), {
-			status: 500
-		});
-	}
 
-	//   let transcription =
-	// 		'افیژن سیویر پلورال در سمت راست و مودریت در سمت چپ به همراه پسیف کلاپس ریه مجاور مشهود است. شواهد کاردیومگالی مشاهده می گردد. آسیت مودریت شکمی مشهود است. تصویر ساختار های تی تو غیر اختصاصی به سایز تقریبی 20 در 11 میلیمتر در مجاورت لیگامان فالسيفور مشاهده می شود که نیاز به تطبیق و یافته های سناگرافی دارد. شواهد کلسیستکتامی مشاهده می گردد. دیلاتاسیون مجاری صفرابی داخل کبدی مشهود است. سی بیدی 13 میلیمتر تنگی در قسمت دیستال سی بیدی در ناهی آمپول باطر قابل مشاهده می باشد. تطبیق و یافته های کلینیکی و آزمایشگاهی به درصورت اندیکاسیون بررسی تکمیلی با اندوساناگرافی پیشنهاد می گردد. چند کیست کورتیکال کوچک در هر دو کلیه مشهود است. هیدرونفروز خفیف در کلیه سمت چپ به همراه دیلاتاسیون پروگزیمال حالب در این سمت قابل مشاهده می باشد که مطرح کننده درجاتی از یو پی جی او در این سمت می باشد. فولنس در کلیه سمت راست نیز قابل مشاهده می باشد. ادم زیجلدی در اطراف شکم مشهود است.';
+		if (!existsSync(s.audio_report_path)) {
+			return json(
+				{ error: 'Audio file not found on server' },
+				{ status: 404 }
+			);
+		}
 
-	const template = db
-		.prepare(
-			`
-  SELECT text
-  FROM report_templates
-  WHERE modality_id = ? AND exam_type_id = ?
-  LIMIT 1
-`
-		)
-		.get(s.modality_id, s.exam_type_id).text;
+		const templateRow = db
+			.prepare(`
+				SELECT text
+				FROM report_templates
+				WHERE modality_id = ? AND exam_type_id = ?
+				LIMIT 1
+			`)
+			.get(s.modality_id, s.exam_type_id);
 
-	const patient_gender = s.patient_gender;
+		const template = templateRow?.text;
 
-	const modalityRow = db
-		.prepare(`SELECT code, name FROM modalities WHERE id = ?`)
-		.get(s.modality_id);
-	const modalityLabel = (modalityRow?.name || modalityRow?.code || 'Imaging').trim();
+		if (typeof template !== 'string' || !template.trim()) {
+			return json(
+				{
+					error:
+						'No report template configured for this modality and exam type'
+				},
+				{ status: 400 }
+			);
+		}
 
-	const examTypeRow = db
-		.prepare(`SELECT code, name FROM exam_types WHERE id = ?`)
-		.get(s.exam_type_id);
-	const examTypeLabel = (examTypeRow?.name || examTypeRow?.code || '').trim();
+		const modalityRow = db
+			.prepare('SELECT code, name FROM modalities WHERE id = ?')
+			.get(s.modality_id);
 
-	const examDetailsLabel = s.exam_detail ? ` (${s.exam_detail})` : '';
+		const modalityLabel = (
+			modalityRow?.name ||
+			modalityRow?.code ||
+			'Imaging'
+		).trim();
 
-	// Compose a concise study label: e.g., "MR Abdomen and Pelvic"
-	const studyLabel = `${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
+		const examTypeRow = db
+			.prepare('SELECT code, name FROM exam_types WHERE id = ?')
+			.get(s.exam_type_id);
 
-	// 4) Build your exact prompt (as in your Python sample)
-	let prompt = `
+		const examTypeLabel = (
+			examTypeRow?.name ||
+			examTypeRow?.code ||
+			''
+		).trim();
+
+		// Correct field name: exam_details.
+		const examDetailsLabel = s.exam_details
+			? ` (${s.exam_details})`
+			: '';
+
+		const studyLabel =
+			`${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
+
+		const transcription = await openaiTranscribe(
+			s.audio_report_path,
+			basename(s.audio_report_path)
+		);
+
+		const prompt = `
 You are a radiology report generator.
 
-Use the following template exactly as a guide for formatting the report. 
+Use the following template exactly as a guide for formatting the report.
 
 Template:
 "
@@ -178,39 +262,29 @@ ${template}
 
 Doctor's dictation: "${transcription}"
 
-Patient gender: ${patient_gender}
+Patient gender: ${s.patient_gender}
 
 Translate to English and produce the final ${studyLabel} report according to the template.
 Return only the report text. Bold ONLY pathologic/abnormal findings and recommendations by wrapping them in **double asterisks**; do not bold normal/negative statements. Do NOT omit any clinically relevant content from the dictation, even if it does not belong to the primary study region or is not represented in the template.
 `.trim();
 
-	// 5) Generate final report via OpenAI Responses API
-	console.log(prompt);
+		const finalReport = await openaiGenerateReport(prompt);
+		const path = saveReport(db, id, finalReport);
 
-	let finalReport = '';
-	try {
-		if (!process.env.OPENAI_API_KEY) {
-			return new Response(
-				JSON.stringify({
-					error: 'OPENAI_API_KEY not set; cannot generate report. (Transcription completed.)'
-				}),
-				{ status: 501 }
-			);
-		}
-		finalReport = await openaiGenerateReport(prompt);
-	} catch (e) {
-		return new Response(JSON.stringify({ error: e?.message || 'Generation failed' }), {
-			status: 500
+		return json({
+			ok: true,
+			path,
+			text: finalReport
 		});
+	} catch (e) {
+		return json(
+			{
+				error:
+					e instanceof Error
+						? e.message
+						: 'Report generation failed'
+			},
+			{ status: 500 }
+		);
 	}
-	console.log('here ', finalReport);
-
-	// 6) Save report file & update DB
-	const path = saveReport(db, id, finalReport);
-
-	return json({
-		ok: true,
-		path,
-		text: finalReport
-	});
 }
