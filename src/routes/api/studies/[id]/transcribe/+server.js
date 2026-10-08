@@ -29,7 +29,7 @@ function saveReport(db, studyId, text) {
 async function openaiTranscribe(filePath, fileName) {
 	const form = new FormData();
 
-	form.append('model', 'gpt-4o-transcribe');
+	form.append('model', 'gpt-transcribe');
 	form.append('file', new Blob([readFileSync(filePath)]), fileName);
 
 	const res = await fetch(
@@ -69,7 +69,7 @@ async function openaiGenerateReport(prompt) {
 			'Content-Type': 'application/json'
 		},
 		body: JSON.stringify({
-			model: 'gpt-5',
+			model: 'gpt-6.1-sol',
 			input: prompt
 		})
 	});
