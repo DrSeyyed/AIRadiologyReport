@@ -4,7 +4,7 @@ import { editStudyMessage } from '$lib/server/telegram.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const SAVE_DIR = process.env.VOICE_SAVE_DIR || '/uploads/voices';
+const SAVE_DIR = process.env.VOICE_SAVE_DIR || path.join('uploads', 'audio');
 
 export function startVoiceWorker() {
   fs.mkdirSync(SAVE_DIR, { recursive: true });
