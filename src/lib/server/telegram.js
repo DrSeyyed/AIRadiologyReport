@@ -72,7 +72,7 @@ export function buildStudyMessage(study) {
 			`<i>(code ${esc(study.patient_code ?? '-')})</i>`
 	);
 	const ageGender = [
-		study.patient_age != null ? `Age: ${esc(study.patient_age)}` : null,
+		study.patient_age != null ? `Age: ${esc(study.patient_age)} ${esc({ Y: 'years', M: 'months', W: 'weeks', D: 'days' }[study.patient_age_unit || 'Y'])}` : null,
 		study.patient_gender ? `Gender: ${esc(study.patient_gender)}` : null
 	]
 		.filter(Boolean)
@@ -129,6 +129,16 @@ export async function editStudyMessage(study, chat_id) {
 		disable_web_page_preview: true
 	});
 	return true;
+}
+
+export async function syncStudyMessage(study) {
+	if (!study?.telegram_message_id) return false;
+	try {
+		await editStudyMessage(study);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export async function deleteMessage(message_id, chat_id) {

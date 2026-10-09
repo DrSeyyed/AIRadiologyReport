@@ -1,5 +1,5 @@
 <script>
-	import { date, time, year, datetime } from '$lib/time.client';
+	import { date, time } from '$lib/time.client';
 
 	let { data, saveEdit, onClose, setSuccessMsg, successMsg, study } = $props();
 
@@ -7,12 +7,12 @@
 		exam_date_jalali: study?.exam_date_jalali ?? $date,
 		exam_time: study?.exam_time ?? $time,
 		modality_id: study?.modality_id ?? '',
-		patient_id: study?.patient_id ?? '',
 		patient_code: study?.patient_code ?? '',
-		patient_name: study?.patient_firstname ?? '',
-		patient_family: study?.patient_lastname ?? '',
-		patient_gender: study?.patient_gender ?? 'male',
+		patient_firstname: study?.patient_firstname ?? '',
+		patient_lastname: study?.patient_lastname ?? '',
+		patient_gender: study?.patient_gender ?? 'unknown',
 		patient_age: study?.patient_age ?? '',
+		patient_age_unit: study?.patient_age_unit ?? 'Y',
 		corresponding_resident_id: study?.corresponding_resident_id ?? '',
 		corresponding_attending_id: study?.corresponding_attending_id ?? '',
 		exam_type_id: study?.exam_type_id ?? '',
@@ -22,98 +22,57 @@
 	});
 
 	let busy = $state(false);
-	let patient_code_reserved = $state(study?.patient_code ?? '');
+	let errorMsg = $state('');
 
-	function resetPatientFields() {
-		form.patient_id = '';
-		form.patient_name = '';
-		form.patient_family = '';
-		form.patient_gender = 'male';
-		form.patient_age = '';
-		form.exam_type_id = '';
-		form.exam_details = '';
-		form.dicom_url = '';
-		form.description = '';
-		patient_code_reserved = '';
-	}
-
-	async function onPatientCodeBlurOrEnter(e) {
-		const code = (e?.target?.value ?? '').trim();
-		form.patient_code = code;
-		if (!code) return resetPatientFields();
-
-		busy = true;
-		try {
-			const res = await fetch(`/api/patients/code/${code}`);
-			if (!res.ok) throw new Error('Lookup failed');
-			const p = await res.json();
-			if (p?.id) {
-				form.patient_id = String(p.id);
-				form.patient_name = p.firstname;
-				form.patient_family = p.lastname;
-				form.patient_gender = p.gender;
-				form.patient_age = $year - p.birth_year;
-				patient_code_reserved = code;
-			} else {
-				resetPatientFields();
-			}
-		} catch {
-			resetPatientFields();
-		} finally {
-			busy = false;
-		}
-	}
-
-	function onPatientCodeChange(e) {
-		patient_code_reserved = '';
+	function clearMessages() {
 		setSuccessMsg('');
+		errorMsg = '';
 	}
 
-	async function afterSave() {
-		let code = form.patient_code;
-		if (!code) return;
+	function optionalNumber(value) {
+		return value == null || String(value).trim() === '' ? null : Number(value);
+	}
+
+	async function submit() {
+		if (busy) return;
+		clearMessages();
+		for (const key of ['modality_id', 'exam_type_id', 'exam_date_jalali', 'patient_code']) {
+			if (form[key] == null || String(form[key]).trim() === '') {
+				errorMsg = `Missing ${key.replace(/_/g, ' ')}`;
+				return;
+			}
+		}
+		if (!form.patient_firstname.trim() && !form.patient_lastname.trim()) {
+			errorMsg = 'At least one patient name is required.';
+			return;
+		}
+		const age = optionalNumber(form.patient_age);
+		if (age !== null && (!Number.isSafeInteger(age) || age < 0)) {
+			errorMsg = 'Age must be a whole number greater than or equal to 0.';
+			return;
+		}
 		busy = true;
 		try {
-			const res = await fetch(`/api/patients/code/${code}`);
-			if (!res.ok) throw new Error('Lookup failed');
-			const p = await res.json();
-			if (p?.id) {
-				form.patient_id = String(p.id);
-				form.patient_name = p.firstname;
-				form.patient_family = p.lastname;
-				form.patient_gender = p.gender;
-				form.patient_age = $year - p.birth_year;
-				patient_code_reserved = code;
-			}
-		} catch {
+			await saveEdit({
+				...form,
+				patient_code: form.patient_code.trim(),
+				patient_firstname: form.patient_firstname.trim(),
+				patient_lastname: form.patient_lastname.trim(),
+				patient_age: age,
+				modality_id: Number(form.modality_id),
+				exam_type_id: Number(form.exam_type_id),
+				exam_time: form.exam_time || $time,
+				corresponding_resident_id: optionalNumber(form.corresponding_resident_id),
+				corresponding_attending_id: optionalNumber(form.corresponding_attending_id),
+				exam_details: form.exam_details || null,
+				dicom_url: form.dicom_url || null,
+				description: form.description || null
+			});
+		} catch (error) {
+			errorMsg = error instanceof Error ? error.message : 'Failed to save study.';
 		} finally {
 			busy = false;
 		}
-	}
-
-	setSuccessMsg('');
-
-	const must = [
-		'modality_id',
-		'exam_type_id',
-		'exam_date_jalali',
-		'patient_code',
-		'patient_family',
-		'patient_name',
-		'patient_age',
-		'patient_gender',
-		'patient_age',
-		'corresponding_resident_id',
-		'corresponding_attending_id'
-	];
-	function checkRequiered() {
-		for (const k of must) {
-			if (!form[k] || String(form[k]).trim() === '') {
-				alert(`Missing ${k.replace(/_/g, ' ')}`);
-				return false;
-			}
-		}
-		return true;
 	}
 </script>
 
@@ -127,9 +86,14 @@
 			</div>
 		{/if}
 
+		{#if errorMsg}
+			<div class="mt-3 alert alert-error" role="alert"><span>{errorMsg}</span></div>
+		{/if}
+
 		<div class="divider my-3"></div>
 
-		<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+		<form onsubmit={(event) => { event.preventDefault(); submit(); }} oninput={clearMessages} onchange={clearMessages}>
+		<fieldset disabled={busy} class="grid grid-cols-1 gap-4 md:grid-cols-2">
 			<!-- Date & Time -->
 			<label class="form-control">
 				<div class="label"><span class="label-text">Exam Date (Jalali)</span></div>
@@ -150,26 +114,22 @@
 				/>
 			</label>
 
-			<!-- Patient (code → autofill existing) -->
 			<label class="form-control md:col-span-2">
 				<div class="label"><span class="label-text">Patient Code</span></div>
 				<input
 					class="input-bordered input w-full"
 					placeholder="e.g., 156727"
 					bind:value={form.patient_code}
-					oninput={onPatientCodeChange}
-					onblur={onPatientCodeBlurOrEnter}
-					onkeydown={(e) => e.key === 'Enter' && onPatientCodeBlurOrEnter(e)}
+					required
 				/>
-				{#if busy}<span class="text-xs opacity-70">checking…</span>{/if}
+				<span class="text-xs opacity-70">Demographics apply only to this study; provide at least one name.</span>
 			</label>
 
 			<label class="form-control">
 				<div class="label"><span class="label-text">First Name</span></div>
 				<input
 					class="input-bordered input w-full"
-					bind:value={form.patient_name}
-					disabled={patient_code_reserved}
+					bind:value={form.patient_firstname}
 					placeholder="e.g., Ali"
 				/>
 			</label>
@@ -178,8 +138,7 @@
 				<div class="label"><span class="label-text">Family Name</span></div>
 				<input
 					class="input-bordered input w-full"
-					bind:value={form.patient_family}
-					disabled={patient_code_reserved}
+					bind:value={form.patient_lastname}
 					placeholder="e.g., Ahmadi"
 				/>
 			</label>
@@ -189,23 +148,33 @@
 				<select
 					class="select-bordered select w-full"
 					bind:value={form.patient_gender}
-					disabled={patient_code_reserved}
 				>
+					<option value="unknown">Unknown</option>
 					<option value="male">Male</option>
 					<option value="female">Female</option>
 				</select>
 			</label>
 
 			<label class="form-control">
-				<div class="label"><span class="label-text">Age (years)</span></div>
+				<div class="label"><span class="label-text">Age (optional)</span></div>
 				<input
 					class="input-bordered input w-full"
 					type="number"
 					min="0"
+					step="1"
 					bind:value={form.patient_age}
-					disabled={patient_code_reserved}
-					placeholder="e.g., 42"
+					placeholder="Unknown"
 				/>
+			</label>
+
+			<label class="form-control">
+				<div class="label"><span class="label-text">Age Unit</span></div>
+				<select class="select-bordered select w-full" bind:value={form.patient_age_unit}>
+					<option value="Y">Years</option>
+					<option value="M">Months</option>
+					<option value="W">Weeks</option>
+					<option value="D">Days</option>
+				</select>
 			</label>
 
 			<!-- Modality -->
@@ -213,7 +182,7 @@
 				<div class="label"><span class="label-text">Modality</span></div>
 				<select class="select-bordered select w-full" bind:value={form.modality_id} required>
 					<option value="" disabled>Select modality</option>
-					{#each data.modalities as m}
+					{#each data.modalities as m (m.id)}
 						<option value={m.id}>{m.code}</option>
 					{/each}
 				</select>
@@ -224,7 +193,7 @@
 				<div class="label"><span class="label-text">Exam Type</span></div>
 				<select class="select-bordered select w-full" bind:value={form.exam_type_id} required>
 					<option value="" disabled>Select exam type</option>
-					{#each data.exam_types as e}
+					{#each data.exam_types as e (e.id)}
 						<option value={e.id}>{e.code}</option>
 					{/each}
 				</select>
@@ -235,7 +204,7 @@
 				<div class="label"><span class="label-text">Resident</span></div>
 				<select class="select-bordered select w-full" bind:value={form.corresponding_resident_id}>
 					<option value="">(none)</option>
-					{#each data.users.filter((u) => u.role === 'resident') as u}
+					{#each data.users.filter((u) => u.role === 'resident') as u (u.id)}
 						<option value={u.id}>{u.full_name}</option>
 					{/each}
 				</select>
@@ -245,7 +214,7 @@
 				<div class="label"><span class="label-text">Attending</span></div>
 				<select class="select-bordered select w-full" bind:value={form.corresponding_attending_id}>
 					<option value="">(none)</option>
-					{#each data.users.filter((u) => u.role === 'attending') as u}
+					{#each data.users.filter((u) => u.role === 'attending') as u (u.id)}
 						<option value={u.id}>{u.full_name}</option>
 					{/each}
 				</select>
@@ -275,19 +244,14 @@
 				<textarea class="textarea-bordered textarea w-full" rows="3" bind:value={form.description}
 				></textarea>
 			</label>
-		</div>
+		</fieldset>
 
 		<div class="modal-action">
-			<button class="btn btn-ghost" onclick={onClose}>Cancel</button>
-			<button
-				class="btn btn-primary"
-				onclick={() => {
-					if (checkRequiered()) {
-						saveEdit(form);
-						afterSave();
-					} else return;
-				}}>Save</button
-			>
+			<button type="button" class="btn btn-ghost" disabled={busy} onclick={onClose}>Cancel</button>
+			<button type="submit" class="btn btn-primary" disabled={busy}>
+				{busy ? 'Saving…' : 'Save'}
+			</button>
 		</div>
+		</form>
 	</div>
 </div>

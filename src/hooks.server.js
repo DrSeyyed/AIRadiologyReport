@@ -1,5 +1,7 @@
 import { getSession } from '$lib/server/auth';
 import { startVoiceWorker } from '$lib/server/voice-worker';
+import { getDb } from '$lib/server/db';
+import { startStudyNotificationWorker } from '$lib/server/study-notifications.js';
 
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 
@@ -15,6 +17,7 @@ if (proxyUrl) {
 }
 
 startVoiceWorker();
+startStudyNotificationWorker(getDb);
 
 export const handle = async ({ event, resolve }) => {
   // Read cookie

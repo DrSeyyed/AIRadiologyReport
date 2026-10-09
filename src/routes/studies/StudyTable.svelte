@@ -2,6 +2,7 @@
 	import { toJalaali } from 'jalaali-js';
 	import Filters from './Filters.svelte';
 	import { invalidate, invalidateAll } from '$app/navigation';
+	import { resolve } from '$app/paths';
 
 	let {
 		data,
@@ -149,6 +150,10 @@
 
 	<div class="flex-1"></div>
 
+	{#if isAdmin}
+		<a class="btn-xm btn btn-outline" href={resolve('/studies/import')}>Import studies</a>
+	{/if}
+
 	<button class="btn-xm btn btn-secondary" onclick={() => (showNewModal = true)}>
 		+ New Study
 	</button>
@@ -175,7 +180,7 @@
 					<td>{s.patient_code}</td>
 					<td>{s.patient_firstname}</td>
 					<td>{s.patient_lastname}</td>
-					<td>{s.patient_age}</td>
+					<td>{s.patient_age == null ? '-' : `${s.patient_age} ${s.patient_age_unit ?? 'Y'}`}</td>
 					<td>{s.modality_code}</td>
 					<td>{s.exam_type_code}</td>
 					<td>{s.exam_date_jalali}</td>

@@ -8,16 +8,6 @@ CREATE TABLE
     email TEXT
   );
 
-CREATE TABLE
-  IF NOT EXISTS patients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_code TEXT UNIQUE NOT NULL,
-    firstname TEXT NOT NULL,
-    lastname TEXT NOT NULL,
-    gender TEXT NOT NULL CHECK (gender IN ('male', 'female')),
-    birth_year INTEGER
-  );
-
 
 CREATE TABLE
   IF NOT EXISTS auth_credentials (
@@ -51,7 +41,15 @@ CREATE TABLE
 CREATE TABLE
   IF NOT EXISTS studies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id INTEGER NOT NULL REFERENCES patients (id) ON DELETE CASCADE,
+    patient_code TEXT NOT NULL,
+    patient_firstname TEXT NOT NULL DEFAULT '',
+    patient_lastname TEXT NOT NULL DEFAULT '',
+    patient_gender TEXT NOT NULL DEFAULT 'unknown' CHECK (patient_gender IN ('male', 'female', 'unknown')),
+    patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0),
+    patient_age_unit TEXT NOT NULL DEFAULT 'Y' CHECK (patient_age_unit IN ('Y', 'M', 'W', 'D')),
+    source_study_uid TEXT,
+    source_component TEXT,
+    source_description TEXT,
     modality_id INTEGER NOT NULL REFERENCES modalities (id) ON DELETE RESTRICT,
     exam_type_id INTEGER NOT NULL REFERENCES exam_types (id) ON DELETE RESTRICT,
     exam_details TEXT,
@@ -65,8 +63,8 @@ CREATE TABLE
     attending_checked INTEGER NOT NULL DEFAULT 0 CHECK (attending_checked IN (0, 1)),
     dicom_url TEXT,
     description TEXT,
-    patient_age INTEGER CHECK (patient_age IS NULL OR patient_age >= 0),
-    telegram_message_id TEXT
+    telegram_message_id TEXT,
+    UNIQUE (source_study_uid, source_component)
   );
 
 
@@ -79,65 +77,37 @@ CREATE TABLE
   );
 
 
-  -- After INSERT on studies: compute patient_age
-CREATE TRIGGER IF NOT EXISTS trg_studies_ai_set_age
-AFTER INSERT ON studies
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN (SELECT birth_year FROM patients WHERE id = NEW.patient_id) IS NOT NULL
-              AND substr(NEW.exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(NEW.exam_date_jalali,1,4) AS INTEGER)
-              - (SELECT birth_year FROM patients WHERE id = NEW.patient_id)
-         ELSE NULL
-       END
-     )
-   WHERE id = NEW.id;
-END;
+CREATE INDEX IF NOT EXISTS idx_studies_patient_code ON studies (patient_code);
+CREATE INDEX IF NOT EXISTS idx_studies_patient_name ON studies (patient_lastname, patient_firstname);
 
--- After UPDATE on studies (when exam date or patient changes): recompute
-CREATE TRIGGER IF NOT EXISTS trg_studies_au_set_age
-AFTER UPDATE OF exam_date_jalali, patient_id ON studies
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN (SELECT birth_year FROM patients WHERE id = NEW.patient_id) IS NOT NULL
-              AND substr(NEW.exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(NEW.exam_date_jalali,1,4) AS INTEGER)
-              - (SELECT birth_year FROM patients WHERE id = NEW.patient_id)
-         ELSE NULL
-       END
-     )
-   WHERE id = NEW.id;
-END;
+CREATE TABLE IF NOT EXISTS study_import_mappings (
+  id INTEGER PRIMARY KEY,
+  modality_id INTEGER NOT NULL REFERENCES modalities (id),
+  source_description TEXT NOT NULL,
+  description_key TEXT NOT NULL,
+  UNIQUE (modality_id, description_key)
+);
 
--- If a patient's birth_year changes: propagate to all their studies
-CREATE TRIGGER IF NOT EXISTS trg_patients_au_propagate_age
-AFTER UPDATE OF birth_year ON patients
-FOR EACH ROW
-BEGIN
-  UPDATE studies
-     SET patient_age = (
-       CASE
-         WHEN NEW.birth_year IS NOT NULL
-              AND substr(exam_date_jalali,1,4) GLOB '[0-9][0-9][0-9][0-9]'
-         THEN CAST(substr(exam_date_jalali,1,4) AS INTEGER) - NEW.birth_year
-         ELSE NULL
-       END
-     )
-   WHERE patient_id = NEW.id;
-END;
+CREATE TABLE IF NOT EXISTS study_import_components (
+  id INTEGER PRIMARY KEY,
+  mapping_id INTEGER NOT NULL REFERENCES study_import_mappings (id) ON DELETE CASCADE,
+  exam_type_id INTEGER NOT NULL REFERENCES exam_types (id),
+  exam_details TEXT NOT NULL DEFAULT '',
+  UNIQUE (mapping_id, exam_type_id, exam_details)
+);
 
 CREATE TABLE IF NOT EXISTS pending_voice (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  study_id INTEGER NOT NULL,
+  study_id INTEGER NOT NULL REFERENCES studies (id) ON DELETE CASCADE,
   chat_id TEXT NOT NULL,
   reply_message_id INTEGER NOT NULL,
   file_id TEXT NOT NULL,
   process_at INTEGER NOT NULL,     -- unix epoch seconds when it’s due
   done INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pending_telegram (
+  study_id INTEGER PRIMARY KEY REFERENCES studies (id) ON DELETE CASCADE,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0
 );

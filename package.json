@@ -11,7 +11,8 @@
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint .",
 		"db:init": "node scripts/init-db.mjs",
-		"db:seed": "node scripts/seed.mjs"
+		"db:seed": "node scripts/seed.mjs",
+		"test": "node --test"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.2.5",
@@ -43,6 +44,7 @@
 		"dompurify": "^3.2.6",
 		"jalaali-js": "^1.2.8",
 		"marked": "^16.2.0",
-		"undici": "^7.13.0"
+		"undici": "^7.13.0",
+		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	}
 }

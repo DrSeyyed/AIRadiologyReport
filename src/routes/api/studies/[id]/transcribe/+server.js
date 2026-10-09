@@ -1,3 +1,4 @@
+import { getStudyDetail } from '$lib/server/studies.js';
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import {
@@ -164,19 +165,7 @@ export async function POST({ params, locals }) {
 	try {
 		const db = getDb();
 
-		const s = db
-			.prepare(`
-				SELECT
-					s.modality_id,
-					s.exam_type_id,
-					s.exam_details,
-					s.audio_report_path,
-					p.gender AS patient_gender
-				FROM studies s
-				JOIN patients p ON p.id = s.patient_id
-				WHERE s.id = ?
-			`)
-			.get(id);
+		const s = getStudyDetail(db, id);
 
 		if (!s) {
 			return json({ error: 'Study not found' }, { status: 404 });

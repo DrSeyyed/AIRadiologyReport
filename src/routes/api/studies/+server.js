@@ -1,13 +1,15 @@
+import { getStudyDetail, insertStudy } from '$lib/server/studies.js';
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { sendStudyMessage } from '$lib/server/telegram.js';
 
-export async function GET({ url }) {
+export async function GET({ url, locals }) {
+	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
 	const db = getDb();
 
 	const q = {
-		page: Number(url.searchParams.get('page')?.trim() || '1'),
-		rowcount: Number(url.searchParams.get('rowcount')?.trim() || '20'),
+		page: Math.min(1000000, Math.max(1, Math.floor(Number(url.searchParams.get('page')) || 1))),
+		rowcount: Math.min(100, Math.max(1, Math.floor(Number(url.searchParams.get('rowcount')) || 20))),
 		orderedby: url.searchParams.get('orderedby')?.trim() || '',
 		orderdir: url.searchParams.get('orderdir')?.trim().toUpperCase() === 'ASC' ? 'ASC' : 'DESC',
 		patient_code: url.searchParams.get('patient_code')?.trim() || '',
@@ -21,11 +23,10 @@ export async function GET({ url }) {
 
 	let baseSql = `
     FROM studies s
-    JOIN patients  p ON p.id = s.patient_id
     JOIN modalities m ON m.id = s.modality_id
     JOIN exam_types e ON e.id = s.exam_type_id
-    JOIN users ur ON ur.id = s.corresponding_resident_id
-    JOIN users ua ON ua.id = s.corresponding_attending_id
+    LEFT JOIN users ur ON ur.id = s.corresponding_resident_id
+    LEFT JOIN users ua ON ua.id = s.corresponding_attending_id
     WHERE 1=1
   `;
 
@@ -33,15 +34,15 @@ export async function GET({ url }) {
 
 	// Patient filters
 	if (q.patient_code) {
-		baseSql += ` AND p.patient_code = ?`;
+		baseSql += ` AND s.patient_code = ?`;
 		params.push(q.patient_code);
 	}
 	if (q.patient_firstname) {
-		baseSql += ` AND p.firstname LIKE ?`;
+		baseSql += ` AND s.patient_firstname LIKE ?`;
 		params.push(`%${q.patient_firstname}%`);
 	}
 	if (q.patient_lastname) {
-		baseSql += ` AND p.lastname LIKE ?`;
+		baseSql += ` AND s.patient_lastname LIKE ?`;
 		params.push(`%${q.patient_lastname}%`);
 	}
 
@@ -73,31 +74,27 @@ export async function GET({ url }) {
 
 	// --- Data query ---
 	const allowedColumns = [
-		'p.patient_code',
-		'p.firstname',
-		'p.lastname',
+		's.patient_code',
+		's.patient_firstname',
+		's.patient_lastname',
 		's.modality_id',
 		's.patient_age',
 		's.exam_type_id',
 		's.exam_date_jalali'
 	];
-	const orderCol = allowedColumns.includes(q.orderedby) ? q.orderedby : 's.exam_date_jalali';
+	const legacySortColumns = { 'p.patient_code': 's.patient_code', 'p.firstname': 's.patient_firstname', 'p.lastname': 's.patient_lastname' };
+	const requestedColumn = legacySortColumns[q.orderedby] || q.orderedby;
+	const orderCol = allowedColumns.includes(requestedColumn) ? requestedColumn : 's.exam_date_jalali';
 
 	let dataSql = `
     SELECT
       s.*,
-      p.patient_code AS patient_code,
-      p.firstname    AS patient_firstname,
-      p.lastname     AS patient_lastname,
-      p.birth_year   AS patient_birthyear,
-      p.gender       AS patient_gender,
-      s.patient_age  AS patient_age,
       m.code         AS modality_code,
       e.code         AS exam_type_code,
       ur.full_name   AS resident_fullname,
       ua.full_name   AS attending_fullname
     ${baseSql}
-    ORDER BY ${orderCol} ${q.orderdir}, s.exam_date_jalali DESC, s.exam_time DESC
+    ORDER BY ${orderCol} ${q.orderdir}, s.exam_date_jalali DESC, s.exam_time DESC, s.id DESC
     LIMIT ? OFFSET ?
   `;
 	const rows = db.prepare(dataSql).all(...params, q.rowcount, (q.page - 1) * q.rowcount);
@@ -110,122 +107,24 @@ export async function GET({ url }) {
 	});
 }
 
-export async function POST({ request }) {
-	const db = getDb();
-	const body = await request.json();
-
-	const {
-		patient_id,
-		modality_id,
-		exam_type_id,
-		exam_details,
-		exam_date_jalali,
-		exam_time,
-		corresponding_resident_id,
-		corresponding_attending_id,
-		audio_report_path,
-		text_report_path,
-		resident_checked = 0,
-		attending_checked = 0,
-		dicom_url,
-		description
-	} = body;
-
-	// Basic validation
-	for (const field of [
-		'patient_id',
-		'modality_id',
-		'exam_type_id',
-		'exam_date_jalali',
-		'exam_time'
-	]) {
-		if (!body[field]) {
-			return new Response(JSON.stringify({ error: `${field} is required` }), { status: 400 });
-		}
-	}
-
-	const insert = db.prepare(`
-    INSERT INTO studies (
-      patient_id, modality_id, exam_type_id, exam_details, exam_date_jalali, exam_time,
-      corresponding_resident_id, corresponding_attending_id,
-      audio_report_path, text_report_path,
-      resident_checked, attending_checked,
-      dicom_url, description
-    ) VALUES (
-      @patient_id, @modality_id, @exam_type_id, @exam_details, @exam_date_jalali, @exam_time,
-      @corresponding_resident_id, @corresponding_attending_id,
-      @audio_report_path, @text_report_path,
-      @resident_checked, @attending_checked,
-      @dicom_url, @description
-    )
-  `);
-
-	const tx = db.transaction((payload) => {
-		const info = insert.run(payload);
-		const studyId = info.lastInsertRowid;
-		return studyId;
-	});
-
-	const studyId = tx({
-		patient_id,
-		modality_id,
-		exam_type_id,
-		exam_details,
-		exam_date_jalali,
-		exam_time,
-		corresponding_resident_id,
-		corresponding_attending_id,
-		audio_report_path,
-		text_report_path,
-		resident_checked,
-		attending_checked,
-		dicom_url,
-		description
-	});
-
-const detail = db
-		.prepare(
-			`
-          SELECT
-            s.id AS study_id,
-            s.exam_date_jalali,
-            s.exam_time,
-            s.modality_id,
-            s.exam_type_id,
-            p.firstname  AS patient_firstname,
-            p.lastname AS patient_lastname,
-            p.patient_code AS patient_code,
-            r.full_name AS resident_fullname,
-            a.full_name AS attending_fullname,
-            m.code AS modality_code,
-            m.name AS modality_name,
-            e.code AS exam_type_code,
-            e.name AS exam_type_name,
-            s.exam_details AS exam_details,
-			s.resident_checked,
-			s.attending_checked,
-            s.telegram_message_id,
-            s.audio_report_path,
-            s.text_report_path
-          FROM studies s
-          JOIN patients p ON p.id = s.patient_id
-          LEFT JOIN users r ON r.id = s.corresponding_resident_id
-          LEFT JOIN users a ON a.id = s.corresponding_attending_id
-          LEFT JOIN modalities m ON m.id = s.modality_id
-          LEFT JOIN exam_types e ON e.id = s.exam_type_id
-          WHERE s.id = ?
-        `
-		)
-		.get(studyId);
-
-	if (detail) {
-      // declare the variable!
-      const res = await sendStudyMessage(detail);
-      console.log(res);
-
-      if (res.message_id) {
-        db.prepare(`UPDATE studies SET telegram_message_id = ? WHERE id = ?`).run(res.message_id, studyId);
-      }
-    }
-	return json(detail, { status: 201 });
+export async function POST({ request, locals }) {
+ if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+ try {
+  const db = getDb();
+  const studyId = insertStudy(db, await request.json());
+  const detail = getStudyDetail(db, studyId);
+  let notification_warning = null;
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+   try {
+    const result = await sendStudyMessage(detail);
+    db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run(result.message_id, studyId);
+    detail.telegram_message_id = String(result.message_id);
+   } catch {
+    notification_warning = 'Study saved, but Telegram notification failed.';
+   }
+  }
+  return json({ ...detail, notification_warning }, { status: 201 });
+ } catch (error) {
+  return json({ error: error.message || 'Could not create study' }, { status: 400 });
+ }
 }

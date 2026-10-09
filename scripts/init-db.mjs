@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { initializeSchema } from './initialize-schema.mjs';
 
 const DB_PATH = 'db/pacs.db';
 const SCHEMA_PATH = 'scripts/schema.sql';
@@ -14,7 +15,8 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
-db.exec(schema);
+const { reset } = initializeSchema(db, schema, { resetTestStudies: process.env.RESET_TEST_STUDIES === '1' });
+if (reset) console.log('Replaced legacy test patients, studies, and pending voice jobs. Users and templates were retained.');
 
 const modalityCount = db.prepare('SELECT COUNT(*) AS c FROM modalities').get().c;
 if (modalityCount === 0) {

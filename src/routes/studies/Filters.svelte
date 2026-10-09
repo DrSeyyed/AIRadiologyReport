@@ -143,9 +143,9 @@
 				value={data.paging?.orderedby || 's.exam_date_jalali'}
 			>
 				<option value="s.exam_date_jalali">Exam Date</option>
-				<option value="p.patient_code">Patient Code</option>
-				<option value="p.firstname">Patient Firstname</option>
-				<option value="p.lastname">Patient Lastname</option>
+				<option value="s.patient_code">Patient Code</option>
+				<option value="s.patient_firstname">Patient Firstname</option>
+				<option value="s.patient_lastname">Patient Lastname</option>
 				<option value="s.patient_age">Patient Age</option>
 				<option value="s.modality_id">Modality</option>
 				<option value="s.exam_type_id">Exam Type</option>
