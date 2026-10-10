@@ -45,6 +45,9 @@ export async function POST({ request, locals }) {
 			const preview = previewStudyImport(db, parsed);
 			return json({ ...preview, telegramConfigured });
 		}
+		if (!assignments.corresponding_attending_id)
+			return json({ error: 'Select an attending before importing studies.' }, { status: 400 });
+		assignments.corresponding_resident_id = null;
 		const selected = JSON.parse(String(form.get('selected_rows') || '[]'));
 		const result = db.transaction(() => {
 			const preview = previewStudyImport(db, parsed);

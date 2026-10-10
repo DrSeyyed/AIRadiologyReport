@@ -8,7 +8,6 @@
 	let busy = $state(false);
 	let error = $state('');
 	let success = $state('');
-	let resident = $state('');
 	let attending = $state('');
 	let notifyTelegram = $state(true);
 	let visible = $state(200);
@@ -38,6 +37,10 @@
 
 	async function submit(action) {
 		if (!file || busy) return;
+		if (action === 'import' && !attending) {
+			error = 'Select the study attending before confirming import.';
+			return;
+		}
 		busy = true;
 		error = '';
 		success = '';
@@ -45,7 +48,6 @@
 			const form = new FormData();
 			form.append('file', file);
 			form.append('action', action);
-			form.append('corresponding_resident_id', resident);
 			form.append('corresponding_attending_id', attending);
 			if (action === 'import') {
 				form.append('token', preview.token);
@@ -88,7 +90,8 @@
 		no examination selection or description mapping is required. Add audio recordings later and
 		select modality, examination/body part including contrast, and optional details/side for each
 		recording before Transcribe &amp; Generate. Telegram audio replies append recordings; configure
-		and generate reports on this site.
+		and generate reports on this site. Residents are assigned per recording. Staff register privately
+		with the Telegram bot and appear in selectors only after administrator approval.
 	</p>
 	<form
 		class="flex flex-wrap items-end gap-4"
@@ -112,16 +115,7 @@
 			/>
 		</label>
 		<label class="form-control">
-			<span class="label-text">Resident (optional)</span>
-			<select class="select select-bordered" bind:value={resident} disabled={busy}>
-				<option value="">Unassigned</option>
-				{#each data.users.filter((user) => user.role === 'resident') as user (user.id)}<option
-						value={String(user.id)}>{user.full_name}</option
-					>{/each}
-			</select>
-		</label>
-		<label class="form-control">
-			<span class="label-text">Attending (optional)</span>
+			<span class="label-text">Study attending (required to confirm import; optional for preview)</span>
 			<select class="select select-bordered" bind:value={attending} disabled={busy}>
 				<option value="">Unassigned</option>
 				{#each data.users.filter((user) => user.role === 'attending') as user (user.id)}<option
@@ -222,7 +216,7 @@
 		{/if}
 		<button
 			class="btn btn-success"
-			disabled={busy || !selected.size}
+			disabled={busy || !selected.size || !attending}
 			onclick={() => submit('import')}>Confirm import of {selected.size} selected rows</button
 		>
 	{/if}

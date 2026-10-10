@@ -16,13 +16,23 @@
   });
 
   const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}/report`);
-  const editable = $derived(!recording.processing && !recording.resident_checked && !recording.attending_checked && Boolean(recording.modality_id && recording.exam_type_id));
+  const editable = $derived(!recording.processing && !recording.resident_checked && !recording.attending_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
+  const residentSignature = $derived(recording.resident_checked
+    ? `Resident signature: ${recording.resident_signer_fullname || 'Unknown signer'}${recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id) ? ` (on behalf of ${recording.resident_fullname || 'assigned resident'})` : ''}${recording.resident_signed_at ? ` · ${recording.resident_signed_at}` : ''}`
+    : 'Resident signature: not signed');
+  const attendingSignature = $derived(recording.attending_checked
+    ? `Attending signature: ${recording.attending_signer_fullname || 'Unknown signer'}${recording.attending_signed_at ? ` · ${recording.attending_signed_at}` : ''}`
+    : 'Attending signature: not signed');
   let printFrame;
   onDestroy(() => printFrame?.remove());
 
   $effect(() => {
     if (!editable) state.tab = 'preview';
   });
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+  }
 
   function printReport() {
     if (state.loading || state.error || !state.text.trim()) return;
@@ -36,7 +46,8 @@
       frame.contentWindow?.print();
     };
     const heading = DOMPurify.sanitize(`<h1>Study #${study.id} — Recording #${recording.id}</h1>`);
-    frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}</body></html>`;
+    const signatures = `<p>Recording resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Study attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}</p>`;
+    frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
   }
@@ -111,8 +122,13 @@
     <h3 id="report-title" class="font-bold text-lg mb-3">
       Text Report — Study #{study.id}, recording #{recording.id}
     </h3>
+    <div class="text-sm mb-3">
+      <p>Recording resident: {recording.resident_fullname || 'Unassigned'} · Study attending: {study.attending_fullname || 'Not assigned'}</p>
+      <p>{residentSignature}</p>
+      <p>{attendingSignature}</p>
+    </div>
     {#if state.error}<div class="alert alert-error" role="alert">{state.error}</div>{/if}
-    {#if !editable}<p class="text-sm mb-3">Read-only: unsign the report, wait for processing to finish, and save modality/examination configuration before editing.</p>{/if}
+    {#if !editable}<p class="text-sm mb-3">Read-only: unsign the report, wait for processing to finish, and save the recording resident and modality/examination configuration before editing. A study attending must also be selected using Edit study.</p>{/if}
 
     {#if state.loading}
       <div class="space-y-2 mb-3">

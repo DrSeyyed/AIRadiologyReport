@@ -41,7 +41,7 @@
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
-			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Resident</th><th>Attending</th><th>Recordings / reports</th><th>Signed (R/A)</th><th>Actions</th></tr>
+			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Recordings / reports</th><th>Signed (R/A)</th><th>Actions</th></tr>
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
@@ -53,7 +53,6 @@
 					<td>{study.source_modality || study.modality_code || '-'}</td>
 					<td class="max-w-xs whitespace-normal">{study.source_description || study.description || '-'}</td>
 					<td>{study.exam_date_jalali}<div>{study.exam_time}</div></td>
-					<td>{study.resident_fullname ?? '-'}</td>
 					<td>{study.attending_fullname ?? '-'}</td>
 					<td>
 						<div>{study.recording_count ?? 0} recordings · {study.report_count ?? 0} reports</div>
@@ -65,7 +64,7 @@
 						<button class="btn btn-outline btn-xs btn-error" disabled={deleting !== null || !canDelete(study)} onclick={() => deleteStudy(study)}>{deleting === study.id ? 'Deleting…' : 'Delete'}</button>
 					</div></td>
 				</tr>
-			{:else}<tr><td colspan="12">No studies found.</td></tr>{/each}
+			{:else}<tr><td colspan="11">No studies found.</td></tr>{/each}
 		</tbody>
 	</table>
 </div>

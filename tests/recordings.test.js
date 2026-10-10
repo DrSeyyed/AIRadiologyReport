@@ -24,6 +24,9 @@ function fixture(t) {
 	db.exec(
 		"INSERT INTO modalities VALUES(1,'MR','MRI'),(2,'CT','CT'); INSERT INTO exam_types VALUES(1,'BRAIN_WC','Brain with contrast'),(2,'KNEE_WO','Knee without contrast'); INSERT INTO users(id,full_name,role) VALUES(1,'Admin','admin'),(2,'Resident','resident'),(3,'Attending','attending'); INSERT INTO report_templates(modality_id,exam_type_id,text) VALUES(1,1,'Brain template'),(1,2,'Knee template');"
 	);
+	db.exec(
+		"UPDATE users SET telegram_user_id = '200' WHERE id = 2; INSERT INTO telegram_registrations(telegram_user_id,full_name,role,username,step,user_id) VALUES('200','Resident','resident','resident','approved',2);"
+	);
 	const directory = mkdtempSync(join(tmpdir(), 'radiology-recordings-'));
 	const studyId = insertStudy(db, {
 		patient_code: '001',
@@ -128,6 +131,7 @@ test('multiple recordings append without overwriting and start without guessed e
 		second = appendRecording(db, studyId, audio);
 	assert.notEqual(first.id, second.id);
 	assert.equal(first.modality_id, null);
+	assert.equal(first.corresponding_resident_id, null);
 	assert.equal(second.exam_type_id, null);
 	assert.equal(getStudyDetail(db, studyId).recording_count, 2);
 	assert.throws(() => appendRecording(db, 999, audio), /Study not found/);
@@ -176,7 +180,11 @@ test('combined processing makes no model calls until examination, audio and temp
 	const recording = appendRecording(db, studyId, audio);
 	const never = async () => assert.fail('Model must not be called');
 	await assert.rejects(processRecording(db, studyId, recording.id, never), /Select and save/);
-	configureRecording(db, studyId, recording.id, { modality_id: 2, exam_type_id: 2 });
+	configureRecording(db, studyId, recording.id, {
+		modality_id: 2,
+		exam_type_id: 2,
+		corresponding_resident_id: 2
+	});
 	await assert.rejects(processRecording(db, studyId, recording.id, never), /No report template/);
 	configureRecording(db, studyId, recording.id, { modality_id: 1 });
 	db.prepare('UPDATE study_recordings SET audio_report_path = ? WHERE id = ?').run(
@@ -190,10 +198,15 @@ test('independent reports use each selected template, examination and shared stu
 	const { db, studyId, audio, directory } = fixture(t);
 	const first = appendRecording(db, studyId, audio),
 		second = appendRecording(db, studyId, audio);
-	configureRecording(db, studyId, first.id, { modality_id: 1, exam_type_id: 1 });
+	configureRecording(db, studyId, first.id, {
+		modality_id: 1,
+		exam_type_id: 1,
+		corresponding_resident_id: 2
+	});
 	configureRecording(db, studyId, second.id, {
 		modality_id: 1,
 		exam_type_id: 2,
+		corresponding_resident_id: 2,
 		exam_details: 'Right'
 	});
 	const generate = async (recording, template) => {
@@ -213,7 +226,11 @@ test('independent reports use each selected template, examination and shared stu
 test('processing locks block simultaneous generation/configuration and clear after failed calls', async (t) => {
 	const { db, studyId, audio, directory } = fixture(t);
 	const recording = appendRecording(db, studyId, audio);
-	configureRecording(db, studyId, recording.id, { modality_id: 1, exam_type_id: 1 });
+	configureRecording(db, studyId, recording.id, {
+		modality_id: 1,
+		exam_type_id: 1,
+		corresponding_resident_id: 2
+	});
 	await assert.rejects(
 		processRecording(
 			db,
@@ -243,12 +260,12 @@ test('processing locks block simultaneous generation/configuration and clear aft
 
 test('signatures enforce assignment and order, and never affect another recording', (t) => {
 	const { db, studyId, audio, directory } = fixture(t);
-	const first = appendRecording(db, studyId, audio),
-		second = appendRecording(db, studyId, audio);
+	const first = appendRecording(db, studyId, audio, { senderUserId: 2 }),
+		second = appendRecording(db, studyId, audio, { senderUserId: 2 });
 	saveRecordingReport(db, first.id, 'Report', directory);
 	assert.throws(
 		() => signRecording(db, studyId, first.id, { id: 4, role: 'resident' }, 'resident', true),
-		/corresponding reviewer/
+		/assigned resident/
 	);
 	assert.throws(
 		() => signRecording(db, studyId, first.id, attending, 'attending', true),
@@ -278,6 +295,7 @@ test('Telegram reply retries are idempotent and multiple voices append without a
 	const { db, studyId, directory } = fixture(t);
 	db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run('42', studyId);
 	const message = {
+		from: { id: 200 },
 		chat: { id: -1 },
 		message_id: 43,
 		reply_to_message: { message_id: 42 },
@@ -302,6 +320,14 @@ test('Telegram reply retries are idempotent and multiple voices append without a
 	assert.equal(study.recordings.length, 2);
 	assert.equal(study.report_count, 0);
 	assert.ok(study.recordings.every((r) => r.exam_type_id === null));
+	assert.ok(
+		study.recordings.every(
+			(r) =>
+				r.source === 'telegram' &&
+				r.corresponding_resident_id === 2 &&
+				r.resident_assignment_locked === 1
+		)
+	);
 	assert.notEqual(study.recordings[0].audio_report_path, study.recordings[1].audio_report_path);
 	assert.equal(notices, 2);
 	db.prepare('UPDATE pending_voice SET done = 0 WHERE id = 1').run();
@@ -310,12 +336,13 @@ test('Telegram reply retries are idempotent and multiple voices append without a
 	assert.equal(await processVoiceJob(db, download, notify, directory, 0), false);
 });
 
-test('Telegram download failures retry without creating empty recordings', async (t) => {
+test('Telegram download failures retry without empty recordings, including legacy decimal message IDs', async (t) => {
 	const { db, studyId, directory } = fixture(t);
-	db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run('42', studyId);
+	db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run('42.0', studyId);
 	queueVoiceReply(
 		db,
 		{
+			from: { id: 200 },
 			chat: { id: -1 },
 			message_id: 43,
 			reply_to_message: { message_id: 42 },
@@ -362,4 +389,201 @@ test('study deletion cascades recordings/queues but never deletes uploaded files
 	db.prepare('DELETE FROM studies WHERE id = ?').run(studyId);
 	assert.equal(db.prepare('SELECT count(*) AS n FROM study_recordings').get().n, 0);
 	assert.ok(existsSync(audio));
+});
+
+test('Telegram resident assignment is locked; browser resident and attending recordings allow site assignment', (t) => {
+	const { db, studyId, audio } = fixture(t);
+	db.exec(
+		"INSERT INTO users(id,full_name,role) VALUES(4,'Other Resident','resident'),(5,'Other Attending','attending');"
+	);
+	const telegram = appendRecording(db, studyId, audio, { senderUserId: 2, source: 'telegram' });
+	assert.equal(telegram.corresponding_resident_id, 2);
+	assert.equal(telegram.resident_assignment_locked, 1);
+	assert.equal(telegram.sender_fullname, 'Resident');
+	assert.throws(
+		() => configureRecording(db, studyId, telegram.id, { corresponding_resident_id: 4 }),
+		/remain assigned/
+	);
+	assert.throws(
+		() => configureRecording(db, studyId, telegram.id, { corresponding_resident_id: null }),
+		/remain assigned/
+	);
+	const browser = appendRecording(db, studyId, audio, { senderUserId: 2 });
+	assert.equal(browser.resident_assignment_locked, 0);
+	configureRecording(db, studyId, browser.id, { corresponding_resident_id: 4 });
+	const attendingVoice = appendRecording(db, studyId, audio, {
+		senderUserId: 5,
+		source: 'telegram'
+	});
+	assert.equal(attendingVoice.corresponding_resident_id, null);
+	configureRecording(db, studyId, attendingVoice.id, { corresponding_resident_id: 4 });
+	assert.equal(getStudyDetail(db, studyId).corresponding_attending_id, 3);
+	assert.throws(
+		() => configureRecording(db, studyId, attendingVoice.id, { corresponding_resident_id: 3 }),
+		/valid resident/
+	);
+	db.prepare('DELETE FROM users WHERE id = 2').run();
+	const orphan = getRecording(db, studyId, telegram.id);
+	assert.equal(orphan.resident_assignment_locked, 0);
+	configureRecording(db, studyId, telegram.id, { corresponding_resident_id: 4 });
+});
+
+test('each resident signs only their own recording; corresponding attending/admin overrides record the actual signer', (t) => {
+	const { db, studyId, audio, directory } = fixture(t);
+	db.exec(
+		"INSERT INTO users(id,full_name,role) VALUES(4,'Other Resident','resident'),(5,'Other Attending','attending');"
+	);
+	const first = appendRecording(db, studyId, audio, { senderUserId: 2 }),
+		second = appendRecording(db, studyId, audio, { senderUserId: 4 });
+	saveRecordingReport(db, first.id, 'First', directory);
+	saveRecordingReport(db, second.id, 'Second', directory);
+	assert.throws(
+		() => signRecording(db, studyId, second.id, resident, 'resident', true),
+		/assigned resident/
+	);
+	assert.throws(
+		() => signRecording(db, studyId, first.id, { id: 5, role: 'attending' }, 'resident', true),
+		/assigned resident/
+	);
+	assert.throws(
+		() => signRecording(db, studyId, first.id, admin, 'attending', true),
+		/Resident must sign/
+	);
+	const signed = signRecording(db, studyId, first.id, attending, 'resident', true);
+	assert.equal(signed.resident_signed_by_user_id, 3);
+	assert.equal(signed.resident_signer_fullname, 'Attending');
+	assert.ok(signed.resident_signed_at);
+	assert.equal(signed.resident_fullname, 'Resident');
+	signRecording(db, studyId, first.id, admin, 'resident', true);
+	assert.equal(getRecording(db, studyId, first.id).resident_signed_by_user_id, 3);
+	const final = signRecording(db, studyId, first.id, admin, 'attending', true);
+	assert.equal(final.attending_signed_by_user_id, 1);
+	assert.equal(final.attending_signer_fullname, 'Admin');
+	assert.ok(final.attending_signed_at);
+	assert.throws(
+		() => signRecording(db, studyId, first.id, attending, 'resident', false),
+		/Cannot unsign/
+	);
+	const reset = signRecording(db, studyId, first.id, admin, 'resident', false);
+	for (const field of [
+		'resident_signed_by_user_id',
+		'attending_signed_by_user_id',
+		'resident_signed_at',
+		'attending_signed_at'
+	])
+		assert.equal(reset[field], null);
+	signRecording(db, studyId, second.id, { id: 4, role: 'resident' }, 'resident', true);
+	assert.equal(getRecording(db, studyId, second.id).resident_signed_by_user_id, 4);
+});
+
+test('generation requires recording resident and study attending before any model call; reassignment invalidates only its report', async (t) => {
+	const { db, studyId, audio, directory } = fixture(t);
+	const first = appendRecording(db, studyId, audio),
+		second = appendRecording(db, studyId, audio);
+	const never = async () => assert.fail('No provider calls');
+	configureRecording(db, studyId, first.id, { modality_id: 1, exam_type_id: 1 });
+	await assert.rejects(
+		processRecording(db, studyId, first.id, never, directory),
+		/resident for this recording/
+	);
+	configureRecording(db, studyId, first.id, { corresponding_resident_id: 2 });
+	db.prepare('UPDATE studies SET corresponding_attending_id=NULL WHERE id=?').run(studyId);
+	await assert.rejects(
+		processRecording(db, studyId, first.id, never, directory),
+		/corresponding attending/
+	);
+	db.prepare('UPDATE studies SET corresponding_attending_id=3 WHERE id=?').run(studyId);
+	saveRecordingReport(db, first.id, 'First', directory);
+	saveRecordingReport(db, second.id, 'Second', directory);
+	configureRecording(db, studyId, first.id, { corresponding_resident_id: null });
+	assert.equal(getRecording(db, studyId, first.id).text_report_path, null);
+	assert.ok(getRecording(db, studyId, second.id).text_report_path);
+});
+
+test('voice queue rejects unapproved/anonymous senders and drops newly authenticated jobs if sender is removed', async (t) => {
+	const { db, studyId, directory } = fixture(t);
+	db.prepare('UPDATE studies SET telegram_message_id=? WHERE id=?').run('42', studyId);
+	const message = {
+		chat: { id: -1 },
+		message_id: 43,
+		reply_to_message: { message_id: 42 },
+		voice: { file_id: 'synthetic' }
+	};
+	for (const change of [
+		{},
+		{ from: { id: 201 } },
+		{ from: { id: 200, is_bot: true } },
+		{ from: { id: 200 }, sender_chat: { id: -1 } }
+	])
+		assert.equal(queueVoiceReply(db, { ...message, ...change }, 0), false);
+	assert.equal(queueVoiceReply(db, { ...message, from: { id: 200 } }, 0), true);
+	const job = db.prepare('SELECT * FROM pending_voice').get();
+	assert.equal(job.sender_user_id, 2);
+	assert.equal(job.sender_role, 'resident');
+	db.prepare('DELETE FROM users WHERE id=2').run();
+	await processVoiceJob(
+		db,
+		async () => assert.fail('No download'),
+		async () => assert.fail('No notify'),
+		directory,
+		0
+	);
+	assert.equal(db.prepare('SELECT done FROM pending_voice').get().done, 1);
+	assert.equal(getStudyDetail(db, studyId).recording_count, 0);
+});
+
+test('pre-registration anonymous voice jobs remain processable as legacy recordings', async (t) => {
+	const { db, studyId, directory } = fixture(t);
+	db.prepare(
+		'INSERT INTO pending_voice(study_id,chat_id,reply_message_id,file_id,process_at) VALUES(?,?,?,?,?)'
+	).run(studyId, 'test', 42, 'legacy_file', 0);
+	await processVoiceJob(
+		db,
+		async (_, path) => {
+			writeFileSync(path, 'Synthetic legacy voice');
+			return path;
+		},
+		async () => {},
+		directory,
+		0
+	);
+	const recording = getStudyDetail(db, studyId).recordings[0];
+	assert.equal(recording.source, 'legacy');
+	assert.equal(recording.sender_user_id, null);
+	assert.equal(recording.sender_role, null);
+	assert.ok(existsSync(recording.audio_report_path));
+	assert.equal(db.prepare('SELECT done FROM pending_voice').get().done, 1);
+});
+
+test('pre-registration recordings migrate resident assignment once, retain signatures and never invent signer identity', (t) => {
+	const { db, studyId, audio, directory } = fixture(t);
+	const recording = appendRecording(db, studyId, audio, { senderUserId: 2 });
+	saveRecordingReport(db, recording.id, 'Existing', directory);
+	signRecording(db, studyId, recording.id, resident, 'resident', true);
+	for (const field of [
+		'corresponding_resident_id',
+		'sender_user_id',
+		'sender_role',
+		'source',
+		'resident_signed_by_user_id',
+		'attending_signed_by_user_id',
+		'resident_signed_at',
+		'attending_signed_at'
+	])
+		db.exec(`ALTER TABLE study_recordings DROP COLUMN ${field}`);
+	initializeSchema(db, schema);
+	let migrated = getRecording(db, studyId, recording.id);
+	assert.equal(migrated.corresponding_resident_id, 2);
+	assert.equal(migrated.source, 'legacy');
+	assert.equal(migrated.resident_checked, 1);
+	assert.equal(migrated.resident_signed_by_user_id, null);
+	assert.equal(readFileSync(migrated.text_report_path, 'utf8'), 'Existing');
+	db.prepare('UPDATE study_recordings SET corresponding_resident_id=NULL WHERE id=?').run(
+		recording.id
+	);
+	initializeSchema(db, schema);
+	migrated = getRecording(db, studyId, recording.id);
+	assert.equal(migrated.corresponding_resident_id, null);
+	assert.equal(migrated.resident_checked, 1);
+	assert.deepEqual(db.pragma('foreign_key_check'), []);
 });

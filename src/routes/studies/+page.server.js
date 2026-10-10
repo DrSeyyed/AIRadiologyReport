@@ -1,5 +1,5 @@
 // +page.server.ts
-import { redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 
 export async function load({ locals, fetch, url }) {
   if (!locals.user) throw redirect(302, '/login');
@@ -36,20 +36,20 @@ export async function load({ locals, fetch, url }) {
   qs.set('orderdir', orderdir);
 
   // Fetch reference data & studies in parallel
-  const [modsRes, typesRes, usersRes, studiesRes] = await Promise.all([
+  const responses = await Promise.all([
     fetch('/api/modalities'),
     fetch('/api/exam-types'),
-    fetch('/api/users'),
+    fetch('/api/users?role=resident'),
+    fetch('/api/users?role=attending'),
     fetch(`/api/studies?${qs.toString()}`)
   ]);
-
-  // NOTE: only 4 fetches → only 4 destructured values
-  const [modalities, exam_types, users, studiesPayload] = await Promise.all([
-    modsRes.json(),
-    typesRes.json(),
-    usersRes.json(),
-    studiesRes.json()
-  ]);
+  for (const response of responses) {
+    if (!response.ok) throw error(response.status, 'Unable to load studies or reference data');
+  }
+  const [modalities, exam_types, residents, attendings, studiesPayload] = await Promise.all(
+    responses.map((response) => response.json())
+  );
+  const users = [...residents, ...attendings];
 
   // studiesPayload shape: { total, page, rowcount, rows }
   const { total, rows: studies } = studiesPayload;
@@ -78,6 +78,7 @@ export async function load({ locals, fetch, url }) {
     modalities,
     exam_types,
     users,
+    residents,
     studies // <- array of rows
   };
 }

@@ -15,6 +15,10 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 	db.pragma('foreign_keys = OFF');
 	try {
 		db.transaction(() => {
+			const previousRecordingColumns = db
+				.prepare('PRAGMA table_info(study_recordings)')
+				.all()
+				.map((column) => column.name);
 			if (legacy) {
 				db.exec(`
 					DROP TRIGGER IF EXISTS trg_studies_ai_set_age;
@@ -71,6 +75,48 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 			} else {
 				db.exec(schema);
 			}
+			function addColumn(table, name, definition) {
+				if (
+					!db
+						.prepare(`PRAGMA table_info(${table})`)
+						.all()
+						.some((column) => column.name === name)
+				)
+					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+			}
+			addColumn('users', 'telegram_user_id', 'TEXT');
+			db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id)');
+			for (const [name, definition] of [
+				['corresponding_resident_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+				['sender_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+				['sender_role', "TEXT CHECK (sender_role IN ('resident','attending','admin','typist'))"],
+				[
+					'source',
+					"TEXT NOT NULL DEFAULT 'legacy' CHECK (source IN ('browser','telegram','legacy'))"
+				],
+				['resident_signed_by_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+				['attending_signed_by_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+				['resident_signed_at', 'TEXT'],
+				['attending_signed_at', 'TEXT']
+			])
+				addColumn('study_recordings', name, definition);
+			if (
+				!previousRecordingColumns.includes('corresponding_resident_id') &&
+				(previousRecordingColumns.length || migrateRecordings)
+			)
+				db.exec(
+					"UPDATE study_recordings SET corresponding_resident_id = (SELECT corresponding_resident_id FROM studies WHERE studies.id = study_recordings.study_id), source = 'legacy'"
+				);
+			addColumn(
+				'pending_voice',
+				'sender_user_id',
+				'INTEGER REFERENCES users(id) ON DELETE SET NULL'
+			);
+			addColumn(
+				'pending_voice',
+				'sender_role',
+				"TEXT CHECK (sender_role IN ('resident','attending'))"
+			);
 			db.exec(
 				'DROP TABLE IF EXISTS study_import_components; DROP TABLE IF EXISTS study_import_mappings;'
 			);

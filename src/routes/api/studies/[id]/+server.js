@@ -29,6 +29,18 @@ export async function PATCH({ params, request, locals }) {
 		);
 		if (!Object.keys(changes).length) return json({ error: 'Nothing to update' }, { status: 400 });
 		const payload = normalizeStudyInput(db, { ...current, ...changes });
+		if (
+			payload.corresponding_attending_id !== current.corresponding_attending_id &&
+			current.recordings.some(
+				(recording) => recording.resident_checked || recording.attending_checked
+			)
+		)
+			return json(
+				{ error: 'Unsign all reports before changing the study attending.' },
+				{ status: 409 }
+			);
+		if ('corresponding_attending_id' in changes && !payload.corresponding_attending_id)
+			return json({ error: 'Select an attending for the study.' }, { status: 400 });
 		db.prepare(
 			'UPDATE studies SET ' +
 				studyFields.map((field) => field + ' = @' + field).join(', ') +

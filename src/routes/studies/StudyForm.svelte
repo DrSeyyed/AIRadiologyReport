@@ -13,7 +13,6 @@
 		patient_gender: study?.patient_gender ?? 'unknown',
 		patient_age: study?.patient_age ?? '',
 		patient_age_unit: study?.patient_age_unit ?? 'Y',
-		corresponding_resident_id: study?.corresponding_resident_id ?? '',
 		corresponding_attending_id: study?.corresponding_attending_id ?? '',
 		dicom_url: study?.dicom_url ?? '',
 		description: study?.description ?? ''
@@ -44,6 +43,10 @@
 			errorMsg = 'At least one patient name is required.';
 			return;
 		}
+		if (!form.corresponding_attending_id) {
+			errorMsg = 'Select the study attending before saving.';
+			return;
+		}
 		const age = optionalNumber(form.patient_age);
 		if (age !== null && (!Number.isSafeInteger(age) || age < 0)) {
 			errorMsg = 'Age must be a whole number greater than or equal to 0.';
@@ -59,7 +62,6 @@
 				patient_age: age,
 				modality_id: optionalNumber(form.modality_id),
 				exam_time: form.exam_time || $time,
-				corresponding_resident_id: optionalNumber(form.corresponding_resident_id),
 				corresponding_attending_id: optionalNumber(form.corresponding_attending_id),
 				dicom_url: form.dicom_url || null,
 				description: form.description || null
@@ -186,26 +188,19 @@
 
 			<p class="text-sm opacity-70">Select examination, contrast and optional details separately for each audio recording, not for the study.</p>
 
-			<!-- Staff (numeric coercion) -->
-			<label class="form-control">
-				<div class="label"><span class="label-text">Resident</span></div>
-				<select class="select-bordered select w-full" bind:value={form.corresponding_resident_id}>
-					<option value="">(none)</option>
-					{#each data.users.filter((u) => u.role === 'resident') as u (u.id)}
-						<option value={u.id}>{u.full_name}</option>
-					{/each}
-				</select>
-			</label>
+			<p class="text-sm opacity-70">Residents are assigned to individual recordings, not to the study. Only approved Telegram accounts appear in staff selectors.</p>
 
 			<label class="form-control">
-				<div class="label"><span class="label-text">Attending</span></div>
-				<select class="select-bordered select w-full" bind:value={form.corresponding_attending_id}>
-					<option value="">(none)</option>
+				<div class="label"><span class="label-text">Study attending (required)</span></div>
+				<select class="select-bordered select w-full" bind:value={form.corresponding_attending_id} required>
+					<option value="">Select attending</option>
 					{#each data.users.filter((u) => u.role === 'attending') as u (u.id)}
 						<option value={u.id}>{u.full_name}</option>
 					{/each}
 				</select>
 			</label>
+
+			{#if study}<p class="text-sm opacity-70">The attending cannot be changed while any recording is signed or processing. Unsign recordings and wait for processing to finish first.</p>{/if}
 
 			<!-- Optional fields -->
 			<label class="form-control md:col-span-2">

@@ -4,7 +4,7 @@
 	import RecordingCard from './RecordingCard.svelte';
 	import ReportModal from './ReportModal.svelte';
 
-	let { study, data, onClose } = $props();
+	let { study, data, onClose, onEditStudy } = $props();
 	let detail = $state(null);
 	let loading = $state(true);
 	let busy = $state(false);
@@ -125,7 +125,7 @@
 		<h3 id="recordings-title" class="text-lg font-bold">Recordings & reports — Study #{study.id}</h3>
 		<p>{study.patient_code} — {study.patient_firstname} {study.patient_lastname}</p>
 		<p class="text-sm">Source modality: {detail?.source_modality || detail?.modality_code || study.modality_code || 'Not specified'}<br />Source description (reference only): {detail?.source_description || detail?.description || study.source_description || study.description || 'Not specified'}</p>
-		<p class="text-sm">Each upload or Telegram audio reply adds an independent recording. Configure and generate its report here.</p>
+		<p class="text-sm">Each upload or Telegram audio reply adds an independent recording. Assign its resident, configure and generate its report here. Study attending: {detail?.attending_fullname || study.attending_fullname || 'Not assigned'}.</p>
 		<div class="flex flex-wrap items-center gap-3">
 			<label class="form-control">
 				<span class="label-text">Append audio recording</span>
@@ -145,12 +145,12 @@
 		{#if loading}<p>Loading recordings…</p>
 		{:else if detail}
 			{#each detail.recordings ?? [] as item (item.id)}
-				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} user={data.user} onChanged={changed} onReport={(item) => (report = item)} />
+				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} residents={data.residents} user={data.user} onChanged={changed} onReport={(item) => (report = item)} onEditStudy={busy || recordingAudio ? undefined : () => onEditStudy(detail)} />
 			{:else}<p>No recordings yet. Upload audio or record with the microphone.</p>{/each}
 		{/if}
 		<div class="modal-action"><button class="btn" disabled={busy || recordingAudio} onclick={onClose}>Close</button></div>
 	</div>
 </div>
 {#if report}
-	<ReportModal {study} recording={detail?.recordings?.find((item) => item.id === report.id) ?? report} initialText={report.__initialText ?? ''} onSaved={changed} onClose={() => (report = null)} />
+	<ReportModal study={detail ?? study} recording={detail?.recordings?.find((item) => item.id === report.id) ?? report} initialText={report.__initialText ?? ''} onSaved={changed} onClose={() => (report = null)} />
 {/if}

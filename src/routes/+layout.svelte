@@ -1,6 +1,7 @@
 <script>
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { resolve } from '$app/paths';
 	import { goto, invalidateAll} from '$app/navigation';
 
 	let { data, children } = $props();
@@ -43,6 +44,7 @@
         {#if data?.user?.role === 'admin'}
           <div class="divider p-3">Admin</div>
           <a href="/admin/users" class="link link-primary p-3">Users</a>
+          <a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a>
           <a href="/admin/templates" class="link link-primary p-3">Templates</a>
         {/if}
       </ul>

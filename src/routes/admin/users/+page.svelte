@@ -1,11 +1,12 @@
 <script>
   import { invalidateAll } from '$app/navigation';
+  import { resolve } from '$app/paths';
   let { data } = $props();
 
   // form state
   const form = $state({
     full_name: '',
-    role: 'resident', // resident | attending | admin
+    role: 'typist',
     email: '',
     username: '',
     password: ''
@@ -45,7 +46,7 @@
 
       // clear form
       form.full_name = '';
-      form.role = 'resident';
+      form.role = 'typist';
       form.email = '';
       form.username = '';
       form.password = '';
@@ -63,8 +64,10 @@
 <section class="space-y-6">
   <div class="flex items-center justify-between">
     <h2 class="text-2xl font-semibold">User Management</h2>
-    <a href="/studies" class="text-sm underline">Back to Studies</a>
+    <a href={resolve('/studies')} class="text-sm underline">Back to Studies</a>
   </div>
+
+  <p class="text-sm">Manual creation is limited to typists and administrators. Residents and attendings privately register with the Telegram bot, providing their full name, role, website username and password. Administrator approval creates their website account automatically. <a class="link" href={resolve('/admin/telegram-registrations')}>Review Telegram registrations</a>.</p>
 
   <!-- Add form -->
   <form class="grid gap-4 md:grid-cols-2 border rounded p-4" onsubmit={(e) => createUser(e)}>
@@ -83,8 +86,7 @@
     <label class="text-sm">
       <div class="mb-1">Role</div>
       <select class="border rounded px-2 py-1 w-full" bind:value={form.role} required>
-        <option value="resident">Resident</option>
-        <option value="attending">Attending</option>
+        <option value="typist">Typist</option>
         <option value="admin">Admin</option>
       </select>
     </label>
@@ -110,7 +112,7 @@
         {#if loading}Creating...{:else}Create user{/if}
       </button>
       <button class="border rounded px-3 py-2" type="button"
-              onclick={() => { form.full_name=''; form.role='resident'; form.email=''; form.username=''; form.password=''; }}>
+              onclick={() => { form.full_name=''; form.role='typist'; form.email=''; form.username=''; form.password=''; }}>
         Reset
       </button>
     </div>
@@ -128,7 +130,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each data.users as u}
+        {#each data.users as u (u.id)}
           <tr class="border-t">
             <td class="p-2">{u.full_name}</td>
             <td class="p-2">{u.role}</td>

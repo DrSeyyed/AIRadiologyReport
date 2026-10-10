@@ -5,7 +5,8 @@ CREATE TABLE
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('typist', 'resident', 'attending', 'admin')),
-    email TEXT
+    email TEXT,
+    telegram_user_id TEXT UNIQUE
   );
 
 
@@ -79,6 +80,14 @@ CREATE TABLE IF NOT EXISTS study_recordings (
   processing INTEGER NOT NULL DEFAULT 0 CHECK (processing IN (0, 1)),
   processing_started_at INTEGER,
   telegram_voice_job_id INTEGER UNIQUE,
+  corresponding_resident_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sender_role TEXT CHECK (sender_role IN ('resident', 'attending', 'admin', 'typist')),
+  source TEXT NOT NULL DEFAULT 'browser' CHECK (source IN ('browser', 'telegram', 'legacy')),
+  resident_signed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  attending_signed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  resident_signed_at TEXT,
+  attending_signed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_study ON study_recordings(study_id);
@@ -102,6 +111,8 @@ CREATE TABLE IF NOT EXISTS pending_voice (
   chat_id TEXT NOT NULL,
   reply_message_id INTEGER NOT NULL,
   file_id TEXT NOT NULL,
+  sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sender_role TEXT CHECK (sender_role IN ('resident', 'attending')),
   process_at INTEGER NOT NULL,     -- unix epoch seconds when it’s due
   done INTEGER NOT NULL DEFAULT 0
 );
@@ -111,3 +122,20 @@ CREATE TABLE IF NOT EXISTS pending_telegram (
   attempts INTEGER NOT NULL DEFAULT 0,
   retry_at INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS telegram_registrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  telegram_user_id TEXT NOT NULL UNIQUE,
+  telegram_username TEXT,
+  full_name TEXT NOT NULL DEFAULT '',
+  role TEXT CHECK (role IN ('resident', 'attending')),
+  username TEXT COLLATE NOCASE,
+  password_hash TEXT,
+  step TEXT NOT NULL DEFAULT 'name' CHECK (step IN ('name', 'role', 'username', 'password', 'pending', 'approved', 'rejected')),
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  last_message_id INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registration_username ON telegram_registrations(username)
+  WHERE step IN ('password', 'pending');

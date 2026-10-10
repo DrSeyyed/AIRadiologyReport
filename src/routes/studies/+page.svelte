@@ -23,7 +23,7 @@
 	{/if}
 	{#if recordingsForStudy}
 		{#key recordingsForStudy.id}
-			<RecordingsModal study={recordingsForStudy} {data} onClose={() => (recordingsForStudy = null)} />
+			<RecordingsModal study={recordingsForStudy} {data} onClose={() => (recordingsForStudy = null)} onEditStudy={(study) => { recordingsForStudy = null; showEditModal = study; }} />
 		{/key}
 	{/if}
 </section>

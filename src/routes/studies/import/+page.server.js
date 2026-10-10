@@ -1,14 +1,9 @@
 import { error, redirect } from '@sveltejs/kit';
-import { getDb } from '$lib/server/db';
 
-export function load({ locals }) {
+export async function load({ locals, fetch }) {
 	if (!locals.user) throw redirect(302, '/login');
 	if (locals.user.role !== 'admin') throw error(403, 'Administrator access required');
-	return {
-		users: getDb()
-			.prepare(
-				"SELECT id, full_name, role FROM users WHERE role IN ('resident', 'attending') ORDER BY full_name"
-			)
-			.all()
-	};
+	const response = await fetch('/api/users?role=attending');
+	if (!response.ok) throw error(response.status, 'Unable to load approved attendings');
+	return { users: await response.json() };
 }

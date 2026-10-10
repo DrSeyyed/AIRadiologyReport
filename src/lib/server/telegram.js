@@ -30,6 +30,7 @@ async function tgRequest(endpoint, payload) {
 	const API_BASE = `https://api.telegram.org/bot${getToken()}`;
 	const res = await fetch(`${API_BASE}/${endpoint}`, {
 		method: 'POST',
+		signal: AbortSignal.timeout(15000),
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(payload)
 	});
@@ -84,7 +85,7 @@ export function buildStudyMessage(study) {
 	if (study.description && study.description !== study.source_description)
 		lines.push(`Note: ${esc(study.description.slice(0, 300))}`);
 
-	lines.push(`Resident: ${esc(study.resident_fullname ?? '-')}`);
+	lines.push('Resident: assigned separately for each recording');
 	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
 
 	const recordings = study.recordings || [];
@@ -102,12 +103,12 @@ export function buildStudyMessage(study) {
 						.slice(0, 150)
 				: 'Awaiting examination selection on site';
 		lines.push(
-			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'}`
+			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || 'select on site')}`
 		);
 	}
 	if (recordings.length > 5) lines.push(`… ${recordings.length - 5} more recordings on site`);
 	lines.push(
-		'<i>Reply to this study message with voice/audio to add a recording. Each reply adds a separate recording; nothing is overwritten. Select examination details on the site, then Transcribe &amp; Generate.</i>'
+		'<i>Register privately with this bot using /register and wait for administrator approval. Reply to this study message with voice/audio to add a recording. Resident replies stay assigned to that resident; attending replies require a resident selected on the site. The study attending stays unchanged. Save reviewers and examination details on the site, then Transcribe &amp; Generate.</i>'
 	);
 
 	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
@@ -126,8 +127,10 @@ export function buildFinalReportMessage(study, recording, reportText) {
 		`Study #${esc(study.id)} — Recording #${esc(recording.id)}`,
 		esc(label),
 		`Patient: <b>${esc(`${study.patient_firstname || ''} ${study.patient_lastname || ''}`.trim().slice(0, 120))}</b> (code ${esc((study.patient_code || '').slice(0, 64))})`,
-		`Resident: ${esc((study.resident_fullname || '-').slice(0, 60))}`,
-		`Attending: ${esc((study.attending_fullname || '-').slice(0, 60))}`,
+		`Assigned resident: ${esc((recording.resident_fullname || '-').slice(0, 60))}`,
+		`Study attending: ${esc((study.attending_fullname || '-').slice(0, 60))}`,
+		`Resident signature by: ${esc((recording.resident_signer_fullname || 'Unknown (legacy)').slice(0, 60))}`,
+		`Attending signature by: ${esc((recording.attending_signer_fullname || 'Unknown (legacy)').slice(0, 60))}`,
 		`Date/Time: ${esc(study.exam_date_jalali)} ${esc(study.exam_time)}`
 	].join('\n');
 	const footer = '\n<i>Full report available on the site.</i>';
@@ -142,6 +145,14 @@ export function buildFinalReportMessage(study, recording, reportText) {
 }
 
 // ---------- message send/edit/delete ----------
+
+export async function sendBotMessage(chat_id, text, reply_to_message_id) {
+	return tgRequest('sendMessage', {
+		chat_id,
+		text,
+		...(reply_to_message_id ? { reply_parameters: { message_id: reply_to_message_id } } : {})
+	});
+}
 
 export async function sendStudyMessage(study, chat_id) {
 	chat_id = chat_id ?? getChatID();
@@ -237,7 +248,12 @@ export async function downloadFile(file_id, destPath) {
 
 export async function setWebhook(url) {
 	assert(url, 'url is required');
-	const res = await tgRequest('setWebhook', { url });
+	const secret_token = process.env.TELEGRAM_WEBHOOK_SECRET;
+	assert(
+		typeof secret_token === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(secret_token),
+		'Configure a valid TELEGRAM_WEBHOOK_SECRET before setting the webhook'
+	);
+	const res = await tgRequest('setWebhook', { url, secret_token, allowed_updates: ['message'] });
 	return !!res;
 }
 

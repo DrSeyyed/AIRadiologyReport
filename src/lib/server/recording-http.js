@@ -8,6 +8,7 @@ import {
 	configureRecording,
 	signRecording,
 	assertRecordingMutable,
+	assertRecordingReviewers,
 	recordingError
 } from './recordings.js';
 import { processRecording, saveRecordingReport } from './recording-processing.js';
@@ -49,7 +50,7 @@ export const list = handler(
 	false
 );
 
-export const upload = handler(async ({ db, studyId, request }) => {
+export const upload = handler(async ({ db, studyId, request, locals }) => {
 	const form = await request.formData();
 	const file = form.get('file');
 	if (!(file instanceof File) || !file.size) throw recordingError('Select a nonempty audio file.');
@@ -76,7 +77,10 @@ export const upload = handler(async ({ db, studyId, request }) => {
 	writeFileSync(path, Buffer.from(await file.arrayBuffer()));
 	let recording;
 	try {
-		recording = appendRecording(db, studyId, path);
+		recording = appendRecording(db, studyId, path, {
+			senderUserId: locals.user.id,
+			source: 'browser'
+		});
 	} catch (error) {
 		unlinkSync(path);
 		throw error;
@@ -174,6 +178,7 @@ export const readReport = handler(({ recording }) => {
 
 export const writeReport = handler(async ({ db, studyId, recordingId, recording, request }) => {
 	assertRecordingMutable(recording);
+	assertRecordingReviewers(db, studyId, recording);
 	if (!recording.modality_id || !recording.exam_type_id)
 		throw recordingError('Save examination details before saving a report.');
 	const body = await request.json().catch(() => null);
@@ -200,6 +205,7 @@ export const sign = handler(async ({ db, studyId, recordingId, recording, locals
 	return json({
 		ok: true,
 		resident_checked: updated.resident_checked,
-		attending_checked: updated.attending_checked
+		attending_checked: updated.attending_checked,
+		recording: updated
 	});
 });

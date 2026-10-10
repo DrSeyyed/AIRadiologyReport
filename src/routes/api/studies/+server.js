@@ -124,14 +124,17 @@ export async function POST({ request, locals }) {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
 	try {
 		const db = getDb();
-		const studyId = insertStudy(db, await request.json());
+		const input = await request.json();
+		if (!input?.corresponding_attending_id)
+			return json({ error: 'Select an attending for the study.' }, { status: 400 });
+		const studyId = insertStudy(db, { ...input, corresponding_resident_id: null });
 		const detail = getStudyDetail(db, studyId);
 		let notification_warning = null;
 		if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
 			try {
 				const result = await sendStudyMessage(detail);
 				db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run(
-					result.message_id,
+					String(result.message_id),
 					studyId
 				);
 				detail.telegram_message_id = String(result.message_id);

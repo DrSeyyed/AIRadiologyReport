@@ -1,7 +1,12 @@
 import { existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { getRecording, assertRecordingMutable, recordingError } from './recordings.js';
+import {
+	getRecording,
+	assertRecordingMutable,
+	assertRecordingReviewers,
+	recordingError
+} from './recordings.js';
 import { getStudyDetail } from './studies.js';
 import { generateRecordingReport } from './recording-generation.js';
 
@@ -14,7 +19,7 @@ export function saveRecordingReport(db, recordingId, text, directory = 'uploads/
 		renameSync(temporary, path);
 		const result = db
 			.prepare(
-				'UPDATE study_recordings SET text_report_path = ?, resident_checked = 0, attending_checked = 0 WHERE id = ?'
+				'UPDATE study_recordings SET text_report_path = ?, resident_checked = 0, attending_checked = 0, resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, resident_signed_at = NULL, attending_signed_at = NULL WHERE id = ?'
 			)
 			.run(path, recordingId);
 		if (!result.changes) throw recordingError('Recording no longer exists', 404);
@@ -35,6 +40,7 @@ export async function processRecording(
 ) {
 	const recording = getRecording(db, studyId, recordingId);
 	assertRecordingMutable(recording);
+	assertRecordingReviewers(db, studyId, recording);
 	if (!recording.modality_id || !recording.exam_type_id)
 		throw recordingError(
 			'Select and save modality and examination (body part/contrast) before Transcribe & Generate.'
