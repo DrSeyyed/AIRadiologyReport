@@ -99,7 +99,7 @@
     <div class="text-sm">Role: Admin</div>
     <label class="text-sm">
       <div class="mb-1">Username</div>
-      <input class="border rounded px-2 py-1 w-full" bind:value={form.username} autocomplete="username" pattern="[a-z][a-z0-9._\-]{2,31}" minlength="3" maxlength="32" required disabled={loading} />
+      <input class="border rounded px-2 py-1 w-full" bind:value={form.username} autocomplete="username" pattern={'[a-z][a-z0-9._\\-]{2,31}'} minlength="3" maxlength="32" required disabled={loading} />
     </label>
     <label class="text-sm">
       <div class="mb-1">Password (8+ characters, at most 72 UTF-8 bytes)</div>
@@ -129,7 +129,7 @@
       </label>
       <label class="text-sm">
         <div class="mb-1">Username</div>
-        <input class="border rounded px-2 py-1 w-full" bind:value={editing.username} autocomplete="username" pattern="[a-z][a-z0-9._\-]{2,31}" minlength="3" maxlength="32" required={editing.hasCredentials} disabled={loading} />
+        <input class="border rounded px-2 py-1 w-full" bind:value={editing.username} autocomplete="username" pattern={'[a-z][a-z0-9._\\-]{2,31}'} minlength="3" maxlength="32" required={editing.hasCredentials} disabled={loading} />
       </label>
       <label class="text-sm">
         <div class="mb-1">New password (optional)</div>
