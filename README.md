@@ -74,12 +74,20 @@ Workbook processing is local to the server. Uploaded workbooks and demographic p
 
 ## Telegram registration and approval
 
-New residents and attendings register **only through the Telegram bot**, not the manual website user form. Existing website accounts are retained; Telegram audio requires an approved registration linked to the sender's Telegram identity. Administrators can still create typist/admin accounts on the website.
+New residents, attendings and typists register **only through the Telegram bot**, not the manual website user form. Existing website accounts are retained; Telegram audio requires an approved resident/attending registration linked to the sender's Telegram identity. Administrators can still create admin accounts on the website. Typists manage studies and recordings on the website; they cannot sign reports or attach Telegram audio.
 
 1. Open a private chat with the configured bot and send `/register` (or `/start`).
-2. Send your full name, then `resident` or `attending`, then a lowercase website username and a unique website password. Usernames must start with a letter and contain 3–32 letters, numbers, dots, underscores or hyphens. Passwords must contain at least 8 characters and at most 72 UTF-8 bytes. `/cancel` cancels an unapproved registration; drafts expire after 30 minutes.
-3. An administrator opens **Telegram approvals**, verifies the identity and role, then approves or rejects the request. The administrator can correct the requested resident/attending role. Only approval creates the website user and login credentials. Applicant notifications are best-effort; approval remains saved if Telegram is unavailable.
-4. After approval, sign in on the website with the chosen username/password and reply to study messages in the configured study group. Unknown, anonymous, bot or unapproved senders cannot attach audio.
+2. Send your full name, then choose **Resident**, **Attending** or **Typist** using the bot's role buttons (typed role names also work), then a lowercase website username and a unique website password. The role keyboard is removed before credentials are requested. Usernames must start with a letter and contain 3–32 letters, numbers, dots, underscores or hyphens. Passwords must contain at least 8 characters and at most 72 UTF-8 bytes. `/cancel` cancels an unapproved registration; drafts expire after 30 minutes.
+3. An administrator opens **Telegram approvals**, verifies the identity and role, then approves or rejects the request. The administrator can correct the requested resident/attending/typist role. Only approval creates the website user and login credentials. Applicant notifications are best-effort; approval remains saved if Telegram is unavailable.
+4. After approval, sign in on the website with the chosen username/password. Residents and attendings can reply to study messages in the configured study group. Unknown, anonymous, bot, typist or unapproved senders cannot attach Telegram audio.
+
+### Website account management
+
+Every signed-in user can open **Account** to change their own full name, username and password. Users cannot change their own role through this page or delete their account. **Admin → Users** provides edit and remove controls for administrators, including role changes and password resets for other users. Names are 1–100 characters; credential validation matches Telegram registration. Usernames are reserved case-insensitively across accounts and pending registrations. Password changes revoke other sessions (an administrator reset revokes all of the target user's sessions).
+
+Administrators cannot delete themselves or remove/demote the last administrator. Reassign a user's reviewer assignments before changing their role; signed/processing recordings block reviewer/signer deletion or role changes. Removing an eligible user revokes their credentials, sessions and Telegram approval, while retaining studies, recordings and uploaded files; related assignments are cleared. Deleted Telegram users can submit a new registration for approval.
+
+Email and telephone fields are no longer stored or exposed. Startup removes old contact columns while preserving user IDs, credentials, sessions, Telegram registrations and study/report references. Back up the database before upgrading; no reset is needed. Database seeding reuses the existing administrator, even after their username is changed, rather than recreating the default login.
 
 **Password privacy:** Telegram bot chats are not end-to-end encrypted. Use a unique password, never a password reused elsewhere. The bot tries to delete the password message immediately; deletion is best-effort and does not guarantee removal from Telegram's infrastructure. The application stores only a bcrypt hash, never plaintext passwords. Registration hashes are cleared after approval/rejection and never returned by administrator APIs. Do not enable request-body logging for this webhook.
 

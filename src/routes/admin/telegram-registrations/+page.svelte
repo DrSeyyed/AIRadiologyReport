@@ -15,8 +15,8 @@
 	async function review(registration, action) {
 		if (busy !== null || registration.step !== 'pending') return;
 		const role = roles[registration.id] ?? registration.role;
-		if (action === 'approve' && !['resident', 'attending'].includes(role)) {
-			error = 'Verify a resident or attending role before approval.';
+		if (action === 'approve' && !['resident', 'attending', 'typist'].includes(role)) {
+			error = 'Verify a resident, attending or typist role before approval.';
 			return;
 		}
 		if (!confirm(action === 'approve'
@@ -52,7 +52,7 @@
 		<h1 class="text-2xl font-semibold">Telegram registrations</h1>
 		<a class="btn btn-ghost" href={resolve('/admin/users')}>User management</a>
 	</div>
-	<p>Residents and attendings register privately with the Telegram bot using their full name, role and website username/password. Verify the identity and role before approving. Approval automatically creates the website account; pending and rejected applicants do not appear in staff selectors. Passwords are never displayed here.</p>
+	<p>Residents, attendings and typists register privately with the Telegram bot using their full name, role and website username/password. Verify the identity and role before approving. Approval automatically creates the website account; pending and rejected applicants do not appear in staff selectors. Passwords are never displayed here.</p>
 	{#if !data.telegramConfigured}
 		<div class="alert alert-warning" role="status">Telegram is not configured. Configure the bot before accepting private registrations or sending notifications.</div>
 	{/if}
@@ -90,6 +90,7 @@
 									<select class="select select-bordered select-sm" value={roles[registration.id] ?? registration.role} disabled={busy !== null} onchange={(event) => (roles[registration.id] = event.currentTarget.value)}>
 										<option value="resident">Resident</option>
 										<option value="attending">Attending</option>
+										<option value="typist">Typist</option>
 									</select>
 								</label>
 							{/if}

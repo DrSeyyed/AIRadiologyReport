@@ -28,10 +28,19 @@ export const POST = async ({ request }) => {
 			!(msg.voice || msg.audio)
 		)
 			return json({ ok: true });
-		if (msg.from?.is_bot || !getApprovedTelegramUser(db, msg.from?.id)) {
+		const sender = getApprovedTelegramUser(db, msg.from?.id);
+		if (msg.from?.is_bot || !sender) {
 			await sendBotMessage(
 				msg.chat.id,
 				'Audio not attached: register with this bot in a private chat using /register and wait for administrator approval.',
+				msg.message_id
+			).catch(() => {});
+			return json({ ok: true });
+		}
+		if (sender.role === 'typist') {
+			await sendBotMessage(
+				msg.chat.id,
+				'Typist accounts manage studies and uploads on the website. Only approved residents and attendings can attach Telegram audio.',
 				msg.message_id
 			).catch(() => {});
 			return json({ ok: true });

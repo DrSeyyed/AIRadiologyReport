@@ -15,7 +15,7 @@ export async function PATCH({ locals, params, request }) {
 			await sendBotMessage(
 				result.registration.telegram_user_id,
 				body.action === 'approve'
-					? `Your ${result.user.role} account is approved. Sign in on the website with username ${result.user.username} and your chosen password. Reply to study messages in the study group to attach audio.`
+					? `Your ${result.user.role} account is approved. Sign in on the website with username ${result.user.username} and your chosen password.${result.user.role === 'typist' ? ' Manage studies and recordings on the website.' : ' Reply to study messages in the study group to attach audio.'}`
 					: 'Your registration was not approved. Contact an administrator or send /register to submit corrected details.'
 			);
 		} catch {

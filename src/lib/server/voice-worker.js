@@ -15,7 +15,7 @@ export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)
 		message.from?.is_bot || message.sender_chat
 			? null
 			: getApprovedTelegramUser(db, message.from?.id);
-	if (!sender) return false;
+	if (!sender || !['resident', 'attending'].includes(sender.role)) return false;
 	return db.transaction(() => {
 		const study = db
 			.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)')

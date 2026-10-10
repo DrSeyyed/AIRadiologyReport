@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
+import { queueVoiceReply } from '../src/lib/server/voice-worker.js';
+import { sendBotMessage } from '../src/lib/server/telegram.js';
 import {
 	handleTelegramRegistration,
 	reviewTelegramRegistration,
@@ -22,7 +24,7 @@ function fixture(t) {
 	let sequence = 0;
 	const options = {
 		now: 10000,
-		send: async (id, text) => sent.push({ id, text }),
+		send: async (id, text, replyTo, markup) => sent.push({ id, text, replyTo, markup }),
 		remove: async (message, id) => removed.push({ message, id }),
 		hash: (password) => bcrypt.hash(password, 4)
 	};
@@ -217,6 +219,62 @@ test('existing website accounts migrate safely without resetting credentials or 
 		'existing-hash'
 	);
 	assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('role selection uses buttons, accepts typists and removes the keyboard before credentials', async (t) => {
+	const { send, sent, state, db } = fixture(t);
+	await send('/register');
+	await send('Synthetic Typist');
+	const buttons = sent.at(-1).markup;
+	assert.deepEqual(
+		buttons.keyboard.flat().map((button) => button.text),
+		['Resident', 'Attending', 'Typist']
+	);
+	assert.equal(buttons.resize_keyboard, true);
+	await send('admin');
+	assert.equal(state().step, 'role');
+	assert.deepEqual(sent.at(-1).markup, buttons);
+	await send('Typist');
+	assert.equal(state().role, 'typist');
+	assert.deepEqual(sent.at(-1).markup, { remove_keyboard: true });
+	await send('new_typist');
+	await send('Synthetic-password-42');
+	const result = reviewTelegramRegistration(db, state().id, { action: 'approve', role: 'typist' });
+	assert.equal(result.user.role, 'typist');
+	assert.equal(getApprovedTelegramUser(db, 200).role, 'typist');
+	await send('/start');
+	assert.match(sent.at(-1).text, /manage studies/);
+	assert.ok(!sent.at(-1).text.includes('Reply to a study'));
+	assert.equal(
+		queueVoiceReply(db, {
+			from: { id: 200 },
+			chat: { id: -1 },
+			message_id: 99,
+			voice: { file_id: 'synthetic' },
+			reply_to_message: { message_id: 1 }
+		}),
+		false
+	);
+});
+
+test('bot message requests include role keyboards without changing reply parameters', async (t) => {
+	const token = process.env.TELEGRAM_BOT_TOKEN;
+	process.env.TELEGRAM_BOT_TOKEN = 'synthetic-test-token';
+	t.after(() => {
+		if (token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+		else process.env.TELEGRAM_BOT_TOKEN = token;
+	});
+	const bodies = [];
+	t.mock.method(globalThis, 'fetch', async (_url, options) => {
+		bodies.push(JSON.parse(options.body));
+		return { json: async () => ({ ok: true, result: { message_id: 1 } }) };
+	});
+	const keyboard = { keyboard: [[{ text: 'Typist' }]], resize_keyboard: true };
+	await sendBotMessage('200', 'Choose role', undefined, keyboard);
+	await sendBotMessage('200', 'Reply', 22);
+	assert.deepEqual(bodies[0].reply_markup, keyboard);
+	assert.deepEqual(bodies[1].reply_parameters, { message_id: 22 });
+	assert.equal(bodies[1].reply_markup, undefined);
 });
 
 test('webhook authentication requires configured valid secret and timing-safe matching header', () => {

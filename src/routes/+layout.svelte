@@ -41,6 +41,9 @@
         <div class="divider p-3">Dashboard</div>
         <a href="/" class="link link-primary p-3">Home</a>
         <a href="/studies" class="link link-primary p-3">Studies</a>
+        {#if data?.user}
+          <a href={resolve('/account')} class="link link-primary p-3">Account</a>
+        {/if}
         {#if data?.user?.role === 'admin'}
           <div class="divider p-3">Admin</div>
           <a href="/admin/users" class="link link-primary p-3">Users</a>

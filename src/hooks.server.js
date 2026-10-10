@@ -25,7 +25,7 @@ export const handle = async ({ event, resolve }) => {
   const got = getSession(cookie);
 
   if (got) {
-    event.locals.user = got.user;        // id, full_name, role, email
+    event.locals.user = got.user;        // id, full_name, role
     event.locals.session = got.session;  // id, user_id, expires_at
   } else {
     event.locals.user = null;

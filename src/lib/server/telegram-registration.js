@@ -17,7 +17,7 @@ export function listTelegramRegistrations(db) {
 export function getApprovedTelegramUser(db, telegramId) {
 	return db
 		.prepare(
-			`SELECT u.id, u.full_name, u.role FROM users u JOIN telegram_registrations r ON r.user_id = u.id AND r.telegram_user_id = u.telegram_user_id WHERE u.telegram_user_id = ? AND r.step = 'approved' AND u.role IN ('resident','attending')`
+			`SELECT u.id, u.full_name, u.role FROM users u JOIN telegram_registrations r ON r.user_id = u.id AND r.telegram_user_id = u.telegram_user_id WHERE u.telegram_user_id = ? AND r.step = 'approved' AND u.role IN ('resident','attending','typist')`
 		)
 		.get(String(telegramId));
 }
@@ -74,12 +74,21 @@ export async function handleTelegramRegistration(
 	const id = String(message.from.id),
 		text = typeof message.text === 'string' ? message.text : '',
 		command = text.trim().split(/\s+/)[0].split('@')[0].toLowerCase();
-	const reply = (body) => quiet(() => send(id, body));
+	const roleKeyboard = {
+		keyboard: [[{ text: 'Resident' }, { text: 'Attending' }, { text: 'Typist' }]],
+		resize_keyboard: true,
+		one_time_keyboard: true
+	};
+	const reply = (body, markup = { remove_keyboard: true }) =>
+		quiet(() => send(id, body, undefined, markup));
 	const erase = () => quiet(() => remove(message.message_id, id));
 	const approved = getApprovedTelegramUser(db, id);
 	if (approved) {
 		await reply(
-			'Your account is approved. Sign in to the website using your chosen username and password. Reply to a study message in the study group with voice/audio to attach a recording.'
+			'Your account is approved. Sign in to the website using your chosen username and password.' +
+				(approved.role === 'typist'
+					? ' You can manage studies and recordings on the website; resident/attending signatures remain restricted.'
+					: ' Reply to a study message in the study group with voice/audio to attach a recording.')
 		);
 		return true;
 	}
@@ -108,12 +117,12 @@ export async function handleTelegramRegistration(
 			`INSERT INTO telegram_registrations(telegram_user_id,telegram_username,last_message_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET telegram_username=excluded.telegram_username, full_name='',role=NULL,username=NULL,password_hash=NULL,user_id=NULL,step='name',last_message_id=excluded.last_message_id,updated_at=excluded.updated_at`
 		).run(id, message.from.username || null, message.message_id, now);
 		await reply(
-			'Registration is private. Send your full name. Next you will choose resident/attending, a website username, and a unique website password. Do not reuse another account’s password. Telegram bots are not end-to-end encrypted. Send /cancel to cancel.'
+			'Registration is private. Send your full name. Next you will choose resident/attending/typist, a website username, and a unique website password. Do not reuse another account’s password. Telegram bots are not end-to-end encrypted. Send /cancel to cancel.'
 		);
 		return true;
 	}
 	if (!registration || registration.step === 'rejected') {
-		await reply('Send /register to create a resident or attending website account.');
+		await reply('Send /register to create a resident, attending or typist website account.');
 		return true;
 	}
 	if (registration.step === 'pending') {
@@ -149,13 +158,19 @@ export async function handleTelegramRegistration(
 			return true;
 		}
 		update({ full_name: name, step: 'role' });
-		await reply('Choose your role: send resident or attending.');
+		await reply(
+			'Choose your role using the buttons below. An administrator will verify your role.',
+			roleKeyboard
+		);
 		return true;
 	}
 	if (registration.step === 'role') {
 		const role = text.trim().toLowerCase();
-		if (!['resident', 'attending'].includes(role)) {
-			await reply('Send resident or attending. An administrator will verify your role.');
+		if (!['resident', 'attending', 'typist'].includes(role)) {
+			await reply(
+				'Choose Resident, Attending or Typist using the buttons below. An administrator will verify your role.',
+				roleKeyboard
+			);
 			return true;
 		}
 		update({ role, step: 'username' });
@@ -217,7 +232,7 @@ export function reviewTelegramRegistration(db, id, { action, role }) {
 		if (action === 'approve') {
 			role = role || request.role;
 			if (
-				!['resident', 'attending'].includes(role) ||
+				!['resident', 'attending', 'typist'].includes(role) ||
 				!request.password_hash ||
 				!request.username ||
 				!request.full_name

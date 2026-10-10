@@ -5,7 +5,6 @@ CREATE TABLE
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('typist', 'resident', 'attending', 'admin')),
-    email TEXT,
     telegram_user_id TEXT UNIQUE
   );
 
@@ -128,7 +127,7 @@ CREATE TABLE IF NOT EXISTS telegram_registrations (
   telegram_user_id TEXT NOT NULL UNIQUE,
   telegram_username TEXT,
   full_name TEXT NOT NULL DEFAULT '',
-  role TEXT CHECK (role IN ('resident', 'attending')),
+  role TEXT CHECK (role IN ('resident', 'attending', 'typist')),
   username TEXT COLLATE NOCASE,
   password_hash TEXT,
   step TEXT NOT NULL DEFAULT 'name' CHECK (step IN ('name', 'role', 'username', 'password', 'pending', 'approved', 'rejected')),

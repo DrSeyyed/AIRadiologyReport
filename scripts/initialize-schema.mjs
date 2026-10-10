@@ -85,6 +85,55 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
 			addColumn('users', 'telegram_user_id', 'TEXT');
+			const userColumns = db
+				.prepare('PRAGMA table_info(users)')
+				.all()
+				.map((column) => column.name);
+			if (userColumns.some((name) => ['email', 'tel', 'telephone', 'phone'].includes(name))) {
+				const definition = schema.match(/CREATE TABLE\s+IF NOT EXISTS users\s*\([\s\S]*?\n {2}\);/);
+				if (!definition) throw new Error('Missing users schema');
+				const previousSequence =
+					db.prepare("SELECT seq FROM sqlite_sequence WHERE name='users'").get()?.seq || 0;
+				db.exec(definition[0].replace('IF NOT EXISTS users', 'users_new'));
+				db.exec(
+					'INSERT INTO users_new(id,full_name,role,telegram_user_id) SELECT id,full_name,role,telegram_user_id FROM users; DROP TABLE users; ALTER TABLE users_new RENAME TO users;'
+				);
+				db.prepare("UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='users'").run(
+					previousSequence
+				);
+			}
+			const registrationDefinition = db
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type='table' AND name='telegram_registrations'"
+				)
+				.get().sql;
+			if (!registrationDefinition.includes("'typist'")) {
+				const definition = schema.match(
+					/CREATE TABLE IF NOT EXISTS telegram_registrations\s*\([\s\S]*?\n\);/
+				);
+				if (!definition) throw new Error('Missing Telegram registration schema');
+				const previousSequence =
+					db.prepare("SELECT seq FROM sqlite_sequence WHERE name='telegram_registrations'").get()
+						?.seq || 0;
+				db.exec(
+					definition[0].replace(
+						'IF NOT EXISTS telegram_registrations',
+						'telegram_registrations_new'
+					)
+				);
+				const shared = db
+					.prepare('PRAGMA table_info(telegram_registrations)')
+					.all()
+					.map((column) => column.name)
+					.join(',');
+				db.exec(
+					`INSERT INTO telegram_registrations_new(${shared}) SELECT ${shared} FROM telegram_registrations; DROP TABLE telegram_registrations; ALTER TABLE telegram_registrations_new RENAME TO telegram_registrations;`
+				);
+				db.prepare(
+					"UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='telegram_registrations'"
+				).run(previousSequence);
+			}
+			db.exec(schema);
 			db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id)');
 			for (const [name, definition] of [
 				['corresponding_resident_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],

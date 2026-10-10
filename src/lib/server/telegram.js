@@ -146,11 +146,12 @@ export function buildFinalReportMessage(study, recording, reportText) {
 
 // ---------- message send/edit/delete ----------
 
-export async function sendBotMessage(chat_id, text, reply_to_message_id) {
+export async function sendBotMessage(chat_id, text, reply_to_message_id, reply_markup) {
 	return tgRequest('sendMessage', {
 		chat_id,
 		text,
-		...(reply_to_message_id ? { reply_parameters: { message_id: reply_to_message_id } } : {})
+		...(reply_to_message_id ? { reply_parameters: { message_id: reply_to_message_id } } : {}),
+		...(reply_markup ? { reply_markup } : {})
 	});
 }
 
