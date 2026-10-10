@@ -1,45 +1,81 @@
-import { getStudyDetail } from '$lib/server/studies.js';
-import { getDb } from '$lib/server/db';
-import { downloadFile } from '$lib/server/telegram.js';
-import { syncStudyMessage as editStudyMessage } from '$lib/server/telegram.js';
+import { getStudyDetail } from './studies.js';
+import { appendRecording } from './recordings.js';
+import { downloadFile, syncStudyMessage } from './telegram.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const SAVE_DIR = process.env.VOICE_SAVE_DIR || path.join('uploads', 'audio');
 
-export function startVoiceWorker() {
-  fs.mkdirSync(SAVE_DIR, { recursive: true });
+export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)) {
+	const fileId = message?.voice?.file_id || message?.audio?.file_id;
+	if (!fileId || !message.reply_to_message?.message_id || !message.chat?.id || !message.message_id)
+		return false;
+	return db.transaction(() => {
+		const study = db
+			.prepare('SELECT id FROM studies WHERE telegram_message_id = ?')
+			.get(String(message.reply_to_message.message_id));
+		if (!study) return false;
+		const chatId = String(message.chat.id);
+		if (
+			!db
+				.prepare('SELECT id FROM pending_voice WHERE chat_id = ? AND reply_message_id = ?')
+				.get(chatId, message.message_id)
+		)
+			db.prepare(
+				'INSERT INTO pending_voice(study_id, chat_id, reply_message_id, file_id, process_at) VALUES (?, ?, ?, ?, ?)'
+			).run(study.id, chatId, message.message_id, fileId, now);
+		return true;
+	})();
+}
 
-  setInterval(async () => {
-    try {
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
+export async function processVoiceJob(
+	db,
+	download = downloadFile,
+	notify = syncStudyMessage,
+	directory = SAVE_DIR,
+	now = Math.floor(Date.now() / 1000)
+) {
+	const job = db
+		.prepare('SELECT * FROM pending_voice WHERE done = 0 AND process_at <= ? ORDER BY id LIMIT 1')
+		.get(now);
+	if (!job) return false;
+	try {
+		const savedPath = await download(
+			job.file_id,
+			path.join(directory, `study_${job.study_id}_voice_${job.id}.ogg`)
+		);
+		if (!db.prepare('SELECT id FROM studies WHERE id = ?').get(job.study_id)) {
+			if (fs.existsSync(savedPath)) fs.unlinkSync(savedPath);
+			return true;
+		}
+		db.transaction(() => {
+			appendRecording(db, job.study_id, savedPath, { telegramVoiceJobId: job.id });
+			db.prepare('UPDATE pending_voice SET done = 1 WHERE id = ?').run(job.id);
+		})();
+		await notify(getStudyDetail(db, job.study_id));
+	} catch {
+		db.prepare('UPDATE pending_voice SET process_at = ? WHERE id = ? AND done = 0').run(
+			now + 30,
+			job.id
+		);
+	}
+	return true;
+}
 
-      const jobs = db.prepare(
-        `SELECT * FROM pending_voice WHERE done = 0 AND process_at <= ? ORDER BY id LIMIT 10`
-      ).all(now);
-
-      for (const job of jobs) {
-        try {
-          const filename = `study_${job.study_id}_reply_${job.reply_message_id}.ogg`;
-          const dest = path.join(SAVE_DIR, filename);
-
-          const savedPath = await downloadFile(job.file_id, dest);
-
-          db.prepare(
-            `UPDATE studies SET audio_report_path = ? WHERE id = ?`
-          ).run(savedPath, job.study_id);
-
-          db.prepare(`UPDATE pending_voice SET done = 1 WHERE id = ?`).run(job.id);
-          const detail = getStudyDetail(db, job.study_id);
-              if(detail)
-                await editStudyMessage(detail)
-        } catch (err) {
-          console.error('Voice download failed:', err);
-        }
-      }
-    } catch (err) {
-      console.error('Voice worker tick error:', err);
-    }
-  }, 30 * 1000); // check every 30s
+let worker;
+export function startVoiceWorker(getDb) {
+	if (worker || !process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
+	let busy = false;
+	worker = setInterval(async () => {
+		if (busy) return;
+		busy = true;
+		try {
+			await processVoiceJob(getDb());
+		} catch {
+			console.warn('Voice queue unavailable; retrying later.');
+		} finally {
+			busy = false;
+		}
+	}, 1000);
+	worker.unref();
 }

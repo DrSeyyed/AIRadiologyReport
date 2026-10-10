@@ -59,15 +59,26 @@ Patient demographics now belong to each study. There is no separate patient tabl
 
 Administrators can open **Studies → Import Excel** and upload an XLS/XLSX PACS export (first worksheet, up to 10 MB and 5,000 source rows). Required columns are `ID`, `NAME` or `SRC NAME`, `MODALITY`, `DESCRIPTION`, `STUDY DATE`, and `STUDY INST UID`. `SEX` and `AGE` are optional. DICOM ages such as `089Y` and formatted IDs with leading zeros are preserved.
 
-1. Preview the workbook. This saves only new description mappings, not patients or studies.
-2. Open **Admin → Import descriptions**. For each modality and exact description, explicitly select one or more exam types and optional details such as Right/Left. Select the appropriate contrast-specific exam type (`WO`, `WC`, or `WWC`). Local abbreviations and combined examinations are never guessed.
-3. Refresh the preview, review demographics, separate study components, duplicates, and errors, then confirm the selected ready rows. Each component becomes its own study using its own report-template selection. Up to 10,000 expanded studies are allowed per import.
+1. Preview the workbook without writing any studies or mappings.
+2. Review the original source modality/description, demographics, duplicates and errors, then confirm selected ready rows. Each source study UID creates **one study**, regardless of how the operator describes combined examinations. Unknown source modality labels are retained for reference and do not block import.
+3. Open the study's **Recordings & reports** dialog. Upload or record as many separate dictations as needed. Each recording has its own examination configuration, report and reviewer signatures.
+4. For each recording, select its modality and body-part/examination, including the appropriate contrast-specific exam type (`WO`, `WC`, or `WWC`), plus optional side/details. Save these selections, then use **Transcribe & Generate**. Transcription and report generation remain one action and require a configured template for the selected examination.
 
-Descriptions match after case/whitespace normalization; punctuation is significant. Source study UID plus mapped component identifies duplicate studies, not patient ID. Conflicting demographics or examination details for the same UID block import; existing studies are never silently overwritten. Changing mappings or source data after preview requires another preview. Invalid/unmapped rows are not imported.
+There are no description mappings or automatic clinical interpretations. The source description is reference text only; it never selects a report template. Source study UID identifies duplicates, not patient ID. Repeated workbook rows or imports are skipped. Conflicting demographics or source details for the same UID block import; existing studies are never silently overwritten. Changing source data or existing studies after preview requires another preview. Invalid rows are not imported.
+
+Recording uploads and Telegram replies append audio instead of replacing previous recordings. Each report can be viewed, edited, printed and signed independently. Examination changes invalidate only that recording's report; signed reports must be unsigned before editing or reconfiguring. The corresponding resident/attending or an administrator signs each recording, with resident approval required before attending approval (except administrator overrides). Generation locks prevent simultaneous recording/study edits, study deletion or duplicate processing; interrupted locks expire after ten minutes.
+
+**Telegram:** reply to the original study message with voice/audio to attach a new recording. Configure its examination and generate its report on the site; Telegram replies never start generation automatically. Study messages show recording/report counts and pending examination selections. Final-report notifications identify the recording and its selected examination. Re-delivered webhook updates do not create duplicate recordings.
 
 Workbook processing is local to the server. Uploaded workbooks and demographic previews are not retained as files. If Telegram is configured, optional notifications are queued persistently and sent gradually, with retry after failure; imports succeed even when Telegram is unavailable. Uncheck this option to keep the imported patient details off Telegram. Notification delivery is at-least-once: a process crash between sending and saving the message ID can cause a repeated message. Preserve `/app/db` to retain queued notifications.
 
-### Replacing the old test database schema
+### Upgrading the previous study-only version
+
+**Back up the database and uploaded files before upgrading.** Startup automatically migrates each existing study's audio/report into an independent recording, preserving examination selection, signatures, file paths, study IDs, Telegram message IDs and queued jobs. Users, credentials, sessions, templates and reference data remain intact. Retired description-mapping tables are removed. No `RESET_TEST_STUDIES` flag is needed for this upgrade.
+
+Previously split studies are deliberately retained as separate studies to avoid losing or merging existing work; only new Excel imports use one study per source UID. An existing UID will not be reimported. Uploaded files are neither moved nor deleted by this migration. Preserve `/app/db` and `/app/uploads` as before. Reload the browser after deployment; audio/report/signing API operations now target individual recordings.
+
+### Replacing the older patient-linked test database schema
 
 **Back up the database and uploaded files before upgrading.** Existing patient-linked test studies are deliberately discarded, not migrated. Users, credentials, sessions, report templates, and reference data are retained; old patient records, studies, and pending voice jobs are removed. Uploaded audio/report files are not deleted automatically.
 

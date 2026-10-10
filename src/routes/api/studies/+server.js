@@ -9,7 +9,10 @@ export async function GET({ url, locals }) {
 
 	const q = {
 		page: Math.min(1000000, Math.max(1, Math.floor(Number(url.searchParams.get('page')) || 1))),
-		rowcount: Math.min(100, Math.max(1, Math.floor(Number(url.searchParams.get('rowcount')) || 20))),
+		rowcount: Math.min(
+			100,
+			Math.max(1, Math.floor(Number(url.searchParams.get('rowcount')) || 20))
+		),
 		orderedby: url.searchParams.get('orderedby')?.trim() || '',
 		orderdir: url.searchParams.get('orderdir')?.trim().toUpperCase() === 'ASC' ? 'ASC' : 'DESC',
 		patient_code: url.searchParams.get('patient_code')?.trim() || '',
@@ -23,8 +26,8 @@ export async function GET({ url, locals }) {
 
 	let baseSql = `
     FROM studies s
-    JOIN modalities m ON m.id = s.modality_id
-    JOIN exam_types e ON e.id = s.exam_type_id
+    LEFT JOIN modalities m ON m.id = s.modality_id
+    LEFT JOIN exam_types e ON e.id = s.exam_type_id
     LEFT JOIN users ur ON ur.id = s.corresponding_resident_id
     LEFT JOIN users ua ON ua.id = s.corresponding_attending_id
     WHERE 1=1
@@ -48,13 +51,13 @@ export async function GET({ url, locals }) {
 
 	// Modality filter
 	if (q.modality_id) {
-		baseSql += ` AND s.modality_id = ?`;
-		params.push(Number(q.modality_id));
+		baseSql += ` AND (s.modality_id = ? OR EXISTS (SELECT 1 FROM study_recordings r WHERE r.study_id = s.id AND r.modality_id = ?))`;
+		params.push(Number(q.modality_id), Number(q.modality_id));
 	}
 
 	// Exam type filter
 	if (q.exam_type_id) {
-		baseSql += ` AND s.exam_type_id = ?`;
+		baseSql += ` AND EXISTS (SELECT 1 FROM study_recordings r WHERE r.study_id = s.id AND r.exam_type_id = ?)`;
 		params.push(Number(q.exam_type_id));
 	}
 
@@ -82,13 +85,23 @@ export async function GET({ url, locals }) {
 		's.exam_type_id',
 		's.exam_date_jalali'
 	];
-	const legacySortColumns = { 'p.patient_code': 's.patient_code', 'p.firstname': 's.patient_firstname', 'p.lastname': 's.patient_lastname' };
+	const legacySortColumns = {
+		'p.patient_code': 's.patient_code',
+		'p.firstname': 's.patient_firstname',
+		'p.lastname': 's.patient_lastname'
+	};
 	const requestedColumn = legacySortColumns[q.orderedby] || q.orderedby;
-	const orderCol = allowedColumns.includes(requestedColumn) ? requestedColumn : 's.exam_date_jalali';
+	const orderCol = allowedColumns.includes(requestedColumn)
+		? requestedColumn
+		: 's.exam_date_jalali';
 
 	let dataSql = `
     SELECT
       s.*,
+      (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id) AS recording_count,
+      (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.text_report_path IS NOT NULL) AS report_count,
+      (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.resident_checked = 1) AS resident_checked_count,
+      (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.attending_checked = 1) AS attending_checked_count,
       m.code         AS modality_code,
       e.code         AS exam_type_code,
       ur.full_name   AS resident_fullname,
@@ -108,23 +121,26 @@ export async function GET({ url, locals }) {
 }
 
 export async function POST({ request, locals }) {
- if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
- try {
-  const db = getDb();
-  const studyId = insertStudy(db, await request.json());
-  const detail = getStudyDetail(db, studyId);
-  let notification_warning = null;
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-   try {
-    const result = await sendStudyMessage(detail);
-    db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run(result.message_id, studyId);
-    detail.telegram_message_id = String(result.message_id);
-   } catch {
-    notification_warning = 'Study saved, but Telegram notification failed.';
-   }
-  }
-  return json({ ...detail, notification_warning }, { status: 201 });
- } catch (error) {
-  return json({ error: error.message || 'Could not create study' }, { status: 400 });
- }
+	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	try {
+		const db = getDb();
+		const studyId = insertStudy(db, await request.json());
+		const detail = getStudyDetail(db, studyId);
+		let notification_warning = null;
+		if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+			try {
+				const result = await sendStudyMessage(detail);
+				db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run(
+					result.message_id,
+					studyId
+				);
+				detail.telegram_message_id = String(result.message_id);
+			} catch {
+				notification_warning = 'Study saved, but Telegram notification failed.';
+			}
+		}
+		return json({ ...detail, notification_warning }, { status: 201 });
+	} catch (error) {
+		return json({ error: error.message || 'Could not create study' }, { status: 400 });
+	}
 }

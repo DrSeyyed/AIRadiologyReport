@@ -42,7 +42,7 @@ export async function POST({ request, locals }) {
 			process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID
 		);
 		if (action === 'preview') {
-			const preview = previewStudyImport(db, parsed, { registerDescriptions: true });
+			const preview = previewStudyImport(db, parsed);
 			return json({ ...preview, telegramConfigured });
 		}
 		const selected = JSON.parse(String(form.get('selected_rows') || '[]'));
@@ -56,8 +56,7 @@ export async function POST({ request, locals }) {
 		if (!result)
 			return json(
 				{
-					error:
-						'Mappings, source data, or existing studies changed. Preview again before importing.'
+					error: 'Source data or existing studies changed. Preview again before importing.'
 				},
 				{ status: 409 }
 			);

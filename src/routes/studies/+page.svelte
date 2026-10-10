@@ -2,52 +2,28 @@
 	import { invalidateAll } from '$app/navigation';
 	import NewStudyModal from './NewStudyModal.svelte';
 	import EditStudyModal from './EditStudyModal.svelte';
-	import ReportModal from './ReportModal.svelte';
-	import Filters from './Filters.svelte';
-	import StudyForm from './StudyForm.svelte';
+	import RecordingsModal from './RecordingsModal.svelte';
 	import StudyTable from './StudyTable.svelte';
 
 	let { data } = $props();
 	let showNewModal = $state(false);
-	let showEditModal = $state(false);
-	let reportForStudy = $state(null); // study to edit text
-
-
-	
-
-
-
-
-
-	function onEdited() {
-		//ShowEditModal = false;
-		return invalidateAll();
-	}
-
-	function onCreated() {
-		//showNewModal = false;
-		return invalidateAll();
-	}
-
+	let showEditModal = $state(null);
+	let recordingsForStudy = $state(null);
 </script>
 
 <section class="space-y-4">
-	<StudyTable {data} bind:showNewModal={showNewModal} bind:showEditModal={showEditModal} bind:reportForStudy={reportForStudy}/>
-
-	<!-- Modals -->
+	<StudyTable {data} bind:showNewModal bind:showEditModal bind:recordingsForStudy />
 	{#if showNewModal}
-		<NewStudyModal bind:data = {data} onClose={() => (invalidateAll(), (showNewModal = false))} {onCreated} />
+		<NewStudyModal bind:data onClose={() => (showNewModal = false)} onCreated={invalidateAll} />
 	{/if}
-
 	{#if showEditModal}
-		<EditStudyModal bind:data = {data} study={showEditModal} onClose={() => (showEditModal = null)} onSaved={onEdited} />
+		{#key showEditModal.id}
+			<EditStudyModal bind:data study={showEditModal} onClose={() => (showEditModal = null)} onSaved={invalidateAll} />
+		{/key}
 	{/if}
-
-	{#if reportForStudy}
-		<ReportModal
-			study={reportForStudy}
-			initialText={reportForStudy.__initialText ?? ''}
-			onClose={() => (reportForStudy = null)}
-		/>
+	{#if recordingsForStudy}
+		{#key recordingsForStudy.id}
+			<RecordingsModal study={recordingsForStudy} {data} onClose={() => (recordingsForStudy = null)} />
+		{/key}
 	{/if}
 </section>

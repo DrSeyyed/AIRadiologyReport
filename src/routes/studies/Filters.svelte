@@ -148,7 +148,6 @@
 				<option value="s.patient_lastname">Patient Lastname</option>
 				<option value="s.patient_age">Patient Age</option>
 				<option value="s.modality_id">Modality</option>
-				<option value="s.exam_type_id">Exam Type</option>
 			</select>
 		</label>
 

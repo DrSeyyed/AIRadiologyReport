@@ -14,7 +14,7 @@
 	let visible = $state(200);
 	const ready = $derived(preview?.rows.filter((row) => row.status === 'ready') ?? []);
 	const unresolved = $derived(
-		preview?.rows.filter((row) => ['invalid', 'unmapped', 'conflict'].includes(row.status))
+		preview?.rows.filter((row) => ['invalid', 'conflict'].includes(row.status))
 			.length ?? 0
 	);
 
@@ -60,7 +60,7 @@
 				selectRows(result.rows.filter((row) => row.status === 'ready'));
 				visible = 200;
 			} else {
-				success = `${result.inserted} studies imported; ${result.skipped} duplicate components skipped.`;
+				success = `${result.inserted} studies imported; ${result.skipped} duplicate rows skipped.`;
 				preview = null;
 				selected.clear();
 			}
@@ -78,21 +78,17 @@
 	<div class="flex flex-wrap items-center gap-4">
 		<h1 class="text-2xl font-bold">Import studies from Excel</h1>
 		<a class="btn btn-ghost" href={resolve('/studies')}>Back to studies</a>
-		<a
-			class="btn btn-outline"
-			href={resolve('/admin/import-mappings')}
-			target="_blank"
-			rel="noopener">Import descriptions</a
-		>
 	</div>
 	<p>
 		Patient ID and demographics are saved on each study, without linking patients. Age is taken
 		directly from the export; birth date is not used.
 	</p>
 	<p>
-		Combined descriptions require an explicit mapping for each modality. Each mapped component
-		becomes a separate study, including its exam type, contrast and side. Unknown descriptions are
-		listed in Import descriptions after previewing; configure them there, then preview again.
+		Each Excel row creates one study. Original modality and description are saved as reference only;
+		no examination selection or description mapping is required. Add audio recordings later and
+		select modality, examination/body part including contrast, and optional details/side for each
+		recording before Transcribe &amp; Generate. Telegram audio replies append recordings; configure
+		and generate reports on this site.
 	</p>
 	<form
 		class="flex flex-wrap items-end gap-4"
@@ -144,8 +140,8 @@
 	{#if preview}
 		<div class="flex flex-wrap items-center gap-4">
 			<p>
-				{preview.rows.length} source rows; {ready.length} ready; {unresolved} unresolved. Duplicate components
-				will be skipped. Only selected ready rows are imported.
+				{preview.rows.length} source rows; {ready.length} ready; {unresolved} unresolved.
+				Duplicate rows will be skipped. Each selected ready row imports one study.
 			</p>
 			<button class="btn btn-sm" disabled={busy} onclick={() => selectRows(ready)}
 				>Select all ready</button
@@ -160,7 +156,7 @@
 					><tr
 						><th>Select</th><th>Row / UID</th><th>Patient ID / name</th><th>Gender / age</th><th
 							>Modality / description</th
-						><th>Date / time</th><th>Separate studies</th><th>Status / errors</th></tr
+						><th>Date / time</th><th>Status / errors</th></tr
 					></thead
 				>
 				<tbody>
@@ -193,7 +189,7 @@
 								</div></td
 							>
 							<td
-								>{row.modality_code}
+								>{row.source_modality ?? row.modality_code ?? 'Not specified'}
 								<div>{row.source_description}</div></td
 							>
 							<td
@@ -201,15 +197,8 @@
 								<div>{row.exam_time}</div></td
 							>
 							<td
-								>{#each row.components as component, index (index)}<div>
-										{component.exam_type_code}
-										{component.exam_details}
-										{component.duplicate ? '(duplicate — skip)' : ''}
-									</div>{/each}</td
-							>
-							<td
 								><span class:font-bold={row.status === 'ready'}>{row.status}</span
-								>{#each row.errors as message, index (index)}<div class="text-error">
+								>{#each row.errors ?? [] as message, index (index)}<div class="text-error">
 										{message}
 									</div>{/each}</td
 							>

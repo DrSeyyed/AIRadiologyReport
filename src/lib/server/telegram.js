@@ -4,26 +4,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-
-function getToken(){
+function getToken() {
 	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 	if (!TOKEN) {
 		throw new Error('Missing TELEGRAM_BOT_TOKEN in environment');
 	}
-	return TOKEN
+	return TOKEN;
 }
 
-function getChatID(){
+function getChatID() {
 	const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 	if (!DEFAULT_CHAT_ID) {
 		throw new Error('Missing TELEGRAM_CHAT_ID in environment');
 	}
-	return DEFAULT_CHAT_ID
+	return DEFAULT_CHAT_ID;
 }
-
-
-
-
 
 // ---------- utils ----------
 
@@ -63,16 +58,21 @@ export function buildStudyMessage(study) {
 	const lines = [];
 	lines.push(`<b>🩺 Study</b>`);
 	lines.push(
-		`Study #${esc(study.id)} — ${esc(study.exam_type_code ?? '')} (${esc(study.modality_code ?? '')})`
+		`Study #${esc(study.id)} — source modality: ${esc(study.source_modality || study.modality_code || 'Unspecified')}`
 	);
-	if (study.exam_details) lines.push(`Details: ${esc(study.exam_details)}`);
+	if (study.source_description || study.description)
+		lines.push(
+			`Source description (reference only): ${esc((study.source_description || study.description).slice(0, 500))}`
+		);
 
 	lines.push(
 		`Patient: <b>${esc(study.patient_firstname ?? '-')} ${esc(study.patient_lastname ?? '-')}</b> ` +
 			`<i>(code ${esc(study.patient_code ?? '-')})</i>`
 	);
 	const ageGender = [
-		study.patient_age != null ? `Age: ${esc(study.patient_age)} ${esc({ Y: 'years', M: 'months', W: 'weeks', D: 'days' }[study.patient_age_unit || 'Y'])}` : null,
+		study.patient_age != null
+			? `Age: ${esc(study.patient_age)} ${esc({ Y: 'years', M: 'months', W: 'weeks', D: 'days' }[study.patient_age_unit || 'Y'])}`
+			: null,
 		study.patient_gender ? `Gender: ${esc(study.patient_gender)}` : null
 	]
 		.filter(Boolean)
@@ -81,17 +81,33 @@ export function buildStudyMessage(study) {
 
 	lines.push(`Date/Time: ${esc(study.exam_date_jalali ?? '-')} ${esc(study.exam_time ?? '')}`);
 
-	if (study.description) lines.push(`Note: ${esc(study.description)}`);
+	if (study.description && study.description !== study.source_description)
+		lines.push(`Note: ${esc(study.description.slice(0, 300))}`);
 
 	lines.push(`Resident: ${esc(study.resident_fullname ?? '-')}`);
 	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
 
-	lines.push(`Audio : ${study.audio_report_path ? '✔' : '✖'}`);
-	lines.push(`Report: ${study.text_report_path ? '✔' : '✖'}`);
-
+	const recordings = study.recordings || [];
 	lines.push(
-		`Status: Resident <b>${study.resident_checked ? '✔' : '✖'}</b> • ` +
-			`Attending <b>${study.attending_checked ? '✔' : '✖'}</b>`
+		`Recordings: ${recordings.length} • Reports: ${recordings.filter((r) => r.text_report_path).length}`
+	);
+	lines.push(
+		`Signed: Resident ${recordings.filter((r) => r.resident_checked).length} • Attending ${recordings.filter((r) => r.attending_checked).length}`
+	);
+	for (const recording of recordings.slice(0, 5)) {
+		const label =
+			recording.modality_id && recording.exam_type_id
+				? `${recording.modality_code || ''} ${recording.exam_type_code || ''} ${recording.exam_details || ''}`
+						.trim()
+						.slice(0, 150)
+				: 'Awaiting examination selection on site';
+		lines.push(
+			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'}`
+		);
+	}
+	if (recordings.length > 5) lines.push(`… ${recordings.length - 5} more recordings on site`);
+	lines.push(
+		'<i>Reply to this study message with voice/audio to add a recording. Each reply adds a separate recording; nothing is overwritten. Select examination details on the site, then Transcribe &amp; Generate.</i>'
 	);
 
 	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
@@ -99,10 +115,36 @@ export function buildStudyMessage(study) {
 	return lines.join('\n');
 }
 
+export function buildFinalReportMessage(study, recording, reportText) {
+	const label =
+		`${recording.exam_type_code || ''} ${recording.exam_details || ''}, ${recording.modality_code || ''}`.slice(
+			0,
+			100
+		);
+	const heading = [
+		'<b>Final report signed</b>',
+		`Study #${esc(study.id)} — Recording #${esc(recording.id)}`,
+		esc(label),
+		`Patient: <b>${esc(`${study.patient_firstname || ''} ${study.patient_lastname || ''}`.trim().slice(0, 120))}</b> (code ${esc((study.patient_code || '').slice(0, 64))})`,
+		`Resident: ${esc((study.resident_fullname || '-').slice(0, 60))}`,
+		`Attending: ${esc((study.attending_fullname || '-').slice(0, 60))}`,
+		`Date/Time: ${esc(study.exam_date_jalali)} ${esc(study.exam_time)}`
+	].join('\n');
+	const footer = '\n<i>Full report available on the site.</i>';
+	const budget = 4000 - heading.length - footer.length - 12;
+	let escaped = '';
+	for (const character of reportText) {
+		const part = esc(character);
+		if (escaped.length + part.length > budget) break;
+		escaped += part;
+	}
+	return `${heading}\n<pre>${escaped}</pre>${footer}`;
+}
+
 // ---------- message send/edit/delete ----------
 
 export async function sendStudyMessage(study, chat_id) {
-	chat_id = chat_id ?? getChatID()
+	chat_id = chat_id ?? getChatID();
 	assert(chat_id, 'chat_id is required (set TELEGRAM_CHAT_ID or pass explicitly)');
 	const text = buildStudyMessage(study);
 	const res = await tgRequest('sendMessage', {
@@ -116,7 +158,7 @@ export async function sendStudyMessage(study, chat_id) {
 }
 
 export async function editStudyMessage(study, chat_id) {
-	chat_id = chat_id ?? getChatID()
+	chat_id = chat_id ?? getChatID();
 	let message_id = study.telegram_message_id;
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
@@ -142,7 +184,7 @@ export async function syncStudyMessage(study) {
 }
 
 export async function deleteMessage(message_id, chat_id) {
-	chat_id = chat_id ?? getChatID()
+	chat_id = chat_id ?? getChatID();
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
 	await tgRequest('deleteMessage', { chat_id, message_id });
@@ -181,7 +223,6 @@ export async function getFile(file_id) {
  */
 export async function downloadFile(file_id, destPath) {
 	const { download_url } = await getFile(file_id);
-	console.log(download_url)
 	const r = await fetch(download_url);
 	if (!r.ok) throw new Error(`Download failed: ${r.status} ${r.statusText}`);
 	const buf = Buffer.from(await r.arrayBuffer());
@@ -189,7 +230,6 @@ export async function downloadFile(file_id, destPath) {
 	const abs = path.resolve(destPath);
 	fs.mkdirSync(path.dirname(abs), { recursive: true });
 	fs.writeFileSync(abs, buf);
-	console.log(abs)
 	return abs;
 }
 

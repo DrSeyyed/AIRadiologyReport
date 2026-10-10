@@ -1,34 +1,18 @@
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
+import { queueVoiceReply } from '$lib/server/voice-worker.js';
 
 export const POST = async ({ request }) => {
-  const update = await request.json().catch(() => ({}));
-  const msg = update?.message;
-  if (!msg) return json({ ok: true });
+	const update = await request.json().catch(() => ({}));
+	const msg = update?.message;
+	if (!msg) return json({ ok: true });
 
-  const reply = msg.reply_to_message;
-  if (!reply?.message_id || !msg.chat?.id) return json({ ok: true });
+	const reply = msg.reply_to_message;
+	if (!reply?.message_id || !msg.chat?.id) return json({ ok: true });
 
-  const chat_id = String(msg.chat.id);
-  const reply_to_message_id = Number(reply.message_id);
+	if (!process.env.TELEGRAM_CHAT_ID || String(msg.chat.id) !== process.env.TELEGRAM_CHAT_ID)
+		return json({ ok: true });
+	queueVoiceReply(getDb(), msg);
 
-  const db = getDb();
-  const study = db
-    .prepare(
-      `SELECT id FROM studies WHERE telegram_message_id = ?`
-    )
-    .get(reply_to_message_id);
-
-  if (!study?.id) return json({ ok: true });
-
-  const file_id = msg.voice?.file_id || msg.audio?.file_id;
-  if (!file_id) return json({ ok: true });
-
-  const process_at = Math.floor(Date.now() / 1000) + 1 * 60; // 5 min delay
-  db.prepare(
-    `INSERT INTO pending_voice (study_id, chat_id, reply_message_id, file_id, process_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(study.id, chat_id, msg.message_id, file_id, process_at);
-
-  return json({ ok: true });
+	return json({ ok: true });
 };

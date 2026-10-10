@@ -1,30 +1,63 @@
 <script>
   import { invalidateAll } from '$app/navigation';
+  import { onDestroy } from 'svelte';
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
 
-  // props: study, onClose, initialText
-  let { study, onClose, initialText = '' } = $props();
+  let { study, recording, onClose, onSaved, initialText = '' } = $props();
 
   const state = $state({
     text: initialText,
     loading: !initialText,
     saving: false,
     savedMsg: '',
+    error: '',
     tab: 'write' // 'write' | 'preview'
   });
 
-  $effect(async () => {
+  const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}/report`);
+  const editable = $derived(!recording.processing && !recording.resident_checked && !recording.attending_checked && Boolean(recording.modality_id && recording.exam_type_id));
+  let printFrame;
+  onDestroy(() => printFrame?.remove());
+
+  $effect(() => {
+    if (!editable) state.tab = 'preview';
+  });
+
+  function printReport() {
+    if (state.loading || state.error || !state.text.trim()) return;
+    printFrame?.remove();
+    const frame = document.createElement('iframe');
+    frame.title = 'Report print preview';
+    frame.style.cssText = 'position:fixed;left:-10000px;width:800px;height:600px;border:0';
+    frame.onload = () => {
+      frame.contentWindow?.addEventListener('afterprint', () => frame.remove(), { once: true });
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    };
+    const heading = DOMPurify.sanitize(`<h1>Study #${study.id} — Recording #${recording.id}</h1>`);
+    frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}</body></html>`;
+    printFrame = frame;
+    document.body.appendChild(frame);
+  }
+
+  $effect(() => {
     if (!state.loading) return;
-    try {
-      const res = await fetch(`/api/studies/${study.id}/report`);
-      const d = await res.json();
-      state.text = d?.text ?? '';
-    } catch {
-      // optionally show an error alert here
-    } finally {
-      state.loading = false;
-    }
+    const controller = new AbortController();
+    fetch(endpoint, { signal: controller.signal })
+      .then(async (res) => {
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'Unable to load report');
+        state.text = result.text ?? '';
+        state.loading = false;
+      })
+      .catch((caught) => {
+        if (caught.name !== 'AbortError') {
+          state.error = caught.message || 'Unable to load report';
+          state.loading = false;
+        }
+      });
+    return () => controller.abort();
   });
 
   const previewHtml = $derived(
@@ -32,19 +65,22 @@
   );
 
   async function save() {
-    if (state.saving) return;
+    if (!editable || state.saving || state.loading || state.error || !state.text.trim()) return;
     state.saving = true;
+    state.savedMsg = '';
     try {
-      const res = await fetch(`/api/studies/${study.id}/report`, {
+      const res = await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: state.text })
       });
-      if (!res.ok) throw new Error('Save failed');
-      state.savedMsg = 'Saved';
-      await invalidateAll();
-    } catch {
-      state.savedMsg = 'Failed to save';
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || 'Save failed');
+      state.savedMsg = 'Saved — signatures cleared for this recording';
+      if (onSaved) await onSaved();
+      else await invalidateAll();
+    } catch (caught) {
+      state.savedMsg = caught.message || 'Failed to save';
     } finally {
       state.saving = false;
       setTimeout(() => (state.savedMsg = ''), 1200);
@@ -53,7 +89,7 @@
 
   function onKeydown(e) {
     if (e.key === 'Escape') {
-      onClose?.();
+      if (!state.saving) onClose?.();
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -63,6 +99,8 @@
   }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="modal modal-open">
   <div
     role="dialog"
@@ -71,8 +109,10 @@
     class="modal-box max-w-3xl"
   >
     <h3 id="report-title" class="font-bold text-lg mb-3">
-      Text Report — Study #{study.id}
+      Text Report — Study #{study.id}, recording #{recording.id}
     </h3>
+    {#if state.error}<div class="alert alert-error" role="alert">{state.error}</div>{/if}
+    {#if !editable}<p class="text-sm mb-3">Read-only: unsign the report, wait for processing to finish, and save modality/examination configuration before editing.</p>{/if}
 
     {#if state.loading}
       <div class="space-y-2 mb-3">
@@ -85,6 +125,7 @@
           role="tab"
           class="tab {state.tab === 'write' ? 'tab-active' : ''}"
           aria-selected={state.tab === 'write'}
+          disabled={!editable || state.saving}
           onclick={() => (state.tab = 'write')}
           type="button"
         >
@@ -109,6 +150,7 @@
         <textarea
           class="textarea textarea-bordered w-full h-[40vh] font-mono"
           bind:value={state.text}
+          disabled={!editable || state.saving}
           placeholder="Enter report in Markdown…"
           spellcheck="false"
         ></textarea>
@@ -116,6 +158,7 @@
         <div class="rounded-box border border-base-content/10 p-3 h-[40vh] overflow-y-auto">
           {#if state.text?.trim()}
             <div class="prose dark:prose-invert max-w-none">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -- Markdown is sanitized with DOMPurify before rendering. -->
               {@html previewHtml}
             </div>
           {:else}
@@ -126,13 +169,14 @@
     {/if}
 
     <div class="modal-action">
-      <button class="btn btn-ghost" type="button" onclick={() => onClose?.()}>
+      <button class="btn btn-outline" type="button" disabled={state.loading || !!state.error || !state.text.trim()} onclick={printReport}>Print / Save PDF</button>
+      <button class="btn btn-ghost" type="button" disabled={state.saving} onclick={() => onClose?.()}>
         Close (Esc)
       </button>
       <button
         class="btn btn-outline disabled:opacity-50"
         type="button"
-        disabled={state.saving}
+        disabled={!editable || state.saving || state.loading || !!state.error || !state.text.trim()}
         onclick={save}
       >
         {#if state.saving}Saving…{:else}Save (Ctrl/⌘+S){/if}
@@ -141,5 +185,5 @@
   </div>
 
   <!-- DaisyUI backdrop -->
-  <button class="modal-backdrop" onclick={() => onClose?.()}>close</button>
+  <button class="modal-backdrop" disabled={state.saving} onclick={() => onClose?.()}>close</button>
 </div>

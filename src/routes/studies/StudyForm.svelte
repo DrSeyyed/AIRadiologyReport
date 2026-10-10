@@ -15,8 +15,6 @@
 		patient_age_unit: study?.patient_age_unit ?? 'Y',
 		corresponding_resident_id: study?.corresponding_resident_id ?? '',
 		corresponding_attending_id: study?.corresponding_attending_id ?? '',
-		exam_type_id: study?.exam_type_id ?? '',
-		exam_details: study?.exam_details ?? '',
 		dicom_url: study?.dicom_url ?? '',
 		description: study?.description ?? ''
 	});
@@ -36,7 +34,7 @@
 	async function submit() {
 		if (busy) return;
 		clearMessages();
-		for (const key of ['modality_id', 'exam_type_id', 'exam_date_jalali', 'patient_code']) {
+		for (const key of ['exam_date_jalali', 'patient_code']) {
 			if (form[key] == null || String(form[key]).trim() === '') {
 				errorMsg = `Missing ${key.replace(/_/g, ' ')}`;
 				return;
@@ -59,12 +57,10 @@
 				patient_firstname: form.patient_firstname.trim(),
 				patient_lastname: form.patient_lastname.trim(),
 				patient_age: age,
-				modality_id: Number(form.modality_id),
-				exam_type_id: Number(form.exam_type_id),
+				modality_id: optionalNumber(form.modality_id),
 				exam_time: form.exam_time || $time,
 				corresponding_resident_id: optionalNumber(form.corresponding_resident_id),
 				corresponding_attending_id: optionalNumber(form.corresponding_attending_id),
-				exam_details: form.exam_details || null,
 				dicom_url: form.dicom_url || null,
 				description: form.description || null
 			});
@@ -179,25 +175,16 @@
 
 			<!-- Modality -->
 			<label class="form-control">
-				<div class="label"><span class="label-text">Modality</span></div>
-				<select class="select-bordered select w-full" bind:value={form.modality_id} required>
-					<option value="" disabled>Select modality</option>
+				<div class="label"><span class="label-text">Source modality (optional reference)</span></div>
+								<select class="select-bordered select w-full" bind:value={form.modality_id}>
+									<option value="">Unknown / not specified</option>
 					{#each data.modalities as m (m.id)}
 						<option value={m.id}>{m.code}</option>
 					{/each}
 				</select>
 			</label>
 
-			<!-- Exam Types -->
-			<label class="form-control">
-				<div class="label"><span class="label-text">Exam Type</span></div>
-				<select class="select-bordered select w-full" bind:value={form.exam_type_id} required>
-					<option value="" disabled>Select exam type</option>
-					{#each data.exam_types as e (e.id)}
-						<option value={e.id}>{e.code}</option>
-					{/each}
-				</select>
-			</label>
+			<p class="text-sm opacity-70">Select examination, contrast and optional details separately for each audio recording, not for the study.</p>
 
 			<!-- Staff (numeric coercion) -->
 			<label class="form-control">
@@ -222,15 +209,6 @@
 
 			<!-- Optional fields -->
 			<label class="form-control md:col-span-2">
-				<label class="form-control md:col-span-2">
-					<div class="label"><span class="label-text">Exam Details (optional)</span></div>
-					<input
-						class="input-bordered input w-full"
-						bind:value={form.exam_details}
-						placeholder="Arm..."
-					/>
-				</label>
-
 				<div class="label"><span class="label-text">DICOM URL (optional)</span></div>
 				<input
 					class="input-bordered input w-full"
@@ -240,7 +218,7 @@
 			</label>
 
 			<label class="form-control md:col-span-2">
-				<div class="label"><span class="label-text">Description (optional)</span></div>
+				<div class="label"><span class="label-text">Study description (optional reference only)</span></div>
 				<textarea class="textarea-bordered textarea w-full" rows="3" bind:value={form.description}
 				></textarea>
 			</label>

@@ -1,4 +1,5 @@
 import jalaali from 'jalaali-js';
+import { listRecordings } from './recordings.js';
 
 export const studyFields = [
 	'patient_code',
@@ -19,7 +20,7 @@ export const studyFields = [
 ];
 
 export function getStudyDetail(db, id) {
-	return db
+	const study = db
 		.prepare(
 			`
 		SELECT s.*, s.id AS study_id,
@@ -35,6 +36,13 @@ export function getStudyDetail(db, id) {
 	`
 		)
 		.get(id);
+	if (!study) return undefined;
+	study.recordings = listRecordings(db, id);
+	study.recording_count = study.recordings.length;
+	study.report_count = study.recordings.filter((r) => r.text_report_path).length;
+	study.resident_checked_count = study.recordings.filter((r) => r.resident_checked).length;
+	study.attending_checked_count = study.recordings.filter((r) => r.attending_checked).length;
+	return study;
 }
 
 export function normalizeStudyInput(db, input) {
@@ -80,10 +88,11 @@ export function normalizeStudyInput(db, input) {
 		['modality_id', 'modalities'],
 		['exam_type_id', 'exam_types']
 	]) {
-		output[field] = Number(input[field]);
+		output[field] = input[field] == null || input[field] === '' ? null : Number(input[field]);
 		if (
-			!Number.isSafeInteger(output[field]) ||
-			!db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(output[field])
+			output[field] !== null &&
+			(!Number.isSafeInteger(output[field]) ||
+				!db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(output[field]))
 		)
 			throw new Error(`Select a valid ${field.replace('_id', '')}`);
 	}
@@ -121,7 +130,14 @@ export function insertStudy(db, input, source = {}) {
 	payload.source_study_uid = source.source_study_uid || null;
 	payload.source_component = source.source_component || null;
 	payload.source_description = source.source_description || null;
-	const columns = [...studyFields, 'source_study_uid', 'source_component', 'source_description'];
+	payload.source_modality = source.source_modality || null;
+	const columns = [
+		...studyFields,
+		'source_study_uid',
+		'source_component',
+		'source_description',
+		'source_modality'
+	];
 	const result = db
 		.prepare(
 			`INSERT INTO studies (${columns.join(', ')}) VALUES (${columns.map((field) => `@${field}`).join(', ')})`

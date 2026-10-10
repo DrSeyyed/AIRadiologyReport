@@ -16,7 +16,7 @@ if (proxyUrl) {
   console.log('[proxy] Using proxy for server fetch ->', proxyUrl);
 }
 
-startVoiceWorker();
+startVoiceWorker(getDb);
 startStudyNotificationWorker(getDb);
 
 export const handle = async ({ event, resolve }) => {

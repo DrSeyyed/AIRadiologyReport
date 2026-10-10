@@ -6,7 +6,6 @@ import * as XLSX from 'xlsx';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import { normalizeStudyInput, insertStudy, getStudyDetail } from '../src/lib/server/studies.js';
 import { parseStudyWorkbook } from '../src/lib/server/excel-studies.js';
-import { saveImportMapping } from '../src/lib/server/import-mappings.js';
 import { previewStudyImport, commitStudyImport } from '../src/lib/server/study-import.js';
 import { processStudyNotification } from '../src/lib/server/study-notifications.js';
 import { buildStudyMessage, syncStudyMessage } from '../src/lib/server/telegram.js';
@@ -39,16 +38,6 @@ function row(overrides = {}) {
 		errors: [],
 		...overrides
 	};
-}
-function mapping(db) {
-	return saveImportMapping(db, {
-		modality_id: 1,
-		source_description: 'BR + / RT KNEE',
-		components: [
-			{ exam_type_id: 1, exam_details: '' },
-			{ exam_type_id: 2, exam_details: 'Right' }
-		]
-	});
 }
 function input(overrides = {}) {
 	return { ...row(), modality_id: 1, exam_type_id: 2, ...overrides };
@@ -112,52 +101,57 @@ test('demographics remain independent; age zero/unknown and optional staff are v
 		assert.throws(() => normalizeStudyInput(db, input(invalid)));
 });
 
-test('preview registers only descriptions, never patient records or guesses components', (t) => {
+test('preview is read-only and accepts arbitrary descriptions and unknown source modalities', (t) => {
 	const db = fixture(t);
-	const preview = previewStudyImport(db, [row()], { registerDescriptions: true });
-	assert.equal(preview.rows[0].status, 'unmapped');
+	const preview = previewStudyImport(db, [
+		row({ modality_code: 'CUSTOM', source_description: 'Operator-specific free text' })
+	]);
+	assert.equal(preview.rows[0].status, 'ready');
+	assert.equal(preview.rows[0].modality_id, null);
 	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 0);
 	assert.equal(
-		db.prepare('SELECT description_key FROM study_import_mappings').get().description_key,
-		'BR + / RT KNEE'
+		db.prepare("SELECT name FROM sqlite_master WHERE name = 'study_import_mappings'").get(),
+		undefined
 	);
-	assert.throws(() => commitStudyImport(db, preview, [2]), /unresolved/);
-	mapping(db);
-	assert.equal(previewStudyImport(db, [row()]).rows[0].status, 'ready');
+	assert.deepEqual(commitStudyImport(db, preview, [2]), { inserted: 1, skipped: 0 });
+	const study = getStudyDetail(db, 1);
+	assert.equal(study.source_modality, 'CUSTOM');
+	assert.equal(study.source_description, 'Operator-specific free text');
+	assert.equal(study.exam_type_id, null);
+	assert.deepEqual(study.recordings, []);
 });
 
-test('explicit mapping splits studies, preserves contrast/side, and skips repeats', (t) => {
+test('one source UID creates one study and repeated rows/imports are skipped', (t) => {
 	const db = fixture(t);
-	mapping(db);
 	const preview = previewStudyImport(db, [row(), row({ row: 3 })]);
 	assert.deepEqual(
 		preview.rows.map((item) => item.status),
 		['ready', 'duplicate']
 	);
 	assert.deepEqual(commitStudyImport(db, preview, [2, 3], {}, { queueTelegram: true }), {
-		inserted: 2,
-		skipped: 2
+		inserted: 1,
+		skipped: 1
 	});
 	const studies = db.prepare('SELECT * FROM studies ORDER BY id').all();
-	assert.deepEqual(
-		studies.map((item) => [item.exam_type_id, item.exam_details]),
-		[
-			[1, ''],
-			[2, 'Right']
-		]
-	);
+	assert.equal(studies.length, 1);
+	assert.equal(studies[0].exam_type_id, null);
 	assert.equal(studies[0].patient_code, '00012');
 	assert.equal(studies[0].source_description, 'BR + / RT KNEE');
-	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 2);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 1);
 	const repeated = previewStudyImport(db, [row()]);
 	assert.equal(repeated.rows[0].status, 'duplicate');
-	assert.deepEqual(commitStudyImport(db, repeated, [2]), { inserted: 0, skipped: 2 });
+	assert.deepEqual(commitStudyImport(db, repeated, [2]), { inserted: 0, skipped: 1 });
 	assert.notEqual(repeated.token, preview.token);
+});
+
+test('selecting only a repeated workbook row still imports its UID once', (t) => {
+	const db = fixture(t);
+	const preview = previewStudyImport(db, [row(), row({ row: 3 })]);
+	assert.deepEqual(commitStudyImport(db, preview, [3]), { inserted: 1, skipped: 0 });
 });
 
 test('UID conflicts block every source row and never overwrite an existing study', (t) => {
 	const db = fixture(t);
-	mapping(db);
 	const conflicting = previewStudyImport(db, [row(), row({ row: 3, patient_age: 46 })]);
 	assert.deepEqual(
 		conflicting.rows.map((item) => item.status),
@@ -178,28 +172,21 @@ test('UID conflicts block every source row and never overwrite an existing study
 	]);
 	assert.equal(another.rows[0].status, 'ready');
 	commitStudyImport(db, another, [4]);
-	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 4);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 2);
 });
 
-test('mapping changes invalidate preview; invalid assignments roll back all inserts', (t) => {
+test('changed source invalidates preview and invalid assignments roll back all inserts', (t) => {
 	const db = fixture(t);
-	mapping(db);
 	const before = previewStudyImport(db, [row()]);
-	saveImportMapping(db, {
-		modality_id: 1,
-		source_description: row().source_description,
-		components: [{ exam_type_id: 2, exam_details: 'Left' }]
-	});
-	const after = previewStudyImport(db, [row()]);
+	const after = previewStudyImport(db, [row({ source_description: 'Different wording' })]);
 	assert.notEqual(before.token, after.token);
 	assert.throws(() => commitStudyImport(db, after, [2], { corresponding_resident_id: 3 }));
 	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 0);
 	assert.throws(() => commitStudyImport(db, after, [999]), /unresolved/);
 });
 
-test('real workbook parses into split studies with age from AGE, not birth date', (t) => {
+test('real workbook creates one study with age from AGE, not birth date', (t) => {
 	const db = fixture(t);
-	mapping(db);
 	const workbook = XLSX.utils.book_new();
 	XLSX.utils.book_append_sheet(
 		workbook,
@@ -233,7 +220,7 @@ test('real workbook parses into split studies with age from AGE, not birth date'
 	assert.deepEqual(parsed[0].errors, []);
 	const preview = previewStudyImport(db, parsed);
 	assert.equal(preview.rows[0].status, 'ready');
-	assert.deepEqual(commitStudyImport(db, preview, [parsed[0].row]), { inserted: 2, skipped: 0 });
+	assert.deepEqual(commitStudyImport(db, preview, [parsed[0].row]), { inserted: 1, skipped: 0 });
 	const study = db.prepare('SELECT * FROM studies LIMIT 1').get();
 	assert.equal(study.patient_age, 45);
 	assert.equal(study.patient_gender, 'female');
