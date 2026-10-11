@@ -1,4 +1,4 @@
-import { getStudyDetail, insertStudy } from '$lib/server/studies.js';
+import { getStudyDetail, insertStudy, studySignatureFilter } from '$lib/server/studies.js';
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { sendStudyMessage } from '$lib/server/telegram.js';
@@ -71,6 +71,17 @@ export async function GET({ url, locals }) {
 		params.push(q.date_to);
 	}
 
+	try {
+		const filters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
+			`${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() || ''
+		]));
+		const signatureFilter = studySignatureFilter(filters);
+		baseSql += signatureFilter.sql;
+		params.push(...signatureFilter.params);
+	} catch (error) {
+		return json({ error: error.message }, { status: 400 });
+	}
+
 	// --- Total count query ---
 	const countSql = `SELECT COUNT(*) AS total ${baseSql}`;
 	const { total } = db.prepare(countSql).get(...params);
@@ -102,6 +113,7 @@ export async function GET({ url, locals }) {
       (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.text_report_path IS NOT NULL) AS report_count,
       (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.resident_checked = 1) AS resident_checked_count,
       (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.attending_checked = 1) AS attending_checked_count,
+      (SELECT COUNT(*) FROM study_recordings r WHERE r.study_id = s.id AND r.typist_checked = 1) AS typist_checked_count,
       m.code         AS modality_code,
       e.code         AS exam_type_code,
       ur.full_name   AS resident_fullname,
@@ -122,6 +134,7 @@ export async function GET({ url, locals }) {
 
 export async function POST({ request, locals }) {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	if (locals.user.role === 'typist') return json({ error: 'Forbidden' }, { status: 403 });
 	try {
 		const db = getDb();
 		const input = await request.json();

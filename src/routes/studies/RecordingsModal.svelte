@@ -16,6 +16,7 @@
 	let disposed = false;
 	let cancelCapture = false;
 	let fileInput;
+	const readOnly = $derived(data.user?.role === 'typist');
 
 	async function refresh() {
 		const response = await fetch(`/api/studies/${study.id}`);
@@ -51,7 +52,7 @@
 	});
 
 	async function upload(file) {
-		if (!file || busy || disposed) return;
+		if (readOnly || !file || busy || disposed) return;
 		error = '';
 		busy = true;
 		try {
@@ -70,7 +71,7 @@
 	}
 
 	async function startRecording() {
-		if (busy || recordingAudio) return;
+		if (readOnly || busy || recordingAudio) return;
 		error = '';
 		busy = true;
 		try {
@@ -127,6 +128,7 @@
 		<p class="text-sm">Source modality: {detail?.source_modality || detail?.modality_code || study.modality_code || 'Not specified'}<br />Source description (reference only): {detail?.source_description || detail?.description || study.source_description || study.description || 'Not specified'}</p>
 		<p class="text-sm">Each upload or Telegram audio reply adds an independent recording. Assign its resident, configure and generate its report here. Study attending: {detail?.attending_fullname || study.attending_fullname || 'Not assigned'}.</p>
 		<div class="flex flex-wrap items-center gap-3">
+			{#if !readOnly}
 			<label class="form-control min-w-0 max-w-full">
 				<span class="label-text">Append audio recording</span>
 				<input bind:this={fileInput} type="file" accept="audio/*" class="file-input file-input-bordered w-full max-w-full" disabled={busy || recordingAudio || loading} onchange={(event) => upload(event.currentTarget.files?.[0])} />
@@ -138,6 +140,7 @@
 			{:else}
 				<button class="btn btn-outline" disabled={busy || loading} onclick={startRecording}>Record microphone</button>
 			{/if}
+			{/if}
 			<button class="btn btn-ghost" disabled={busy || loading} onclick={() => { error = ''; changed().catch((caught) => (error = caught.message)); }}>Refresh recordings</button>
 		</div>
 		{#if busy}<p role="status">Working…</p>{/if}
@@ -145,12 +148,12 @@
 		{#if loading}<p>Loading recordings…</p>
 		{:else if detail}
 			{#each detail.recordings ?? [] as item (item.id)}
-				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} residents={data.residents} user={data.user} onChanged={changed} onReport={(item) => (report = item)} onEditStudy={busy || recordingAudio ? undefined : () => onEditStudy(detail)} />
+				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} residents={data.residents} user={data.user} onChanged={changed} onReport={(item) => (report = item)} onEditStudy={readOnly || busy || recordingAudio ? undefined : () => onEditStudy(detail)} />
 			{:else}<p>No recordings yet. Upload audio or record with the microphone.</p>{/each}
 		{/if}
 		<div class="modal-action"><button class="btn" disabled={busy || recordingAudio} onclick={onClose}>Close</button></div>
 	</div>
 </div>
 {#if report}
-	<ReportModal study={detail ?? study} recording={detail?.recordings?.find((item) => item.id === report.id) ?? report} initialText={report.__initialText ?? ''} onSaved={changed} onClose={() => (report = null)} />
+	<ReportModal user={data.user} study={detail ?? study} recording={detail?.recordings?.find((item) => item.id === report.id) ?? report} initialText={report.__initialText ?? ''} onSaved={changed} onClose={() => (report = null)} />
 {/if}

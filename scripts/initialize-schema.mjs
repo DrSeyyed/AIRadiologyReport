@@ -146,7 +146,10 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				['resident_signed_by_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
 				['attending_signed_by_user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
 				['resident_signed_at', 'TEXT'],
-				['attending_signed_at', 'TEXT']
+				['attending_signed_at', 'TEXT'],
+				['typist_checked', 'INTEGER NOT NULL DEFAULT 0'],
+				['typist_signed_by_user_id', 'INTEGER REFERENCES users(id)'],
+				['typist_signed_at', 'TEXT']
 			])
 				addColumn('study_recordings', name, definition);
 			if (

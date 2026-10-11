@@ -105,6 +105,17 @@
 			/>
 		</label>
 
+		{#each ['resident', 'attending', 'typist'] as role (role)}
+			<label class="form-control w-40 max-w-full">
+				<span class="label-text mb-1 text-sm">{role === 'resident' ? 'Resident' : role === 'attending' ? 'Attending' : 'Typist'} signature</span>
+				<select name={`${role}_checked`} class="select select-sm h-9" value={data.filters[`${role}_checked`] ?? ''}>
+					<option value="">All</option>
+					<option value="1">Checked</option>
+					<option value="0">Unchecked</option>
+				</select>
+			</label>
+		{/each}
+
 		<!-- Records Per Page -->
 		<label class="form-control w-16">
 			<span class="label-text mb-1 text-sm">Records</span>

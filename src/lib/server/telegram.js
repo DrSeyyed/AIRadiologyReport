@@ -93,7 +93,7 @@ export function buildStudyMessage(study) {
 		`Recordings: ${recordings.length} • Reports: ${recordings.filter((r) => r.text_report_path).length}`
 	);
 	lines.push(
-		`Signed: Resident ${recordings.filter((r) => r.resident_checked).length} • Attending ${recordings.filter((r) => r.attending_checked).length}`
+		`Signed: Resident ${recordings.filter((r) => r.resident_checked).length} • Attending ${recordings.filter((r) => r.attending_checked).length} • Typist (printed) ${recordings.filter((r) => r.typist_checked).length}`
 	);
 	for (const recording of recordings.slice(0, 5)) {
 		const label =
@@ -104,6 +104,9 @@ export function buildStudyMessage(study) {
 				: 'Awaiting examination selection on site';
 		lines.push(
 			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || 'select on site')}`
+		);
+		lines.push(
+			`Resident ${recording.resident_checked ? '✅' : '⬜'} • Attending ${recording.attending_checked ? '✅' : '⬜'} • Typist / printed ${recording.typist_checked ? `✅ (${esc((recording.typist_signer_fullname || 'Unknown signer').slice(0, 60))})` : '⬜'}`
 		);
 	}
 	if (recordings.length > 5) lines.push(`… ${recordings.length - 5} more recordings on site`);

@@ -18,9 +18,14 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from '
 import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-function handler(action, requireRecording = true) {
+function handler(action, requireRecording = true, allowTypist = false) {
 	return async (event) => {
 		if (!event.locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+		if (event.locals.user.role === 'typist' && !allowTypist)
+			return json(
+				{ error: 'Typists may only view reports and change the typist signature.' },
+				{ status: 403 }
+			);
 		try {
 			const studyId = Number(event.params.id),
 				recordingId = Number(event.params.recordingId);
@@ -47,7 +52,8 @@ function handler(action, requireRecording = true) {
 
 export const list = handler(
 	({ db, studyId }) => json({ recordings: listRecordings(db, studyId) }),
-	false
+	false,
+	true
 );
 
 export const upload = handler(async ({ db, studyId, request, locals }) => {
@@ -105,62 +111,70 @@ export const remove = handler(async ({ db, studyId, recordingId, recording }) =>
 	return json({ ok: true });
 });
 
-export const audio = handler(({ recording, request }) => {
-	if (!recording.audio_report_path || !existsSync(recording.audio_report_path))
-		throw recordingError('Audio file not found', 404);
-	const buffer = readFileSync(recording.audio_report_path);
-	const extension = extname(recording.audio_report_path).toLowerCase();
-	const type =
-		{
-			'.ogg': 'audio/ogg',
-			'.oga': 'audio/ogg',
-			'.opus': 'audio/ogg',
-			'.webm': 'audio/webm',
-			'.mp3': 'audio/mpeg',
-			'.mpeg': 'audio/mpeg',
-			'.wav': 'audio/wav',
-			'.m4a': 'audio/mp4',
-			'.mp4': 'audio/mp4',
-			'.flac': 'audio/flac',
-			'.aac': 'audio/aac'
-		}[extension] || 'application/octet-stream';
-	const headers = {
-		'Content-Type': type,
-		'Accept-Ranges': 'bytes',
-		'Cache-Control': 'private, no-store'
-	};
-	const range = request.headers.get('range');
-	if (range) {
-		const match = range.match(/^bytes=(\d*)-(\d*)$/);
-		let start = match?.[1]
-			? Number(match[1])
-			: match?.[2]
-				? Math.max(0, buffer.length - Number(match[2]))
-				: NaN;
-		let end =
-			match?.[1] && match?.[2] ? Math.min(buffer.length - 1, Number(match[2])) : buffer.length - 1;
-		if (
-			!Number.isSafeInteger(start) ||
-			!Number.isSafeInteger(end) ||
-			start < 0 ||
-			start > end ||
-			start >= buffer.length
-		)
-			return new Response(null, {
-				status: 416,
-				headers: { ...headers, 'Content-Range': `bytes */${buffer.length}` }
+export const audio = handler(
+	({ recording, request }) => {
+		if (!recording.audio_report_path || !existsSync(recording.audio_report_path))
+			throw recordingError('Audio file not found', 404);
+		const buffer = readFileSync(recording.audio_report_path);
+		const extension = extname(recording.audio_report_path).toLowerCase();
+		const type =
+			{
+				'.ogg': 'audio/ogg',
+				'.oga': 'audio/ogg',
+				'.opus': 'audio/ogg',
+				'.webm': 'audio/webm',
+				'.mp3': 'audio/mpeg',
+				'.mpeg': 'audio/mpeg',
+				'.wav': 'audio/wav',
+				'.m4a': 'audio/mp4',
+				'.mp4': 'audio/mp4',
+				'.flac': 'audio/flac',
+				'.aac': 'audio/aac'
+			}[extension] || 'application/octet-stream';
+		const headers = {
+			'Content-Type': type,
+			'Accept-Ranges': 'bytes',
+			'Cache-Control': 'private, no-store'
+		};
+		const range = request.headers.get('range');
+		if (range) {
+			const match = range.match(/^bytes=(\d*)-(\d*)$/);
+			let start = match?.[1]
+				? Number(match[1])
+				: match?.[2]
+					? Math.max(0, buffer.length - Number(match[2]))
+					: NaN;
+			let end =
+				match?.[1] && match?.[2]
+					? Math.min(buffer.length - 1, Number(match[2]))
+					: buffer.length - 1;
+			if (
+				!Number.isSafeInteger(start) ||
+				!Number.isSafeInteger(end) ||
+				start < 0 ||
+				start > end ||
+				start >= buffer.length
+			)
+				return new Response(null, {
+					status: 416,
+					headers: { ...headers, 'Content-Range': `bytes */${buffer.length}` }
+				});
+			return new Response(buffer.subarray(start, end + 1), {
+				status: 206,
+				headers: {
+					...headers,
+					'Content-Range': `bytes ${start}-${end}/${buffer.length}`,
+					'Content-Length': String(end - start + 1)
+				}
 			});
-		return new Response(buffer.subarray(start, end + 1), {
-			status: 206,
-			headers: {
-				...headers,
-				'Content-Range': `bytes ${start}-${end}/${buffer.length}`,
-				'Content-Length': String(end - start + 1)
-			}
+		}
+		return new Response(buffer, {
+			headers: { ...headers, 'Content-Length': String(buffer.length) }
 		});
-	}
-	return new Response(buffer, { headers: { ...headers, 'Content-Length': String(buffer.length) } });
-});
+	},
+	true,
+	true
+);
 
 export const generate = handler(async ({ db, studyId, recordingId }) => {
 	const result = await processRecording(db, studyId, recordingId);
@@ -168,13 +182,17 @@ export const generate = handler(async ({ db, studyId, recordingId }) => {
 	return json(result);
 });
 
-export const readReport = handler(({ recording }) => {
-	if (recording.text_report_path && !existsSync(recording.text_report_path))
-		throw recordingError('Report file not found', 404);
-	return json({
-		text: recording.text_report_path ? readFileSync(recording.text_report_path, 'utf8') : ''
-	});
-});
+export const readReport = handler(
+	({ recording }) => {
+		if (recording.text_report_path && !existsSync(recording.text_report_path))
+			throw recordingError('Report file not found', 404);
+		return json({
+			text: recording.text_report_path ? readFileSync(recording.text_report_path, 'utf8') : ''
+		});
+	},
+	true,
+	true
+);
 
 export const writeReport = handler(async ({ db, studyId, recordingId, recording, request }) => {
 	assertRecordingMutable(recording);
@@ -189,23 +207,28 @@ export const writeReport = handler(async ({ db, studyId, recordingId, recording,
 	return json({ ok: true, path });
 });
 
-export const sign = handler(async ({ db, studyId, recordingId, recording, locals, request }) => {
-	const body = await request.json().catch(() => null);
-	if (!body) throw recordingError('Invalid signature payload');
-	if (body.checked && (!recording.text_report_path || !existsSync(recording.text_report_path)))
-		throw recordingError('Report file not found', 404);
-	const updated = signRecording(db, studyId, recordingId, locals.user, body.role, body.checked);
-	const study = getStudyDetail(db, studyId);
-	if (body.role === 'attending' && body.checked && !recording.attending_checked) {
-		await sendTelegramMessage(
-			buildFinalReportMessage(study, updated, readFileSync(updated.text_report_path, 'utf8'))
-		);
-	}
-	await syncStudyMessage(study);
-	return json({
-		ok: true,
-		resident_checked: updated.resident_checked,
-		attending_checked: updated.attending_checked,
-		recording: updated
-	});
-});
+export const sign = handler(
+	async ({ db, studyId, recordingId, recording, locals, request }) => {
+		const body = await request.json().catch(() => null);
+		if (!body) throw recordingError('Invalid signature payload');
+		if (body.checked && (!recording.text_report_path || !existsSync(recording.text_report_path)))
+			throw recordingError('Report file not found', 404);
+		const updated = signRecording(db, studyId, recordingId, locals.user, body.role, body.checked);
+		const study = getStudyDetail(db, studyId);
+		if (body.role === 'attending' && body.checked && !recording.attending_checked) {
+			await sendTelegramMessage(
+				buildFinalReportMessage(study, updated, readFileSync(updated.text_report_path, 'utf8'))
+			);
+		}
+		await syncStudyMessage(study);
+		return json({
+			ok: true,
+			resident_checked: updated.resident_checked,
+			attending_checked: updated.attending_checked,
+			typist_checked: updated.typist_checked,
+			recording: updated
+		});
+	},
+	true,
+	true
+);

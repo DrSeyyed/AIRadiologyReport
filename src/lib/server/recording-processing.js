@@ -19,7 +19,7 @@ export function saveRecordingReport(db, recordingId, text, directory = 'uploads/
 		renameSync(temporary, path);
 		const result = db
 			.prepare(
-				'UPDATE study_recordings SET text_report_path = ?, resident_checked = 0, attending_checked = 0, resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, resident_signed_at = NULL, attending_signed_at = NULL WHERE id = ?'
+				'UPDATE study_recordings SET text_report_path = ?, resident_checked = 0, attending_checked = 0, typist_checked = 0, resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, typist_signed_by_user_id = NULL, resident_signed_at = NULL, attending_signed_at = NULL, typist_signed_at = NULL WHERE id = ?'
 			)
 			.run(path, recordingId);
 		if (!result.changes) throw recordingError('Recording no longer exists', 404);

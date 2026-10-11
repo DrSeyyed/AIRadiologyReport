@@ -1,4 +1,5 @@
 <script>
+	import TypistSignature from './TypistSignature.svelte';
 	let { study, recording, modalities, examTypes, residents, user, onChanged, onReport, onEditStudy } = $props();
 	let modality = $state('');
 	let examination = $state('');
@@ -23,7 +24,8 @@
 	const ready = $derived(configured && assigned && hasAttending);
 	const residentSigned = $derived(Boolean(recording.resident_checked));
 	const attendingSigned = $derived(Boolean(recording.attending_checked));
-	const signed = $derived(residentSigned || attendingSigned);
+	const signed = $derived(residentSigned || attendingSigned || Boolean(recording.typist_checked));
+	const readOnly = $derived(user?.role === 'typist');
 	const assignmentLocked = $derived(Boolean(recording.resident_assignment_locked));
 	const working = $derived(busy || Boolean(recording.processing));
 	const admin = $derived(user?.role === 'admin');
@@ -59,7 +61,7 @@
 	}
 
 	function saveConfiguration() {
-		if (signed) return;
+		if (readOnly || signed) return;
 		return act(async () => {
 			const result = await request('', 'PATCH', {
 				modality_id: modality ? Number(modality) : null,
@@ -75,7 +77,7 @@
 	}
 
 	async function generate() {
-		if (dirty || !ready || !recording.audio_report_path || signed || working) return;
+		if (readOnly || dirty || !ready || !recording.audio_report_path || signed || working) return;
 		generating = true;
 		await act(async () => {
 			const result = await request('/transcribe', 'POST');
@@ -85,7 +87,7 @@
 	}
 
 	function remove() {
-		if (signed || working) return;
+		if (readOnly || signed || working) return;
 		if (confirm(`Delete recording #${recording.id} and its report? This cannot be undone.`)) {
 			return act(() => request('', 'DELETE'));
 		}
@@ -112,13 +114,13 @@
 		<h4 class="font-semibold">Recording #{recording.id}</h4>
 		<span class="badge">{recording.text_report_path ? 'Report available' : !ready ? 'Awaiting configuration / staff assignment' : 'Ready to generate'}</span>
 		{#if working}<span role="status">{generating ? 'Transcribing & generating…' : 'Processing…'}</span>{/if}
-		<button class="btn btn-xs btn-error btn-outline ml-auto" disabled={working || signed} onclick={remove}>Delete recording</button>
+		{#if !readOnly}<button class="btn btn-xs btn-error btn-outline ml-auto" disabled={working || signed} onclick={remove}>Delete recording</button>{/if}
 	</div>
 	<p class="text-sm">Source: {recording.source || 'legacy'} · Sender: {recording.sender_fullname || 'Unknown'}{#if recording.sender_role} ({recording.sender_role}){/if}<br />Study attending: {study.attending_fullname || 'Not assigned'}</p>
 	{#if recording.audio_report_path}
 		<audio controls preload="none" src={`${endpoint}/audio`} class="w-full"><track kind="captions" /></audio>
 	{:else}<p>No audio available.</p>{/if}
-	<fieldset disabled={working || signed} class="grid gap-3 md:grid-cols-3" oninput={() => (error = '')} onchange={() => (error = '')}>
+	<fieldset disabled={readOnly || working || signed} class="grid gap-3 md:grid-cols-3" oninput={() => (error = '')} onchange={() => (error = '')}>
 		<label class="form-control">
 			<span class="label-text">Recording resident (required for reports)</span>
 			<select class="select select-bordered" bind:value={resident} disabled={assignmentLocked}>
@@ -151,15 +153,18 @@
 	<p class="text-sm opacity-70">Contrast is part of the examination code. Save resident and examination choices before generating or writing a report. Changes clear only this recording's report and signatures.</p>
 	{#if assignmentLocked}<p class="text-sm">Resident assignment is locked to the Telegram resident sender ({recording.sender_fullname || recording.resident_fullname || 'assigned resident'}); it cannot be reassigned.</p>{/if}
 	{#if !assigned}<p class="text-sm">Select and save a resident for this recording before generating or writing its report. Telegram attending audio retains the study attending and still needs a resident selected here.</p>{/if}
-	{#if !hasAttending}<p class="text-sm text-warning">A study attending is required. <button class="btn btn-xs btn-outline" disabled={working || !onEditStudy} onclick={onEditStudy}>Edit study to assign attending</button></p>{/if}
+	{#if !hasAttending}<p class="text-sm text-warning">A study attending is required. {#if !readOnly}<button class="btn btn-xs btn-outline" disabled={working || !onEditStudy} onclick={onEditStudy}>Edit study to assign attending</button>{/if}</p>{/if}
+	{#if readOnly}<p class="text-sm">Typist access is read-only except for the typist signature. View and print reports after review, then confirm printing.</p>{/if}
 	{#if !configured}<p class="text-sm">Awaiting configuration: select and save modality and examination including contrast before generating or writing a report.</p>{/if}
 	{#if signed}<p class="text-sm">Signed report: uncheck attending first, then resident (or ask an administrator), before editing, configuring or deleting.</p>{/if}
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
 	<div class="flex flex-wrap items-center gap-3">
-		<button class="btn btn-sm btn-outline" disabled={working || signed || !dirty} onclick={saveConfiguration}>Save configuration</button>
-		<button class="btn btn-sm btn-primary" disabled={working || signed || dirty || !ready || !recording.audio_report_path} onclick={generate}>Transcribe & Generate</button>
+		{#if !readOnly}
+			<button class="btn btn-sm btn-outline" disabled={working || signed || !dirty} onclick={saveConfiguration}>Save configuration</button>
+			<button class="btn btn-sm btn-primary" disabled={working || signed || dirty || !ready || !recording.audio_report_path} onclick={generate}>Transcribe & Generate</button>
+		{/if}
 		{#if dirty}<span class="text-sm">Unsaved configuration</span>{/if}
-		<button class="btn btn-sm btn-outline" disabled={(!signed && !working && dirty) || (!recording.text_report_path && (working || signed || !ready || dirty))} onclick={() => { error = ''; onReport(recording); }}>{recording.text_report_path ? signed || working || !ready ? 'View / print report' : 'Edit / preview / print report' : 'New report'}</button>
+		<button class="btn btn-sm btn-outline" disabled={(readOnly && !recording.text_report_path) || (!signed && !working && dirty) || (!recording.text_report_path && (working || signed || !ready || dirty))} onclick={() => { error = ''; onReport(recording); }}>{recording.text_report_path ? readOnly || signed || working || !ready ? 'View / print report' : 'Edit / preview / print report' : 'New report'}</button>
 		<label class="flex items-center gap-2 text-sm">
 			<input type="checkbox" class="checkbox checkbox-sm" checked={residentSigned} disabled={working || (!residentSigned && (dirty || !ready || !recording.text_report_path)) || !canResident} onchange={(event) => sign('resident', event.currentTarget.checked, event.currentTarget)} />Resident signed — {recording.resident_fullname || 'Unassigned'}
 		</label>
@@ -167,6 +172,7 @@
 			<input type="checkbox" class="checkbox checkbox-sm" checked={attendingSigned} disabled={working || (!attendingSigned && (dirty || !ready || !recording.text_report_path || !residentSigned)) || !canAttending} onchange={(event) => sign('attending', event.currentTarget.checked, event.currentTarget)} />Attending signed
 		</label>
 	</div>
+	<TypistSignature {study} {recording} {user} {onChanged} disabled={working} />
 	{#if residentSigned}<p class="text-sm">Resident signature by {recording.resident_signer_fullname || 'Unknown signer'}{#if residentOverride} (on behalf of {recording.resident_fullname || 'assigned resident'}){/if}{#if recording.resident_signed_at} · {recording.resident_signed_at}{/if}</p>{/if}
 	{#if attendingSigned}<p class="text-sm">Attending signature by {recording.attending_signer_fullname || 'Unknown signer'}{#if recording.attending_signed_at} · {recording.attending_signed_at}{/if}</p>{/if}
 	{#if !residentSigned}<p class="text-xs opacity-70">The assigned resident, administrator or study attending may sign for the resident. Attending approval requires the resident signature first, including for administrators.</p>{/if}

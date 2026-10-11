@@ -3,8 +3,9 @@
   import { onDestroy } from 'svelte';
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
+  import TypistSignature from './TypistSignature.svelte';
 
-  let { study, recording, onClose, onSaved, initialText = '' } = $props();
+  let { study, recording, user, onClose, onSaved, initialText = '' } = $props();
 
   const state = $state({
     text: initialText,
@@ -16,13 +17,16 @@
   });
 
   const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}/report`);
-  const editable = $derived(!recording.processing && !recording.resident_checked && !recording.attending_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
+  const editable = $derived(user?.role !== 'typist' && !recording.processing && !recording.resident_checked && !recording.attending_checked && !recording.typist_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
   const residentSignature = $derived(recording.resident_checked
     ? `Resident signature: ${recording.resident_signer_fullname || 'Unknown signer'}${recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id) ? ` (on behalf of ${recording.resident_fullname || 'assigned resident'})` : ''}${recording.resident_signed_at ? ` · ${recording.resident_signed_at}` : ''}`
     : 'Resident signature: not signed');
   const attendingSignature = $derived(recording.attending_checked
     ? `Attending signature: ${recording.attending_signer_fullname || 'Unknown signer'}${recording.attending_signed_at ? ` · ${recording.attending_signed_at}` : ''}`
     : 'Attending signature: not signed');
+  const typistSignature = $derived(recording.typist_checked
+    ? `Typist / printed confirmation: ${recording.typist_signer_fullname || 'Unknown signer'}${recording.typist_signed_at ? ` · ${recording.typist_signed_at}` : ''}`
+    : 'Typist / printed confirmation: not signed');
   let printFrame;
   onDestroy(() => printFrame?.remove());
 
@@ -46,7 +50,7 @@
       frame.contentWindow?.print();
     };
     const heading = DOMPurify.sanitize(`<h1>Study #${study.id} — Recording #${recording.id}</h1>`);
-    const signatures = `<p>Recording resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Study attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}</p>`;
+    const signatures = `<p>Recording resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Study attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
     frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
@@ -126,9 +130,10 @@
       <p>Recording resident: {recording.resident_fullname || 'Unassigned'} · Study attending: {study.attending_fullname || 'Not assigned'}</p>
       <p>{residentSignature}</p>
       <p>{attendingSignature}</p>
+      <TypistSignature {study} {recording} {user} onChanged={onSaved ?? invalidateAll} disabled={state.loading || state.saving || !!state.error} />
     </div>
     {#if state.error}<div class="alert alert-error" role="alert">{state.error}</div>{/if}
-    {#if !editable}<p class="text-sm mb-3">Read-only: unsign the report, wait for processing to finish, and save the recording resident and modality/examination configuration before editing. A study attending must also be selected using Edit study.</p>{/if}
+    {#if !editable}<p class="text-sm mb-3">{user?.role === 'typist' ? 'Typist access: reports are read-only. Print the reviewed report, then check the typist signature above.' : 'Read-only: unsign the report, wait for processing to finish, and save the recording resident and modality/examination configuration before editing. A study attending must also be selected using Edit study.'}</p>{/if}
 
     {#if state.loading}
       <div class="space-y-2 mb-3">

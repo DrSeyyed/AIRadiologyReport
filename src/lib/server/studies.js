@@ -42,7 +42,28 @@ export function getStudyDetail(db, id) {
 	study.report_count = study.recordings.filter((r) => r.text_report_path).length;
 	study.resident_checked_count = study.recordings.filter((r) => r.resident_checked).length;
 	study.attending_checked_count = study.recordings.filter((r) => r.attending_checked).length;
+	study.typist_checked_count = study.recordings.filter((r) => r.typist_checked).length;
 	return study;
+}
+
+export function studySignatureFilter(filters) {
+	const conditions = [],
+		params = [];
+	for (const role of ['resident', 'attending', 'typist']) {
+		const value = filters[`${role}_checked`] ?? '';
+		if (value === '') continue;
+		if (!['0', '1'].includes(value)) throw new Error('Invalid signature filter');
+		conditions.push(`r.${role}_checked = ?`);
+		params.push(Number(value));
+	}
+	if (!conditions.length) return { sql: '', params };
+	const pendingWithoutRecordings = params.every((value) => value === 0)
+		? ' OR NOT EXISTS (SELECT 1 FROM study_recordings r WHERE r.study_id = s.id)'
+		: '';
+	return {
+		sql: ` AND (EXISTS (SELECT 1 FROM study_recordings r WHERE r.study_id = s.id AND ${conditions.join(' AND ')})${pendingWithoutRecordings})`,
+		params
+	};
 }
 
 export function normalizeStudyInput(db, input) {

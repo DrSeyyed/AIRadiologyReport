@@ -69,11 +69,11 @@ function protectReviewers(db, id, deleting = false) {
 	const signed = db
 		.prepare(
 			`SELECT 1 FROM study_recordings r JOIN studies s ON s.id=r.study_id
-		WHERE (r.resident_checked=1 OR r.attending_checked=1 OR r.processing=1) AND
+		WHERE (r.resident_checked=1 OR r.attending_checked=1 OR r.typist_checked=1 OR r.processing=1) AND
 		(r.corresponding_resident_id=? OR s.corresponding_attending_id=? OR r.sender_user_id=? OR
-		r.resident_signed_by_user_id=? OR r.attending_signed_by_user_id=?) LIMIT 1`
+		r.resident_signed_by_user_id=? OR r.attending_signed_by_user_id=? OR r.typist_signed_by_user_id=?) LIMIT 1`
 		)
-		.get(id, id, id, id, id);
+		.get(id, id, id, id, id, id);
 	if (signed)
 		throw failure(
 			'This user is linked to signed or processing recordings. Finish processing and remove signatures before changing their role or removing them.',

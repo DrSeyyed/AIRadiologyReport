@@ -16,6 +16,7 @@ export async function GET({ params, locals }) {
 
 export async function PATCH({ params, request, locals }) {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	if (locals.user.role === 'typist') return json({ error: 'Forbidden' }, { status: 403 });
 	const db = getDb();
 	const id = Number(params.id);
 	try {
@@ -63,6 +64,7 @@ export async function PATCH({ params, request, locals }) {
 
 export async function DELETE({ params, locals }) {
 	if (!locals.user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+	if (locals.user.role === 'typist') return json({ error: 'Forbidden' }, { status: 403 });
 	const db = getDb();
 	const id = Number(params.id);
 	const detail = getStudyDetail(db, id);

@@ -13,6 +13,10 @@ export async function load({ locals, fetch, url }) {
   const date_from         = url.searchParams.get('date_from')?.trim() ?? '';
   const date_to           = url.searchParams.get('date_to')?.trim() ?? '';
 
+  const signatureFilters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
+    `${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() ?? ''
+  ]));
+
   // Pagination + sorting from URL
   const page       = Math.max(1, Number(url.searchParams.get('page') ?? '1') || 1);
   const rowcount   = Math.min(100, Math.max(1, Number(url.searchParams.get('rowcount') ?? '20') || 20));
@@ -28,6 +32,9 @@ export async function load({ locals, fetch, url }) {
   if (exam_type_id)      qs.set('exam_type_id', exam_type_id);
   if (date_from)         qs.set('date_from', date_from);
   if (date_to)           qs.set('date_to', date_to);
+  for (const [key, value] of Object.entries(signatureFilters)) {
+    if (value) qs.set(key, value);
+  }
 
   // Always include pagination + sorting so backend can paginate deterministically
   qs.set('page', String(page));
@@ -64,7 +71,8 @@ export async function load({ locals, fetch, url }) {
       modality_id,
       exam_type_id,
       date_from,
-      date_to
+      date_to,
+      ...signatureFilters
     },
     // expose paging/sort so the UI can render controls
     paging: {

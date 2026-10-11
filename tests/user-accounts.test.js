@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -208,6 +207,52 @@ test('signed/processing users are protected and assigned reviewers cannot be cha
 	db.prepare('UPDATE study_recordings SET processing=0').run();
 	await assert.rejects(updateAccount(db, admin, resident.id, { role: 'typist' }), { status: 409 });
 });
+test('typist signatures protect signers of every eligible role until the signature is cleared', async (t) => {
+	const { db, admin, add } = fixture(t);
+	const study = Number(
+		db
+			.prepare(
+				"INSERT INTO studies(patient_code,exam_date_jalali,exam_time) VALUES('SYNTHETIC','1405-07-18','12:00:00')"
+			)
+			.run().lastInsertRowid
+	);
+	for (const role of ['typist', 'admin', 'resident', 'attending']) {
+		const signer = add(`Synthetic ${role} Signer`, role);
+		const recording = Number(
+			db
+				.prepare(
+					'INSERT INTO study_recordings(study_id,resident_checked,attending_checked,typist_checked,typist_signed_by_user_id,typist_signed_at) VALUES(?,1,1,1,?,?)'
+				)
+				.run(study, signer.id, '2026-10-11T12:00:00Z').lastInsertRowid
+		);
+		assert.throws(() => removeAccount(db, admin, signer.id), { status: 409 });
+		await assert.rejects(
+			updateAccount(db, admin, signer.id, { role: role === 'typist' ? 'resident' : 'typist' }),
+			{ status: 409 }
+		);
+		await updateAccount(db, admin, signer.id, { full_name: 'Allowed signer name edit' });
+		assert.equal(
+			db.prepare('SELECT typist_signed_by_user_id FROM study_recordings WHERE id=?').get(recording)
+				.typist_signed_by_user_id,
+			signer.id
+		);
+		// Even inconsistent older data must not allow an active signature's signer to disappear.
+		db.prepare('UPDATE study_recordings SET resident_checked=0,attending_checked=0 WHERE id=?').run(
+			recording
+		);
+		assert.throws(() => removeAccount(db, admin, signer.id), { status: 409 });
+		await assert.rejects(
+			updateAccount(db, admin, signer.id, { role: role === 'typist' ? 'resident' : 'typist' }),
+			{ status: 409 }
+		);
+		db.prepare(
+			'UPDATE study_recordings SET typist_checked=0,typist_signed_by_user_id=NULL,typist_signed_at=NULL WHERE id=?'
+		).run(recording);
+		await updateAccount(db, admin, signer.id, { role: role === 'typist' ? 'resident' : 'typist' });
+		assert.deepEqual(removeAccount(db, admin, signer.id), { ok: true });
+	}
+	assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
 test('legacy users without credentials require both username and password, while name-only edits work', async (t) => {
 	const { db, admin, add } = fixture(t);
 	const legacy = add('Legacy Resident', 'resident');
@@ -225,7 +270,7 @@ test('legacy users without credentials require both username and password, while
 	assert.equal(getAccount(db, legacy.id).username, 'legacy_user');
 });
 test('startup seed retains renamed administrator credentials and never recreates default login', (t) => {
-	const cwd = mkdtempSync(path.join(tmpdir(), 'radiology-seed-test-'));
+	const cwd = mkdtempSync(path.join(process.cwd(), '.radiology-seed-test-'));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	mkdirSync(path.join(cwd, 'db'));
 	const db = new Database(path.join(cwd, 'db', 'pacs.db'));

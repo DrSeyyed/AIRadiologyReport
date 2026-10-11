@@ -16,6 +16,7 @@ export function listRecordings(db, studyId) {
 		e.code AS exam_type_code, e.name AS exam_type_name,
 		resident.full_name AS resident_fullname, sender.full_name AS sender_fullname,
 		resident_signer.full_name AS resident_signer_fullname, attending_signer.full_name AS attending_signer_fullname,
+		typist_signer.full_name AS typist_signer_fullname,
 		(r.source = 'telegram' AND r.sender_role = 'resident' AND sender.id IS NOT NULL) AS resident_assignment_locked
 		FROM study_recordings r LEFT JOIN modalities m ON m.id = r.modality_id
 		LEFT JOIN exam_types e ON e.id = r.exam_type_id
@@ -23,6 +24,7 @@ export function listRecordings(db, studyId) {
 		LEFT JOIN users sender ON sender.id = r.sender_user_id
 		LEFT JOIN users resident_signer ON resident_signer.id = r.resident_signed_by_user_id
 		LEFT JOIN users attending_signer ON attending_signer.id = r.attending_signed_by_user_id
+		LEFT JOIN users typist_signer ON typist_signer.id = r.typist_signed_by_user_id
 		WHERE r.study_id = ? ORDER BY r.id`
 		)
 		.all(studyId);
@@ -77,7 +79,7 @@ export function assertRecordingMutable(recording) {
 	if (!recording) throw recordingError('Recording not found', 404);
 	if (recording.processing)
 		throw recordingError('Recording is being processed. Try again later.', 409);
-	if (recording.resident_checked || recording.attending_checked)
+	if (recording.resident_checked || recording.attending_checked || recording.typist_checked)
 		throw recordingError('Unsign this report before changing it.', 409);
 }
 
@@ -125,9 +127,9 @@ export function configureRecording(db, studyId, recordingId, input) {
 		db.prepare(
 			`UPDATE study_recordings SET modality_id = @modality_id, exam_type_id = @exam_type_id,
 		exam_details = @exam_details, corresponding_resident_id = @corresponding_resident_id,
-		text_report_path = NULL, resident_checked = 0, attending_checked = 0,
-		resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL,
-		resident_signed_at = NULL, attending_signed_at = NULL WHERE id = @id`
+		text_report_path = NULL, resident_checked = 0, attending_checked = 0, typist_checked = 0,
+		resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, typist_signed_by_user_id = NULL,
+		resident_signed_at = NULL, attending_signed_at = NULL, typist_signed_at = NULL WHERE id = @id`
 		).run({ ...output, id: recordingId });
 	return getRecording(db, studyId, recordingId);
 }
@@ -158,15 +160,21 @@ export function signRecording(db, studyId, recordingId, user, role, checked) {
 	const recording = getRecording(db, studyId, recordingId);
 	if (!recording) throw recordingError('Recording not found', 404);
 	if (recording.processing) throw recordingError('Recording is being processed.', 409);
-	if (!['resident', 'attending'].includes(role) || typeof checked !== 'boolean')
+	if (!['resident', 'attending', 'typist'].includes(role) || typeof checked !== 'boolean')
 		throw recordingError('Invalid signature payload');
 	const study = db.prepare('SELECT * FROM studies WHERE id = ?').get(studyId);
 	const admin = user.role === 'admin';
 	const attending = user.role === 'attending' && user.id === study.corresponding_attending_id;
 	const resident = user.role === 'resident' && user.id === recording.corresponding_resident_id;
-	if (!admin && !attending && !(role === 'resident' && resident))
+	const authorized =
+		role === 'typist'
+			? admin || attending || resident || user.role === 'typist'
+			: admin || attending || (role === 'resident' && resident);
+	if (!authorized)
 		throw recordingError(
-			'Only the assigned resident, corresponding study attending or administrator may sign.',
+			role === 'typist'
+				? 'Only a typist, assigned resident, corresponding study attending or administrator may confirm printing.'
+				: 'Only the assigned resident, corresponding study attending or administrator may sign.',
 			403
 		);
 	if (checked) assertRecordingReviewers(db, studyId, recording);
@@ -176,14 +184,16 @@ export function signRecording(db, studyId, recordingId, user, role, checked) {
 		throw recordingError('Cannot unsign resident after attending has signed.', 409);
 	if (role === 'attending' && checked && !recording.resident_checked)
 		throw recordingError('Resident must sign first.', 409);
+	if (role === 'typist' && checked && (!recording.resident_checked || !recording.attending_checked))
+		throw recordingError('Resident and attending must sign before typist confirmation.', 409);
 	if (checked && recording[`${role}_checked`]) return recording;
 	if (role === 'resident' && !checked && admin)
 		db.prepare(
-			'UPDATE study_recordings SET resident_checked = 0, attending_checked = 0, resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, resident_signed_at = NULL, attending_signed_at = NULL WHERE id = ?'
+			'UPDATE study_recordings SET resident_checked = 0, attending_checked = 0, typist_checked = 0, resident_signed_by_user_id = NULL, attending_signed_by_user_id = NULL, typist_signed_by_user_id = NULL, resident_signed_at = NULL, attending_signed_at = NULL, typist_signed_at = NULL WHERE id = ?'
 		).run(recordingId);
 	else
 		db.prepare(
-			`UPDATE study_recordings SET ${role}_checked = ?, ${role}_signed_by_user_id = ?, ${role}_signed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE id = ?`
+			`UPDATE study_recordings SET ${role}_checked = ?, ${role}_signed_by_user_id = ?, ${role}_signed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END${role !== 'typist' && !checked ? ', typist_checked = 0, typist_signed_by_user_id = NULL, typist_signed_at = NULL' : ''} WHERE id = ?`
 		).run(checked ? 1 : 0, checked ? user.id : null, checked ? 1 : 0, recordingId);
 	return getRecording(db, studyId, recordingId);
 }
