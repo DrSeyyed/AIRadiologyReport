@@ -100,10 +100,10 @@
 			submit('preview');
 		}}
 	>
-		<label class="form-control">
+		<label class="form-control min-w-0 max-w-full">
 			<span class="label-text">Excel file (XLS/XLSX, up to 10 MB and 5,000 rows)</span>
 			<input
-				class="file-input file-input-bordered"
+				class="file-input file-input-bordered w-full max-w-full"
 				type="file"
 				accept=".xls,.xlsx"
 				disabled={busy}

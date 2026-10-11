@@ -127,9 +127,9 @@
 		<p class="text-sm">Source modality: {detail?.source_modality || detail?.modality_code || study.modality_code || 'Not specified'}<br />Source description (reference only): {detail?.source_description || detail?.description || study.source_description || study.description || 'Not specified'}</p>
 		<p class="text-sm">Each upload or Telegram audio reply adds an independent recording. Assign its resident, configure and generate its report here. Study attending: {detail?.attending_fullname || study.attending_fullname || 'Not assigned'}.</p>
 		<div class="flex flex-wrap items-center gap-3">
-			<label class="form-control">
+			<label class="form-control min-w-0 max-w-full">
 				<span class="label-text">Append audio recording</span>
-				<input bind:this={fileInput} type="file" accept="audio/*" class="file-input file-input-bordered" disabled={busy || recordingAudio || loading} onchange={(event) => upload(event.currentTarget.files?.[0])} />
+				<input bind:this={fileInput} type="file" accept="audio/*" class="file-input file-input-bordered w-full max-w-full" disabled={busy || recordingAudio || loading} onchange={(event) => upload(event.currentTarget.files?.[0])} />
 			</label>
 			{#if recordingAudio}
 				<span role="status">Recording microphone…</span>

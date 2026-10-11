@@ -2,21 +2,14 @@
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { resolve } from '$app/paths';
-	import { goto, invalidateAll} from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 
 	let { data, children } = $props();
-  	
-	let sidebarOpen = $state(true);
-
-	function toggleSidebar() {
-		sidebarOpen = !sidebarOpen;
-	}
 
 	async function logout() {
 		await fetch('/api/auth/logout', { method: 'POST' });
-		// Send them to login page
 		await invalidateAll();
-		goto('/login');
+		goto(resolve('/login'));
 	}
 </script>
 
@@ -24,57 +17,42 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-<div class="min-h-screen flex flex-col bg-green-100">
-  <!-- Top bar -->
-  <header class="flex items-center justify-between px-4 h-14 border-b bg-blue-100 dark:bg-black">
-    <div class="flex items-center gap-2">
-      <input id="my-drawer_1" type="checkbox" class="drawer-toggle" />
-      <div class="drawer-content flex flex-col items-center justify-center">
-        <label for="my-drawer_1" class="btn btn-primary drawer-button">
-          ☰
-        </label>
-      </div>
-      <div class="drawer-side">
-      <label for="my-drawer_1" aria-label="close sidebar" class="drawer-overlay"></label>
-      <ul class="menu bg-blue-100 text-base-content min-h-full w-64 p-4">
-        <!-- Sidebar content here -->
-        <div class="divider p-3">Dashboard</div>
-        <a href="/" class="link link-primary p-3">Home</a>
-        <a href="/studies" class="link link-primary p-3">Studies</a>
-        {#if data?.user}
-          <a href={resolve('/account')} class="link link-primary p-3">Account</a>
-        {/if}
-        {#if data?.user?.role === 'admin'}
-          <div class="divider p-3">Admin</div>
-          <a href="/admin/users" class="link link-primary p-3">Users</a>
-          <a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a>
-          <a href="/admin/templates" class="link link-primary p-3">Templates</a>
-        {/if}
-      </ul>
-    </div>
-      <h1 class="font-semibold">Personal Taleghani PACS</h1>
-    </div>
-    <!-- Right side: auth status -->
-    <div class="flex items-center gap-3 text-sm">
-      {#if data.user}
-        <span class="opacity-80">
-          Logged in as <strong>{data.user.full_name}</strong> ({data.user.role})
-        </span>
-        <button class="btn btn-primary" onclick={logout}>
-          Logout
-        </button>
-      {:else}
-        <button class="btn btn-primary" onclick={goto('/login')}>
-          Login
-        </button>
-      {/if}
-    </div>
-  </header>
-
-  <!-- Page Content -->
-  <div class="flex-1 flex">
-    <main class="flex-1 p-4">
-      {@render children?.()}
-    </main>
-  </div>
+<div class="drawer min-h-screen w-full min-w-0 bg-green-100">
+	<input id="main-drawer" type="checkbox" class="drawer-toggle" aria-label="Open navigation" />
+	<div class="drawer-content flex min-h-screen min-w-0 flex-col">
+		<header class="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-blue-100 px-4 py-2">
+			<div class="flex min-w-0 items-center gap-2">
+				<label for="main-drawer" class="btn btn-primary drawer-button" aria-label="Open navigation">☰</label>
+				<h1 class="min-w-0 break-words font-semibold">Personal Taleghani PACS</h1>
+			</div>
+			<div class="flex min-w-0 flex-wrap items-center gap-3 text-sm">
+				{#if data.user}
+					<span class="min-w-0 break-words opacity-80">Logged in as <strong>{data.user.full_name}</strong> ({data.user.role})</span>
+					<button class="btn btn-primary shrink-0" onclick={logout}>Logout</button>
+				{:else}
+					<button class="btn btn-primary" onclick={() => goto(resolve('/login'))}>Login</button>
+				{/if}
+			</div>
+		</header>
+		<main class="w-full min-w-0 flex-1 p-4">
+			{@render children?.()}
+		</main>
+	</div>
+	<aside class="drawer-side z-40" aria-label="Navigation">
+		<label for="main-drawer" aria-label="Close navigation" class="drawer-overlay"></label>
+		<ul class="menu min-h-full w-64 max-w-full bg-blue-100 p-4 text-base-content">
+			<li class="menu-title">Dashboard</li>
+			<li><a href={resolve('/')} class="link link-primary p-3">Home</a></li>
+			<li><a href={resolve('/studies')} class="link link-primary p-3">Studies</a></li>
+			{#if data.user}
+				<li><a href={resolve('/account')} class="link link-primary p-3">Account</a></li>
+			{/if}
+			{#if data.user?.role === 'admin'}
+				<li class="menu-title">Admin</li>
+				<li><a href={resolve('/admin/users')} class="link link-primary p-3">Users</a></li>
+				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
+				<li><a href={resolve('/admin/templates')} class="link link-primary p-3">Templates</a></li>
+			{/if}
+		</ul>
+	</aside>
 </div>

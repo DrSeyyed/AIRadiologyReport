@@ -1,5 +1,47 @@
-@import 'tailwindcss';
-@plugin '@tailwindcss/forms';
-@plugin '@tailwindcss/typography';
-@plugin "daisyui";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+@layer base {
+	html,
+	html[data-theme='light'] {
+		min-height: 100%;
+		@apply bg-green-100;
+	}
+
+	body {
+		min-height: 100vh;
+		@apply bg-green-100;
+	}
+
+	main {
+		overflow-wrap: anywhere;
+	}
+
+	/* DaisyUI's legacy fallback otherwise switches to dark colors with the OS theme. */
+	@supports not (color: oklch(0% 0 0)) {
+		html[data-theme='light'] {
+			color-scheme: light;
+			--fallback-p: #570df8;
+			--fallback-pc: #ffffff;
+			--fallback-s: #f000b8;
+			--fallback-sc: #ffffff;
+			--fallback-a: #00d3bb;
+			--fallback-ac: #001d19;
+			--fallback-n: #2b3440;
+			--fallback-nc: #d7dde4;
+			--fallback-b1: #ffffff;
+			--fallback-b2: #f2f2f2;
+			--fallback-b3: #e5e6e6;
+			--fallback-bc: #1f2937;
+			--fallback-in: #00b3f0;
+			--fallback-inc: #000000;
+			--fallback-su: #00ca92;
+			--fallback-suc: #000000;
+			--fallback-wa: #ffc22d;
+			--fallback-wac: #000000;
+			--fallback-er: #ff6f70;
+			--fallback-erc: #000000;
+		}
+	}
+}
