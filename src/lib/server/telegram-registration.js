@@ -84,12 +84,7 @@ export async function handleTelegramRegistration(
 	const erase = () => quiet(() => remove(message.message_id, id));
 	const approved = getApprovedTelegramUser(db, id);
 	if (approved) {
-		await reply(
-			'Your account is approved. Sign in to the website using your chosen username and password.' +
-				(approved.role === 'typist'
-					? ' You can manage studies and recordings on the website; resident/attending signatures remain restricted.'
-					: ' Reply to a study message in the study group with voice/audio to attach a recording.')
-		);
+		await reply('Account approved. Website login is active.');
 		return true;
 	}
 	db.prepare(
@@ -103,31 +98,27 @@ export async function handleTelegramRegistration(
 		db.prepare(
 			"DELETE FROM telegram_registrations WHERE telegram_user_id=? AND step != 'approved'"
 		).run(id);
-		await reply('Registration cancelled. Send /register to start again.');
+		await reply('Registration cancelled.');
 		return true;
 	}
 	if (command === '/start' || command === '/register') {
 		if (registration?.step === 'pending') {
-			await reply(
-				'Your registration is awaiting administrator approval. Your website login is not active yet.'
-			);
+			await reply('Awaiting administrator approval.');
 			return true;
 		}
 		db.prepare(
 			`INSERT INTO telegram_registrations(telegram_user_id,telegram_username,last_message_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET telegram_username=excluded.telegram_username, full_name='',role=NULL,username=NULL,password_hash=NULL,user_id=NULL,step='name',last_message_id=excluded.last_message_id,updated_at=excluded.updated_at`
 		).run(id, message.from.username || null, message.message_id, now);
-		await reply(
-			'Registration is private. Send your full name. Next you will choose resident/attending/typist, a website username, and a unique website password. Do not reuse another account’s password. Telegram bots are not end-to-end encrypted. Send /cancel to cancel.'
-		);
+		await reply('Send your full name. /cancel to cancel.');
 		return true;
 	}
 	if (!registration || registration.step === 'rejected') {
-		await reply('Send /register to create a resident, attending or typist website account.');
+		await reply('Send /register to begin.');
 		return true;
 	}
 	if (registration.step === 'pending') {
 		await erase();
-		await reply('Awaiting administrator approval. Your website login is not active yet.');
+		await reply('Awaiting administrator approval.');
 		return true;
 	}
 	if (registration.step === 'approved') {
@@ -158,19 +149,13 @@ export async function handleTelegramRegistration(
 			return true;
 		}
 		update({ full_name: name, step: 'role' });
-		await reply(
-			'Choose your role using the buttons below. An administrator will verify your role.',
-			roleKeyboard
-		);
+		await reply('Choose your role.', roleKeyboard);
 		return true;
 	}
 	if (registration.step === 'role') {
 		const role = text.trim().toLowerCase();
 		if (!['resident', 'attending', 'typist'].includes(role)) {
-			await reply(
-				'Choose Resident, Attending or Typist using the buttons below. An administrator will verify your role.',
-				roleKeyboard
-			);
+			await reply('Choose Resident, Attending or Typist.', roleKeyboard);
 			return true;
 		}
 		update({ role, step: 'username' });
@@ -198,7 +183,7 @@ export async function handleTelegramRegistration(
 			return true;
 		}
 		await reply(
-			'Send a unique website password of at least 8 characters and at most 72 UTF-8 bytes. The bot will try to delete this message immediately. Only a password hash is stored; it will not be shown to administrators.'
+			'Send a unique website password (8+ characters, up to 72 UTF-8 bytes). Telegram chats are not end-to-end encrypted.'
 		);
 		return true;
 	}
@@ -212,10 +197,7 @@ export async function handleTelegramRegistration(
 		}
 		const password_hash = await hash(text);
 		const result = update({ password_hash, step: 'pending' });
-		if (result.changes)
-			await reply(
-				'Registration submitted for administrator approval. Your website username and password will work only after approval.'
-			);
+		if (result.changes) await reply('Submitted. Awaiting administrator approval.');
 		return true;
 	}
 	return true;

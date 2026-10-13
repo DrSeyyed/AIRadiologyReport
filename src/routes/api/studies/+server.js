@@ -20,6 +20,8 @@ export async function GET({ url, locals }) {
 		patient_lastname: url.searchParams.get('patient_lastname')?.trim() || '',
 		modality_id: url.searchParams.get('modality_id')?.trim() || '',
 		exam_type_id: url.searchParams.get('exam_type_id')?.trim() || '',
+		corresponding_resident_id: url.searchParams.get('corresponding_resident_id')?.trim() || '',
+		corresponding_attending_id: url.searchParams.get('corresponding_attending_id')?.trim() || '',
 		date_from: url.searchParams.get('date_from')?.trim() || '',
 		date_to: url.searchParams.get('date_to')?.trim() || ''
 	};
@@ -75,7 +77,13 @@ export async function GET({ url, locals }) {
 		const filters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
 			`${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() || ''
 		]));
-		const signatureFilter = studySignatureFilter(filters);
+		if (q.corresponding_attending_id) {
+			if (!/^[1-9]\d*$/.test(q.corresponding_attending_id) || !Number.isSafeInteger(Number(q.corresponding_attending_id)))
+				throw new Error('Invalid attending filter');
+			baseSql += ' AND s.corresponding_attending_id = ?';
+			params.push(Number(q.corresponding_attending_id));
+		}
+		const signatureFilter = studySignatureFilter({ ...filters, corresponding_resident_id: q.corresponding_resident_id });
 		baseSql += signatureFilter.sql;
 		params.push(...signatureFilter.params);
 	} catch (error) {
@@ -123,6 +131,20 @@ export async function GET({ url, locals }) {
     LIMIT ? OFFSET ?
   `;
 	const rows = db.prepare(dataSql).all(...params, q.rowcount, (q.page - 1) * q.rowcount);
+	const residentsByStudy = new Map();
+	if (rows.length) {
+		const residents = db.prepare(`
+			SELECT DISTINCT r.study_id, u.id, u.full_name
+			FROM study_recordings r JOIN users u ON u.id = r.corresponding_resident_id
+			WHERE r.study_id IN (${rows.map(() => '?').join(',')})
+			ORDER BY u.full_name COLLATE NOCASE, u.id
+		`).all(...rows.map((row) => row.id));
+		for (const { study_id, id, full_name } of residents) {
+			if (!residentsByStudy.has(study_id)) residentsByStudy.set(study_id, []);
+			residentsByStudy.get(study_id).push({ id, full_name });
+		}
+	}
+	for (const row of rows) row.residents = residentsByStudy.get(row.id) ?? [];
 
 	return json({
 		total,

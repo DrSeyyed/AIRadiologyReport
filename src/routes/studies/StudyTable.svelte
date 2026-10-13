@@ -1,5 +1,6 @@
 <script>
 	import Filters from './Filters.svelte';
+	import { studyLabel } from '$lib/study-label.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 
@@ -14,7 +15,7 @@
 	}
 
 	async function deleteStudy(study) {
-		if (readOnly || deleting || !confirm(`Delete study #${study.id} and all recordings/reports? This cannot be undone.`)) return;
+		if (readOnly || deleting || !confirm(`Delete ${studyLabel(study)} and all recordings/reports? This cannot be undone.`)) return;
 		error = '';
 		deleting = study.id;
 		try {
@@ -42,7 +43,7 @@
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
-			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Actions</th></tr>
+			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Actions</th></tr>
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
@@ -55,6 +56,11 @@
 					<td class="max-w-xs whitespace-normal">{study.source_description || study.description || '-'}</td>
 					<td>{study.exam_date_jalali}<div>{study.exam_time}</div></td>
 					<td>{study.attending_fullname ?? '-'}</td>
+					<td class="max-w-xs whitespace-normal">
+						{#each study.residents as resident (resident.id)}
+							<div>{resident.full_name}</div>
+						{:else}-{/each}
+					</td>
 					<td>
 						<div>{study.recording_count ?? 0} recordings · {study.report_count ?? 0} reports</div>
 						<button class="btn btn-sm btn-primary mt-1" onclick={() => { error = ''; recordingsForStudy = study; }}>Recordings & reports</button>
@@ -65,7 +71,7 @@
 						<button class="btn btn-outline btn-xs btn-error" disabled={deleting !== null || !canDelete(study)} onclick={() => deleteStudy(study)}>{deleting === study.id ? 'Deleting…' : 'Delete'}</button>
 					</div>{/if}</td>
 				</tr>
-			{:else}<tr><td colspan="11">No studies found.</td></tr>{/each}
+			{:else}<tr><td colspan="12">No studies found.</td></tr>{/each}
 		</tbody>
 	</table>
 </div>

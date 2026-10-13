@@ -44,7 +44,7 @@
 	{:else if !clinicallySigned}
 		<p class="text-xs opacity-70">Resident and attending must sign before confirming printing.</p>
 	{:else}
-		<p class="text-xs opacity-70">Check after printing the report; uncheck to withdraw confirmation.</p>
+		<p class="text-xs opacity-70">Confirm only after printing.</p>
 	{/if}
 	{#if busy}<p role="status">Updating typist signature…</p>{/if}
 	{#if error}<p class="text-error" role="alert">{error}</p>{/if}

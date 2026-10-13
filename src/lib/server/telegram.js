@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { studyLabel } from '../study-label.js';
 
 function getToken() {
 	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -42,7 +43,10 @@ async function tgRequest(endpoint, payload) {
 	}
 	if (!data.ok) {
 		const description = data.description || `HTTP ${res.status}`;
-		throw new Error(`Telegram ${endpoint} failed: ${description}`);
+		throw Object.assign(new Error(`Telegram ${endpoint} failed: ${description}`), {
+			telegram_error_code: data.error_code || res.status,
+			retry_after: data.parameters?.retry_after
+		});
 	}
 	return data.result;
 }
@@ -57,13 +61,11 @@ export function esc(s) {
 
 export function buildStudyMessage(study) {
 	const lines = [];
-	lines.push(`<b>🩺 Study</b>`);
-	lines.push(
-		`Study #${esc(study.id)} — source modality: ${esc(study.source_modality || study.modality_code || 'Unspecified')}`
-	);
+	lines.push(`<b>🩺 ${esc(studyLabel(study))}</b>`);
+	lines.push(`Modality: ${esc(study.source_modality || study.modality_code || '-')}`);
 	if (study.source_description || study.description)
 		lines.push(
-			`Source description (reference only): ${esc((study.source_description || study.description).slice(0, 500))}`
+			`Description: ${esc((study.source_description || study.description).slice(0, 500))}`
 		);
 
 	lines.push(
@@ -85,7 +87,6 @@ export function buildStudyMessage(study) {
 	if (study.description && study.description !== study.source_description)
 		lines.push(`Note: ${esc(study.description.slice(0, 300))}`);
 
-	lines.push('Resident: assigned separately for each recording');
 	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
 
 	const recordings = study.recordings || [];
@@ -101,50 +102,19 @@ export function buildStudyMessage(study) {
 				? `${recording.modality_code || ''} ${recording.exam_type_code || ''} ${recording.exam_details || ''}`
 						.trim()
 						.slice(0, 150)
-				: 'Awaiting examination selection on site';
+				: 'Examination pending';
 		lines.push(
-			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || 'select on site')}`
+			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || '-')}`
 		);
 		lines.push(
 			`Resident ${recording.resident_checked ? '✅' : '⬜'} • Attending ${recording.attending_checked ? '✅' : '⬜'} • Typist / printed ${recording.typist_checked ? `✅ (${esc((recording.typist_signer_fullname || 'Unknown signer').slice(0, 60))})` : '⬜'}`
 		);
 	}
 	if (recordings.length > 5) lines.push(`… ${recordings.length - 5} more recordings on site`);
-	lines.push(
-		'<i>Register privately with this bot using /register and wait for administrator approval. Reply to this study message with voice/audio to add a recording. Resident replies stay assigned to that resident; attending replies require a resident selected on the site. The study attending stays unchanged. Save reviewers and examination details on the site, then Transcribe &amp; Generate.</i>'
-	);
 
 	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
 
 	return lines.join('\n');
-}
-
-export function buildFinalReportMessage(study, recording, reportText) {
-	const label =
-		`${recording.exam_type_code || ''} ${recording.exam_details || ''}, ${recording.modality_code || ''}`.slice(
-			0,
-			100
-		);
-	const heading = [
-		'<b>Final report signed</b>',
-		`Study #${esc(study.id)} — Recording #${esc(recording.id)}`,
-		esc(label),
-		`Patient: <b>${esc(`${study.patient_firstname || ''} ${study.patient_lastname || ''}`.trim().slice(0, 120))}</b> (code ${esc((study.patient_code || '').slice(0, 64))})`,
-		`Assigned resident: ${esc((recording.resident_fullname || '-').slice(0, 60))}`,
-		`Study attending: ${esc((study.attending_fullname || '-').slice(0, 60))}`,
-		`Resident signature by: ${esc((recording.resident_signer_fullname || 'Unknown (legacy)').slice(0, 60))}`,
-		`Attending signature by: ${esc((recording.attending_signer_fullname || 'Unknown (legacy)').slice(0, 60))}`,
-		`Date/Time: ${esc(study.exam_date_jalali)} ${esc(study.exam_time)}`
-	].join('\n');
-	const footer = '\n<i>Full report available on the site.</i>';
-	const budget = 4000 - heading.length - footer.length - 12;
-	let escaped = '';
-	for (const character of reportText) {
-		const part = esc(character);
-		if (escaped.length + part.length > budget) break;
-		escaped += part;
-	}
-	return `${heading}\n<pre>${escaped}</pre>${footer}`;
 }
 
 // ---------- message send/edit/delete ----------
@@ -156,6 +126,22 @@ export async function sendBotMessage(chat_id, text, reply_to_message_id, reply_m
 		...(reply_to_message_id ? { reply_parameters: { message_id: reply_to_message_id } } : {}),
 		...(reply_markup ? { reply_markup } : {})
 	});
+}
+
+export async function getStudyGroupInviteLink() {
+	const chat_id = getChatID();
+	const chat = await tgRequest('getChat', { chat_id });
+	assert(['group', 'supergroup', 'channel'].includes(chat.type), 'Study chat must be a group or channel');
+	if (chat.username && /^[A-Za-z0-9_]+$/.test(chat.username))
+		return `https://t.me/${chat.username}`;
+	let link = chat.invite_link;
+	if (!link) {
+		const created = await tgRequest('createChatInviteLink', { chat_id, name: 'Website invitations' });
+		link = created.invite_link;
+	}
+	const url = new URL(link);
+	assert(url.protocol === 'https:' && ['t.me', 'telegram.me'].includes(url.hostname) && !url.username && !url.password, 'Invalid Telegram invite link');
+	return url.href;
 }
 
 export async function sendStudyMessage(study, chat_id) {

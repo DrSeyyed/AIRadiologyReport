@@ -81,18 +81,6 @@
 		<h1 class="text-2xl font-bold">Import studies from Excel</h1>
 		<a class="btn btn-ghost" href={resolve('/studies')}>Back to studies</a>
 	</div>
-	<p>
-		Patient ID and demographics are saved on each study, without linking patients. Age is taken
-		directly from the export; birth date is not used.
-	</p>
-	<p>
-		Each Excel row creates one study. Original modality and description are saved as reference only;
-		no examination selection or description mapping is required. Add audio recordings later and
-		select modality, examination/body part including contrast, and optional details/side for each
-		recording before Transcribe &amp; Generate. Telegram audio replies append recordings; configure
-		and generate reports on this site. Residents are assigned per recording. Staff register privately
-		with the Telegram bot and appear in selectors only after administrator approval.
-	</p>
 	<form
 		class="flex flex-wrap items-end gap-4"
 		onsubmit={(event) => {
@@ -135,7 +123,7 @@
 		<div class="flex flex-wrap items-center gap-4">
 			<p>
 				{preview.rows.length} source rows; {ready.length} ready; {unresolved} unresolved.
-				Duplicate rows will be skipped. Each selected ready row imports one study.
+				Duplicates skipped.
 			</p>
 			<button class="btn btn-sm" disabled={busy} onclick={() => selectRows(ready)}
 				>Select all ready</button
@@ -211,7 +199,7 @@
 					type="checkbox"
 					bind:checked={notifyTelegram}
 					disabled={busy}
-				/>Queue Telegram study messages (sent gradually; import does not wait for Telegram)</label
+				/>Queue Telegram study messages</label
 			>
 		{/if}
 		<button

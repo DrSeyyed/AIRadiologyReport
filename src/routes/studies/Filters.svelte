@@ -105,6 +105,25 @@
 			/>
 		</label>
 
+		<label class="form-control w-48 max-w-full">
+			<span class="label-text mb-1 text-sm">Attending</span>
+			<select name="corresponding_attending_id" class="select select-sm h-9" value={data.filters.corresponding_attending_id ? Number(data.filters.corresponding_attending_id) : ''}>
+				<option value="">All</option>
+				{#each data.attendings as attending (attending.id)}
+					<option value={attending.id}>{attending.full_name}</option>
+				{/each}
+			</select>
+		</label>
+		<label class="form-control w-48 max-w-full">
+			<span class="label-text mb-1 text-sm">Resident</span>
+			<select name="corresponding_resident_id" class="select select-sm h-9" value={data.filters.corresponding_resident_id ? Number(data.filters.corresponding_resident_id) : ''}>
+				<option value="">All</option>
+				{#each data.residents as resident (resident.id)}
+					<option value={resident.id}>{resident.full_name}</option>
+				{/each}
+			</select>
+		</label>
+
 		{#each ['resident', 'attending', 'typist'] as role (role)}
 			<label class="form-control w-40 max-w-full">
 				<span class="label-text mb-1 text-sm">{role === 'resident' ? 'Resident' : role === 'attending' ? 'Attending' : 'Typist'} signature</span>

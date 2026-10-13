@@ -32,7 +32,7 @@ export const POST = async ({ request }) => {
 		if (msg.from?.is_bot || !sender) {
 			await sendBotMessage(
 				msg.chat.id,
-				'Audio not attached: register with this bot in a private chat using /register and wait for administrator approval.',
+				'Audio not attached: account not approved. Register privately with /register.',
 				msg.message_id
 			).catch(() => {});
 			return json({ ok: true });
@@ -40,7 +40,7 @@ export const POST = async ({ request }) => {
 		if (sender.role === 'typist') {
 			await sendBotMessage(
 				msg.chat.id,
-				'Typist accounts manage studies and uploads on the website. Only approved residents and attendings can attach Telegram audio.',
+				'Typists cannot attach Telegram audio.',
 				msg.message_id
 			).catch(() => {});
 			return json({ ok: true });

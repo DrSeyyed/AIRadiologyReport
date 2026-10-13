@@ -120,7 +120,7 @@
 					bind:value={form.patient_code}
 					required
 				/>
-				<span class="text-xs opacity-70">Demographics apply only to this study; provide at least one name.</span>
+				<span class="text-xs opacity-70">At least one patient name is required.</span>
 			</label>
 
 			<label class="form-control">
@@ -186,10 +186,6 @@
 				</select>
 			</label>
 
-			<p class="text-sm opacity-70">Select examination, contrast and optional details separately for each audio recording, not for the study.</p>
-
-			<p class="text-sm opacity-70">Residents are assigned to individual recordings, not to the study. Only approved Telegram accounts appear in staff selectors.</p>
-
 			<label class="form-control">
 				<div class="label"><span class="label-text">Study attending (required)</span></div>
 				<select class="select-bordered select w-full" bind:value={form.corresponding_attending_id} required>
@@ -200,7 +196,7 @@
 				</select>
 			</label>
 
-			{#if study}<p class="text-sm opacity-70">The attending cannot be changed while any recording is signed or processing. Unsign recordings and wait for processing to finish first.</p>{/if}
+			{#if study}<p class="text-sm opacity-70">Attending changes require unsigned recordings and completed processing.</p>{/if}
 
 			<!-- Optional fields -->
 			<label class="form-control md:col-span-2">

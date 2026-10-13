@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS pending_telegram (
   retry_at INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS telegram_group_invitations (
+  user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  telegram_user_id TEXT NOT NULL,
+  invite_link TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  sent_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS telegram_registrations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   telegram_user_id TEXT NOT NULL UNIQUE,

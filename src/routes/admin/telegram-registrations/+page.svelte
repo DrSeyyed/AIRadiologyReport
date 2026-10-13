@@ -52,12 +52,12 @@
 		<h1 class="text-2xl font-semibold">Telegram registrations</h1>
 		<a class="btn btn-ghost" href={resolve('/admin/users')}>User management</a>
 	</div>
-	<p>Residents, attendings and typists register privately with the Telegram bot using their full name, role and website username/password. Verify the identity and role before approving. Approval automatically creates the website account; pending and rejected applicants do not appear in staff selectors. Passwords are never displayed here.</p>
+	<p>Verify identity and role before approving.</p>
 	{#if !data.telegramConfigured}
-		<div class="alert alert-warning" role="status">Telegram is not configured. Configure the bot before accepting private registrations or sending notifications.</div>
+		<div class="alert alert-warning" role="status">Telegram bot configuration required for registrations and notifications.</div>
 	{/if}
 	{#if !data.webhookConfigured}
-		<div class="alert alert-warning" role="status">Telegram webhook security is not configured. Set TELEGRAM_WEBHOOK_SECRET on the server and configure the bot webhook with the matching secret before using Telegram onboarding.</div>
+		<div class="alert alert-warning" role="status">Telegram onboarding requires TELEGRAM_WEBHOOK_SECRET and a matching bot webhook secret.</div>
 	{/if}
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
 	{#if success}<div class="alert alert-success" role="status">{success}</div>{/if}

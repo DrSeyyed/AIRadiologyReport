@@ -243,7 +243,7 @@ test('role selection uses buttons, accepts typists and removes the keyboard befo
 	assert.equal(result.user.role, 'typist');
 	assert.equal(getApprovedTelegramUser(db, 200).role, 'typist');
 	await send('/start');
-	assert.match(sent.at(-1).text, /manage studies/);
+	assert.equal(sent.at(-1).text, 'Account approved. Website login is active.');
 	assert.ok(!sent.at(-1).text.includes('Reply to a study'));
 	assert.equal(
 		queueVoiceReply(db, {
@@ -255,6 +255,24 @@ test('role selection uses buttons, accepts typists and removes the keyboard befo
 		}),
 		false
 	);
+});
+
+test('registration prompts are concise while retaining credential requirements and approval status', async (t) => {
+	const { send, sent } = fixture(t);
+	await send('/register');
+	assert.equal(sent.at(-1).text, 'Send your full name. /cancel to cancel.');
+	await send('Synthetic Resident');
+	assert.equal(sent.at(-1).text, 'Choose your role.');
+	await send('Resident');
+	assert.match(sent.at(-1).text, /3–32/);
+	await send('synthetic_resident');
+	assert.match(sent.at(-1).text, /8\+ characters.*72 UTF-8 bytes/);
+	assert.match(sent.at(-1).text, /not end-to-end encrypted/);
+	await send('Synthetic-password-42');
+	assert.equal(sent.at(-1).text, 'Submitted. Awaiting administrator approval.');
+	await send('/register');
+	assert.equal(sent.at(-1).text, 'Awaiting administrator approval.');
+	assert.ok(sent.every(({ text }) => text.length < 150));
 });
 
 test('bot message requests include role keyboards without changing reply parameters', async (t) => {

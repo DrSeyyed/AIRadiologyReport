@@ -150,13 +150,13 @@
 			<input class="input input-bordered" bind:value={details} maxlength="200" placeholder="e.g. left, additional details" />
 		</label>
 	</fieldset>
-	<p class="text-sm opacity-70">Contrast is part of the examination code. Save resident and examination choices before generating or writing a report. Changes clear only this recording's report and signatures.</p>
-	{#if assignmentLocked}<p class="text-sm">Resident assignment is locked to the Telegram resident sender ({recording.sender_fullname || recording.resident_fullname || 'assigned resident'}); it cannot be reassigned.</p>{/if}
-	{#if !assigned}<p class="text-sm">Select and save a resident for this recording before generating or writing its report. Telegram attending audio retains the study attending and still needs a resident selected here.</p>{/if}
+	<p class="text-sm opacity-70">Configuration changes clear this recording's report and signatures.</p>
+	{#if assignmentLocked}<p class="text-sm">Resident locked to Telegram sender: {recording.sender_fullname || recording.resident_fullname || 'assigned resident'}.</p>{/if}
+	{#if !assigned}<p class="text-sm">Select and save a resident before creating a report.</p>{/if}
 	{#if !hasAttending}<p class="text-sm text-warning">A study attending is required. {#if !readOnly}<button class="btn btn-xs btn-outline" disabled={working || !onEditStudy} onclick={onEditStudy}>Edit study to assign attending</button>{/if}</p>{/if}
-	{#if readOnly}<p class="text-sm">Typist access is read-only except for the typist signature. View and print reports after review, then confirm printing.</p>{/if}
-	{#if !configured}<p class="text-sm">Awaiting configuration: select and save modality and examination including contrast before generating or writing a report.</p>{/if}
-	{#if signed}<p class="text-sm">Signed report: uncheck attending first, then resident (or ask an administrator), before editing, configuring or deleting.</p>{/if}
+	{#if readOnly}<p class="text-sm">Typist access: read-only except for printing confirmation.</p>{/if}
+	{#if !configured}<p class="text-sm">Select and save modality and examination before creating a report.</p>{/if}
+	{#if signed}<p class="text-sm">Signed report: withdraw printing confirmation, then attending and resident signatures before making changes.</p>{/if}
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
 	<div class="flex flex-wrap items-center gap-3">
 		{#if !readOnly}
@@ -175,5 +175,5 @@
 	<TypistSignature {study} {recording} {user} {onChanged} disabled={working} />
 	{#if residentSigned}<p class="text-sm">Resident signature by {recording.resident_signer_fullname || 'Unknown signer'}{#if residentOverride} (on behalf of {recording.resident_fullname || 'assigned resident'}){/if}{#if recording.resident_signed_at} · {recording.resident_signed_at}{/if}</p>{/if}
 	{#if attendingSigned}<p class="text-sm">Attending signature by {recording.attending_signer_fullname || 'Unknown signer'}{#if recording.attending_signed_at} · {recording.attending_signed_at}{/if}</p>{/if}
-	{#if !residentSigned}<p class="text-xs opacity-70">The assigned resident, administrator or study attending may sign for the resident. Attending approval requires the resident signature first, including for administrators.</p>{/if}
+	{#if !residentSigned}<p class="text-xs opacity-70">Resident signing: assigned resident, study attending or administrator. Attending approval requires the resident signature.</p>{/if}
 </div>

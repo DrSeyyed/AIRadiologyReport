@@ -10,6 +10,8 @@ export async function load({ locals, fetch, url }) {
   const patient_lastname  = url.searchParams.get('patient_lastname')?.trim() ?? '';
   const modality_id       = url.searchParams.get('modality_id')?.trim() ?? '';
   const exam_type_id      = url.searchParams.get('exam_type_id')?.trim() ?? '';
+  const corresponding_resident_id = url.searchParams.get('corresponding_resident_id')?.trim() ?? '';
+  const corresponding_attending_id = url.searchParams.get('corresponding_attending_id')?.trim() ?? '';
   const date_from         = url.searchParams.get('date_from')?.trim() ?? '';
   const date_to           = url.searchParams.get('date_to')?.trim() ?? '';
 
@@ -30,6 +32,8 @@ export async function load({ locals, fetch, url }) {
   if (patient_lastname)  qs.set('patient_lastname', patient_lastname);
   if (modality_id)       qs.set('modality_id', modality_id);
   if (exam_type_id)      qs.set('exam_type_id', exam_type_id);
+  if (corresponding_resident_id) qs.set('corresponding_resident_id', corresponding_resident_id);
+  if (corresponding_attending_id) qs.set('corresponding_attending_id', corresponding_attending_id);
   if (date_from)         qs.set('date_from', date_from);
   if (date_to)           qs.set('date_to', date_to);
   for (const [key, value] of Object.entries(signatureFilters)) {
@@ -70,6 +74,8 @@ export async function load({ locals, fetch, url }) {
       patient_lastname,
       modality_id,
       exam_type_id,
+      corresponding_resident_id,
+      corresponding_attending_id,
       date_from,
       date_to,
       ...signatureFilters
@@ -87,6 +93,7 @@ export async function load({ locals, fetch, url }) {
     exam_types,
     users,
     residents,
+    attendings,
     studies // <- array of rows
   };
 }

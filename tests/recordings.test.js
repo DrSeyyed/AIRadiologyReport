@@ -14,7 +14,7 @@ import {
 } from '../src/lib/server/recordings.js';
 import { processRecording, saveRecordingReport } from '../src/lib/server/recording-processing.js';
 import { queueVoiceReply, processVoiceJob } from '../src/lib/server/voice-worker.js';
-import { buildStudyMessage, buildFinalReportMessage } from '../src/lib/server/telegram.js';
+import { buildStudyMessage } from '../src/lib/server/telegram.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 function fixture(t) {
@@ -363,24 +363,18 @@ test('Telegram download failures retry without empty recordings, including legac
 	assert.equal(db.prepare('SELECT process_at,done FROM pending_voice').get().process_at, 30);
 });
 
-test('Telegram templates describe attachment/selection and identify individual signed reports safely', (t) => {
+test('Telegram study summaries show the imported code and concise recording status', (t) => {
 	const { db, studyId, audio } = fixture(t);
 	appendRecording(db, studyId, audio);
 	const study = getStudyDetail(db, studyId);
 	const summary = buildStudyMessage(study);
-	assert.match(summary, /Reply to this study message/);
-	assert.match(summary, /Awaiting examination selection/);
+	assert.match(summary, /Study 001/);
+	assert.doesNotMatch(summary, /Study #|Reply to this study message|Register privately/);
+	assert.match(summary, /Examination pending/);
 	assert.match(summary, /Recordings: 1/);
-	const final = buildFinalReportMessage(
-		study,
-		{ id: 2, exam_type_code: 'KNEE_WO', modality_code: 'MR', exam_details: 'Right' },
-		'<script>&'.repeat(2000)
-	);
-	assert.match(final, /Recording #2/);
-	assert.match(final, /KNEE_WO Right, MR/);
-	assert.match(final, /&lt;script&gt;&amp;/);
-	assert.ok(final.length <= 4000);
-	assert.ok(final.includes('</pre>'));
+	const escaped = buildStudyMessage({ ...study, patient_code: '<code>&' });
+	assert.match(escaped, /Study &lt;code&gt;&amp;/);
+	assert.doesNotMatch(escaped, /<code>/);
 });
 
 test('study deletion cascades recordings/queues but never deletes uploaded files', (t) => {

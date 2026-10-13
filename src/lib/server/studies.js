@@ -49,6 +49,13 @@ export function getStudyDetail(db, id) {
 export function studySignatureFilter(filters) {
 	const conditions = [],
 		params = [];
+	const residentId = filters.corresponding_resident_id ?? '';
+	if (residentId !== '') {
+		if (!/^[1-9]\d*$/.test(residentId) || !Number.isSafeInteger(Number(residentId)))
+			throw new Error('Invalid resident filter');
+		conditions.push('r.corresponding_resident_id = ?');
+		params.push(Number(residentId));
+	}
 	for (const role of ['resident', 'attending', 'typist']) {
 		const value = filters[`${role}_checked`] ?? '';
 		if (value === '') continue;

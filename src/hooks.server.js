@@ -2,6 +2,7 @@ import { getSession } from '$lib/server/auth';
 import { startVoiceWorker } from '$lib/server/voice-worker';
 import { getDb } from '$lib/server/db';
 import { startStudyNotificationWorker } from '$lib/server/study-notifications.js';
+import { startGroupInvitationWorker } from '$lib/server/telegram-invitations.js';
 
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 
@@ -18,6 +19,7 @@ if (proxyUrl) {
 
 startVoiceWorker(getDb);
 startStudyNotificationWorker(getDb);
+startGroupInvitationWorker(getDb);
 
 export const handle = async ({ event, resolve }) => {
   // Read cookie

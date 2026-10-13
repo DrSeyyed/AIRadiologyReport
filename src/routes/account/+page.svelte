@@ -51,7 +51,7 @@
 
 <section class="max-w-xl space-y-4">
 	<h1 class="text-2xl font-semibold">Account</h1>
-	<p>Change your name, website username and password. Role changes and account removal are administrator-only; you cannot remove your own account.</p>
+	<p>Only administrators can change roles or remove accounts.</p>
 	<p>Role: {data.account.role}</p>
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
 	{#if success}<div class="alert alert-success" role="status">{success}</div>{/if}
@@ -68,7 +68,7 @@
 			<span class="label-text">New password (optional)</span>
 			<input class="input input-bordered w-full" type="password" bind:value={password} minlength="8" disabled={busy} autocomplete="new-password" />
 		</label>
-		<p class="text-sm">Leave the password blank to keep it unchanged. Passwords must contain at least 8 characters and at most 72 UTF-8 bytes. Password changes sign out your other sessions. If this account has no login credentials, provide both username and password to enable login.</p>
+		<p class="text-sm">Blank password keeps the current one. Use 8+ characters, at most 72 UTF-8 bytes. Changing it signs out other sessions. To enable login, provide both username and password.</p>
 		<button class="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
 	</form>
 </section>

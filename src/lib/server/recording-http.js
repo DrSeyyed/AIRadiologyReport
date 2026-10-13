@@ -12,8 +12,7 @@ import {
 	recordingError
 } from './recordings.js';
 import { processRecording, saveRecordingReport } from './recording-processing.js';
-import { syncStudyMessage, buildFinalReportMessage } from './telegram.js';
-import { sendTelegramMessage } from './notify.js';
+import { syncStudyMessage } from './telegram.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -215,11 +214,6 @@ export const sign = handler(
 			throw recordingError('Report file not found', 404);
 		const updated = signRecording(db, studyId, recordingId, locals.user, body.role, body.checked);
 		const study = getStudyDetail(db, studyId);
-		if (body.role === 'attending' && body.checked && !recording.attending_checked) {
-			await sendTelegramMessage(
-				buildFinalReportMessage(study, updated, readFileSync(updated.text_report_path, 'utf8'))
-			);
-		}
 		await syncStudyMessage(study);
 		return json({
 			ok: true,
