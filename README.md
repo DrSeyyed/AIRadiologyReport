@@ -63,7 +63,7 @@ This change applies to new recordings only. Existing files and database paths ar
 
 Patient demographics now belong to each study. There is no separate patient table or automatic demographic linking. Search by patient ID or name still works; repeated patient IDs do not overwrite other studies. Age is optional and stored directly with years, months, weeks, or days. Birth date is not used to infer age. Choose a corresponding attending when adding or importing studies. Residents are assigned independently to each recording.
 
-Administrators can open **Studies → Import Excel** and upload an XLS/XLSX PACS export (first worksheet, up to 10 MB and 5,000 source rows). Required columns are `ID`, `NAME` or `SRC NAME`, `MODALITY`, `DESCRIPTION`, `STUDY DATE`, and `STUDY INST UID`. `SEX` and `AGE` are optional. DICOM ages such as `089Y` and formatted IDs with leading zeros are preserved.
+Administrators, attendings and residents can open **Studies → Import studies** and upload an XLS/XLSX PACS export (first worksheet, up to 10 MB and 5,000 source rows). Required columns are `ID`, `NAME` or `SRC NAME`, `MODALITY`, `DESCRIPTION`, `STUDY DATE`, and `STUDY INST UID`. `SEX` and `AGE` are optional. DICOM ages such as `089Y` and formatted IDs with leading zeros are preserved.
 
 Study headings in Telegram, website dialogs and printouts use the imported `ID`/Code (`patient_code`). `Study #20` is the internal database row ID, not an imported accession number; it is shown only when the code is unavailable. Source study UID still controls duplicate detection, and internal IDs/links are unchanged. Telegram summaries and registration prompts omit repeated workflow instructions; this documentation retains the complete workflow.
 

@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { canImportStudies } from '$lib/study-permissions.js';
 import { getDb } from '$lib/server/db';
 import { parseStudyWorkbook } from '$lib/server/excel-studies.js';
 import { previewStudyImport, commitStudyImport } from '$lib/server/study-import.js';
@@ -7,7 +8,7 @@ const MAX_BYTES = 10 * 1024 * 1024;
 
 export async function POST({ request, locals }) {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	if (locals.user.role !== 'admin') return json({ error: 'Forbidden' }, { status: 403 });
+	if (!canImportStudies(locals.user)) return json({ error: 'Forbidden' }, { status: 403 });
 	if (Number(request.headers.get('content-length')) > MAX_BYTES + 1024 * 1024)
 		return json({ error: 'Upload exceeds 10 MB.' }, { status: 413 });
 	try {

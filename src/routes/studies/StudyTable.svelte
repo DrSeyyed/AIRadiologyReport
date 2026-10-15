@@ -1,6 +1,7 @@
 <script>
 	import Filters from './Filters.svelte';
 	import { studyLabel } from '$lib/study-label.js';
+	import { canImportStudies } from '$lib/study-permissions.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 
@@ -36,7 +37,7 @@
 <div class="flex flex-wrap items-end gap-3">
 	<Filters {data} />
 	<div class="flex-1"></div>
-	{#if isAdmin}<a class="btn btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
+	{#if canImportStudies(data.user)}<a class="btn btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
 	{#if !readOnly}<button class="btn btn-secondary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}
 </div>
 {#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
