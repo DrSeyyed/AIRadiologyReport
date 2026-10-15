@@ -2,6 +2,7 @@
   import { invalidateAll } from '$app/navigation';
   import { onDestroy } from 'svelte';
   import { renderReportMarkdown } from '$lib/report-markdown.js';
+  import { reportTitle } from '$lib/report-title.js';
   import DOMPurify from 'dompurify';
   import { studyLabel } from '$lib/study-label.js';
   import TypistSignature from './TypistSignature.svelte';
@@ -17,6 +18,7 @@
     tab: 'write' // 'write' | 'preview'
   });
 
+  const title = $derived(reportTitle(recording));
   const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}/report`);
   const editable = $derived(user?.role !== 'typist' && !recording.processing && !recording.resident_checked && !recording.attending_checked && !recording.typist_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
   const residentSignature = $derived(recording.resident_checked
@@ -50,9 +52,9 @@
       frame.contentWindow?.focus();
       frame.contentWindow?.print();
     };
-    const heading = DOMPurify.sanitize(`<h1>${escapeHtml(studyLabel(study))} — Recording #${recording.id}</h1>`);
+    const heading = DOMPurify.sanitize(`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(studyLabel(study))} — Recording #${recording.id}</p>`);
     const signatures = `<p>Resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
-    frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
+    frame.srcdoc = `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
   }
@@ -179,6 +181,7 @@
         <div class="rounded-box border border-base-content/10 p-3 h-[40vh] overflow-y-auto">
           {#if state.text?.trim()}
             <div class="prose dark:prose-invert max-w-none">
+              <h2 class="mt-0">{title}</h2>
               <!-- eslint-disable-next-line svelte/no-at-html-tags -- Markdown is sanitized with DOMPurify before rendering. -->
               {@html previewHtml}
               <p class="mt-4 text-sm">
