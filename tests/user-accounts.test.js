@@ -36,6 +36,43 @@ function fixture(t) {
 		typist = add('Synthetic Typist', 'typist', 'typist_test');
 	return { db, add, admin, resident, typist };
 }
+test('only administrators can grant and revoke resident attending signing permission', async (t) => {
+	const { db, admin, resident, typist } = fixture(t);
+	assert.equal(getAccount(db, resident.id).can_sign_as_attending, 0);
+	for (const actor of [resident, typist]) {
+		await assert.rejects(updateAccount(db, actor, actor.id, { can_sign_as_attending: true }), { status: 403 });
+		await assert.rejects(updateAccount(db, actor, actor.id, { can_sign_as_attending: false }, { selfOnly: true }), { status: 403 });
+	}
+	await assert.rejects(updateAccount(db, admin, admin.id, { can_sign_as_attending: true }, { selfOnly: true }), { status: 403 });
+	for (const value of [1, 0, 'true', 'false', null])
+		await assert.rejects(updateAccount(db, admin, resident.id, { can_sign_as_attending: value }), { status: 400 });
+	await assert.rejects(updateAccount(db, admin, typist.id, { can_sign_as_attending: true }), { status: 400 });
+	db.prepare("INSERT INTO sessions(id,user_id,expires_at) VALUES('resident-session',?,'2099-01-01')").run(resident.id);
+	assert.equal((await updateAccount(db, admin, resident.id, { can_sign_as_attending: true })).can_sign_as_attending, 1);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM sessions').get().n, 1);
+	assert.equal((await updateAccount(db, resident, resident.id, { full_name: 'Updated resident' }, { selfOnly: true })).can_sign_as_attending, 1);
+	assert.equal((await updateAccount(db, admin, resident.id, { can_sign_as_attending: false })).can_sign_as_attending, 0);
+	await updateAccount(db, admin, resident.id, { can_sign_as_attending: true });
+	assert.equal((await updateAccount(db, admin, resident.id, { role: 'typist' })).can_sign_as_attending, 0);
+	assert.equal((await updateAccount(db, admin, resident.id, { role: 'resident' })).can_sign_as_attending, 0);
+});
+
+test('existing sessions reflect resident signing permission grants and revocations immediately', async (t) => {
+	const { db, admin, resident } = fixture(t);
+	globalThis.__residentPermissionSessionDb = db;
+	t.after(() => { delete globalThis.__residentPermissionSessionDb; });
+	const source = readFileSync(new URL('../src/lib/server/auth.js', import.meta.url), 'utf8')
+		.replace("import { getDb } from './db.js';", 'const getDb = () => globalThis.__residentPermissionSessionDb;');
+	const { createSession, getSession } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+	const session = createSession(resident.id);
+	assert.equal(session.user.can_sign_as_attending, 0);
+	await updateAccount(db, admin, resident.id, { can_sign_as_attending: true });
+	assert.equal(getSession(session.id).user.can_sign_as_attending, 1);
+	assert.equal(createSession(resident.id).user.can_sign_as_attending, 1);
+	await updateAccount(db, admin, resident.id, { can_sign_as_attending: false });
+	assert.equal(getSession(session.id).user.can_sign_as_attending, 0);
+});
+
 test('users can edit only their name, username and password and safe responses exclude credentials/contact data', async (t) => {
 	const { db, resident, typist } = fixture(t);
 	db.prepare(
@@ -330,7 +367,7 @@ test('contact removal and expanded registration migration preserve accounts, ses
 			.prepare('PRAGMA table_info(users)')
 			.all()
 			.map((c) => c.name),
-		['id', 'full_name', 'role', 'telegram_user_id']
+		['id', 'full_name', 'role', 'telegram_user_id', 'can_sign_as_attending']
 	);
 	assert.equal(getAccount(db, 42).username, 'existing_user');
 	assert.equal(

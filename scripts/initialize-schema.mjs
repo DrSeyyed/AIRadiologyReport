@@ -85,6 +85,7 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
 			addColumn('users', 'telegram_user_id', 'TEXT');
+			addColumn('users', 'can_sign_as_attending', 'INTEGER NOT NULL DEFAULT 0 CHECK (can_sign_as_attending IN (0, 1))');
 			const userColumns = db
 				.prepare('PRAGMA table_info(users)')
 				.all()
@@ -96,7 +97,7 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					db.prepare("SELECT seq FROM sqlite_sequence WHERE name='users'").get()?.seq || 0;
 				db.exec(definition[0].replace('IF NOT EXISTS users', 'users_new'));
 				db.exec(
-					'INSERT INTO users_new(id,full_name,role,telegram_user_id) SELECT id,full_name,role,telegram_user_id FROM users; DROP TABLE users; ALTER TABLE users_new RENAME TO users;'
+					'INSERT INTO users_new(id,full_name,role,telegram_user_id,can_sign_as_attending) SELECT id,full_name,role,telegram_user_id,can_sign_as_attending FROM users; DROP TABLE users; ALTER TABLE users_new RENAME TO users;'
 				);
 				db.prepare("UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='users'").run(
 					previousSequence

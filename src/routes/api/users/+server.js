@@ -8,7 +8,7 @@ export async function GET({ url, locals }) {
 	const db = getDb();
 
 	const admin = locals.user.role === 'admin';
-	let sql = `SELECT u.id, u.full_name, u.role,
+	let sql = `SELECT u.id, u.full_name, u.role, u.can_sign_as_attending,
                     ac.username
                     ${admin ? ", (u.telegram_user_id IS NOT NULL AND u.telegram_user_id != '') AS has_telegram, invitations.status AS telegram_invite_status" : ''}
              FROM users u

@@ -23,7 +23,7 @@ export function createSession(userId) {
 		expires_at
 	);
 
-	const user = db.prepare(`SELECT id, full_name, role FROM users WHERE id = ?`).get(userId);
+	const user = db.prepare(`SELECT id, full_name, role, can_sign_as_attending FROM users WHERE id = ?`).get(userId);
 
 	return { id, user, expires_at };
 }
@@ -35,7 +35,7 @@ export function getSession(sessionId) {
 
 	const session = db
 		.prepare(
-			`SELECT s.id, s.user_id, s.expires_at, u.full_name, u.role
+			`SELECT s.id, s.user_id, s.expires_at, u.full_name, u.role, u.can_sign_as_attending
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.id = ?`
@@ -58,7 +58,7 @@ export function getSession(sessionId) {
 
 	return {
 		session: { id: session.id, user_id: session.user_id, expires_at: session.expires_at },
-		user: { id: session.user_id, full_name: session.full_name, role: session.role }
+		user: { id: session.user_id, full_name: session.full_name, role: session.role, can_sign_as_attending: session.can_sign_as_attending }
 	};
 }
 

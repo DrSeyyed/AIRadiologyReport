@@ -102,6 +102,7 @@
           full_name: values.full_name.trim(),
           ...(values.username || values.hasCredentials ? { username: values.username } : {}),
           role: isEdit ? values.role : 'admin',
+          ...(isEdit ? { can_sign_as_attending: values.role === 'resident' && values.can_sign_as_attending } : {}),
           ...(values.password ? { password: values.password } : {})
         })
       });
@@ -121,7 +122,7 @@
   function editUser(user) {
     error = '';
     success = '';
-    editing = { id: user.id, full_name: user.full_name, username: user.username ?? '', password: '', role: user.role, hasCredentials: Boolean(user.username) };
+    editing = { id: user.id, full_name: user.full_name, username: user.username ?? '', password: '', role: user.role, can_sign_as_attending: Boolean(user.can_sign_as_attending), hasCredentials: Boolean(user.username) };
   }
 
   async function removeUser(user) {
@@ -192,6 +193,12 @@
           <option value="typist">Typist</option>
         </select>
       </label>
+      {#if editing.role === 'resident'}
+        <label class="md:col-span-2 text-sm flex items-center gap-2">
+          <input type="checkbox" bind:checked={editing.can_sign_as_attending} disabled={loading} />
+          Allow attending signature on assigned recordings
+        </label>
+      {/if}
       <label class="text-sm">
         <div class="mb-1">Username</div>
         <input class="border rounded px-2 py-1 w-full" bind:value={editing.username} autocomplete="username" pattern={'[a-z][a-z0-9._\\-]{2,31}'} minlength="3" maxlength="32" required={editing.hasCredentials} disabled={loading} />
@@ -234,7 +241,7 @@
               <input type="checkbox" class="align-middle" aria-label={`Select ${user.full_name} for a Telegram group link`} checked={selectedIds.includes(Number(user.id))} disabled={loading || !isTelegramEligible(user)} onchange={(event) => toggleUser(user, event.currentTarget.checked)} />
             </td>
             <td class="p-2">{user.full_name}</td>
-            <td class="p-2">{user.role}</td>
+            <td class="p-2">{user.role}{user.role === 'resident' && user.can_sign_as_attending ? ' · Can sign as attending' : ''}</td>
             <td class="p-2">{user.username ?? '-'}</td>
             <td class="p-2 whitespace-nowrap">{invitationStatus(user)}</td>
             <td class="p-2">

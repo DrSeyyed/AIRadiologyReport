@@ -69,7 +69,7 @@ async function fixture(t, messageId = '77') {
 		assert.equal(response.status, 200);
 		return response.json();
 	};
-	return { change, requests };
+	return { db, change, requests };
 }
 
 test('all signatures and attending re-signs edit the original Telegram study message without posting reports', async (t) => {
@@ -95,6 +95,27 @@ test('all signatures and attending re-signs edit the original Telegram study mes
 	assert.match(requests[1].body.text, /Attending ✅/);
 	assert.match(requests[3].body.text, /Typist \/ printed ✅/);
 	assert.match(requests[4].body.text, /Attending ⬜.*Typist \/ printed ⬜/);
+});
+
+test('delegated resident clinical and printing signatures edit the original Telegram message', async (t) => {
+	const { db, change, requests } = await fixture(t);
+	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE id=2').run();
+	const resident = { id: 2, role: 'resident' };
+	await change('resident');
+	const approved = await change('attending', true, resident);
+	assert.equal(approved.recording.attending_signed_by_user_id, 2);
+	await change('typist', true, resident);
+	await change('typist', false, resident);
+	await change('attending', false, resident);
+	assert.equal(requests.length, 5);
+	for (const request of requests) {
+		assert.equal(request.url, 'https://api.telegram.org/botsynthetic-test-token/editMessageText');
+		assert.equal(request.body.message_id, '77');
+	}
+	assert.match(requests[1].body.text, /Attending ✅/);
+	assert.match(requests[2].body.text, /Typist \/ printed ✅ \(Resident\)/);
+	assert.match(requests[3].body.text, /Typist \/ printed ⬜/);
+	assert.match(requests[4].body.text, /Attending ⬜/);
 });
 
 test('signing a study without a Telegram message does not create a new group message', async (t) => {

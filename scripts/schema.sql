@@ -5,7 +5,8 @@ CREATE TABLE
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('typist', 'resident', 'attending', 'admin')),
-    telegram_user_id TEXT UNIQUE
+    telegram_user_id TEXT UNIQUE,
+    can_sign_as_attending INTEGER NOT NULL DEFAULT 0 CHECK (can_sign_as_attending IN (0, 1))
   );
 
 

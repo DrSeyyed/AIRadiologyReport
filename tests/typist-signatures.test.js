@@ -14,6 +14,7 @@ import {
 } from '../src/lib/server/recordings.js';
 import { saveRecordingReport } from '../src/lib/server/recording-processing.js';
 import { buildStudyMessage } from '../src/lib/server/telegram.js';
+import { isResidentAttendingDelegate } from '../src/lib/signature-permissions.js';
 
 const users = {
 	admin: { id: 1, role: 'admin' },
@@ -61,6 +62,69 @@ function fixture(t) {
 	};
 	return { db, directory, studyId, recordingId: recording.id, sign, approve };
 }
+
+test('shared attending signature eligibility requires a granted resident and matching assignment', () => {
+	const recording = { corresponding_resident_id: users.resident.id };
+	for (const permission of [true, 1])
+		assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: permission }, recording), true);
+	for (const permission of [false, 0, undefined, 'false', 'true', '0', '1'])
+		assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: permission }, recording), false);
+	for (const user of [null, users.admin, users.typist, users.attending, users.otherResident])
+		assert.equal(isResidentAttendingDelegate({ ...user, can_sign_as_attending: true }, recording), false);
+	assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: true }, {}), false);
+});
+
+test('delegated residents sign only their assigned recordings with current administrator permission', (t) => {
+	const { db, studyId, recordingId, sign } = fixture(t);
+	assert.throws(() => sign({ ...users.resident, can_sign_as_attending: true }, 'attending'), { status: 403 });
+	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE role=?').run('resident');
+	assert.throws(() => sign(users.resident, 'attending'), /Resident must sign first/);
+	for (const checked of [true, false])
+		assert.throws(() => sign(users.otherResident, 'attending', checked), { status: 403 });
+	const second = appendRecording(db, studyId, null);
+	configureRecording(db, studyId, second.id, { modality_id: 1, exam_type_id: 1, corresponding_resident_id: users.otherResident.id });
+	assert.throws(() => signRecording(db, studyId, second.id, users.resident, 'attending', false), { status: 403 });
+	const originalSecond = getRecording(db, studyId, second.id);
+	sign(users.resident, 'resident');
+	const signed = sign(users.resident, 'attending');
+	assert.equal(signed.attending_checked, 1);
+	assert.equal(signed.attending_signed_by_user_id, users.resident.id);
+	assert.equal(signed.attending_signer_fullname, 'resident');
+	assert.ok(signed.attending_signed_at);
+	assert.equal(sign(users.attending, 'attending').attending_signed_by_user_id, users.resident.id);
+	assert.equal(sign(users.resident, 'typist').typist_signed_by_user_id, users.resident.id);
+	assert.throws(() => sign(users.resident, 'resident', false), /Cannot unsign resident/);
+	assert.equal(sign(users.resident, 'typist', false).typist_checked, 0);
+	sign(users.resident, 'typist');
+	const withdrawn = sign(users.resident, 'attending', false);
+	assert.equal(withdrawn.resident_checked, 1);
+	assert.equal(withdrawn.attending_signed_by_user_id, null);
+	assert.equal(withdrawn.typist_checked, 0);
+	assert.equal(withdrawn.typist_signed_by_user_id, null);
+	assert.equal(withdrawn.typist_signed_at, null);
+	sign(users.resident, 'attending');
+	db.prepare('UPDATE users SET can_sign_as_attending=0 WHERE id=?').run(users.resident.id);
+	for (const checked of [true, false])
+		assert.throws(() => sign({ ...users.resident, can_sign_as_attending: true }, 'attending', checked), { status: 403 });
+	assert.equal(getRecording(db, studyId, recordingId).attending_signed_by_user_id, users.resident.id);
+	assert.equal(sign(users.resident, 'typist').typist_checked, 1);
+	assert.equal(sign(users.attending, 'attending', false).attending_checked, 0);
+	assert.equal(db.prepare('SELECT corresponding_attending_id FROM studies WHERE id=?').get(studyId).corresponding_attending_id, users.attending.id);
+	assert.deepEqual(getRecording(db, studyId, second.id), originalSecond);
+});
+
+test('delegated attending signatures retain report, reviewer and processing checks', (t) => {
+	const { db, studyId, recordingId, sign } = fixture(t);
+	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE id=?').run(users.resident.id);
+	sign(users.resident, 'resident');
+	db.prepare('UPDATE study_recordings SET processing=1,processing_started_at=? WHERE id=?').run(Math.floor(Date.now() / 1000), recordingId);
+	assert.throws(() => sign(users.resident, 'attending'), { status: 409 });
+	db.prepare('UPDATE study_recordings SET processing=0,text_report_path=NULL WHERE id=?').run(recordingId);
+	assert.throws(() => sign(users.resident, 'attending'), /Generate or save a report/);
+	db.prepare('UPDATE studies SET corresponding_attending_id=NULL WHERE id=?').run(studyId);
+	assert.throws(() => sign(users.resident, 'attending'), /attending/i);
+	assert.equal(getRecording(db, studyId, recordingId).attending_checked, 0);
+});
 
 test('typist confirmation requires both clinical signatures, including admin overrides', (t) => {
 	const { sign } = fixture(t);

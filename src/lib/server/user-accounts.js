@@ -6,7 +6,7 @@ function failure(message, status = 400) {
 export function getAccount(db, id) {
 	return db
 		.prepare(
-			`SELECT u.id, u.full_name, u.role, u.telegram_user_id, ac.username
+			`SELECT u.id, u.full_name, u.role, u.telegram_user_id, u.can_sign_as_attending, ac.username
 		FROM users u LEFT JOIN auth_credentials ac ON ac.user_id=u.id WHERE u.id=?`
 		)
 		.get(id);
@@ -121,7 +121,11 @@ export async function updateAccount(db, actor, id, input, { selfOnly = false, se
 	const current = authorize(db, actor, id, selfOnly);
 	if (input && Object.hasOwn(input, 'role') && (selfOnly || current.role !== 'admin'))
 		throw failure('Only administrators can change roles', 403);
-	validateInput(input, ['full_name', 'username', 'password', ...(selfOnly ? [] : ['role'])]);
+	if (input && Object.hasOwn(input, 'can_sign_as_attending') && (selfOnly || current.role !== 'admin'))
+		throw failure('Only administrators can change attending signing permission', 403);
+	validateInput(input, ['full_name', 'username', 'password', ...(selfOnly ? [] : ['role', 'can_sign_as_attending'])]);
+	if (Object.hasOwn(input, 'can_sign_as_attending') && typeof input.can_sign_as_attending !== 'boolean')
+		throw failure('Attending signing permission must be true or false');
 	const full_name = Object.hasOwn(input, 'full_name') ? nameValue(input.full_name) : undefined;
 	const username = Object.hasOwn(input, 'username') ? usernameValue(input.username) : undefined;
 	if (
@@ -136,9 +140,16 @@ export async function updateAccount(db, actor, id, input, { selfOnly = false, se
 		const fresh = authorize(db, actor, id, selfOnly);
 		if (Object.hasOwn(input, 'role') && fresh.role !== 'admin')
 			throw failure('Only administrators can change roles', 403);
+		if (Object.hasOwn(input, 'can_sign_as_attending') && fresh.role !== 'admin')
+			throw failure('Only administrators can change attending signing permission', 403);
 		const user = getAccount(db, id);
 		if (!user) throw failure('User not found', 404);
 		const role = input.role ?? user.role;
+		if (input.can_sign_as_attending === true && role !== 'resident')
+			throw failure('Only residents can receive delegated attending signing permission');
+		const canSignAsAttending = role === 'resident'
+			? Number(input.can_sign_as_attending ?? user.can_sign_as_attending)
+			: 0;
 		if (role !== user.role) {
 			protectAdmin(db, user, role);
 			protectReviewers(db, id);
@@ -153,9 +164,10 @@ export async function updateAccount(db, actor, id, input, { selfOnly = false, se
 			(!username || !password_hash)
 		)
 			throw failure('Supply both username and password to enable this account’s website login');
-		db.prepare('UPDATE users SET full_name=?,role=? WHERE id=?').run(
+		db.prepare('UPDATE users SET full_name=?,role=?,can_sign_as_attending=? WHERE id=?').run(
 			full_name ?? user.full_name,
 			role,
+			canSignAsAttending,
 			id
 		);
 		if (credentials && (username !== undefined || password_hash !== undefined))

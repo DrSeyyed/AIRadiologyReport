@@ -45,6 +45,23 @@ function assertSignatureSchema(db) {
 	assert.deepEqual(db.pragma('foreign_key_check'), []);
 }
 
+test('resident attending permission defaults off and migrates existing users without data loss', (t) => {
+	const old = schema.replace(/,\r?\n {4}can_sign_as_attending[^\r\n]+/, '');
+	const db = fixture(t, old);
+	const saved = db.prepare('SELECT * FROM users').all();
+	const recordings = db.prepare('SELECT * FROM study_recordings').all();
+	initializeSchema(db, schema);
+	initializeSchema(db, schema);
+	assert.deepEqual(db.prepare('SELECT * FROM users').all(), saved.map((user) => ({ ...user, can_sign_as_attending: 0 })));
+	assert.deepEqual(db.prepare('SELECT * FROM study_recordings').all(), recordings);
+	assert.throws(() => db.prepare('UPDATE users SET can_sign_as_attending=2').run(), /CHECK/);
+	assert.throws(() => db.prepare('UPDATE users SET can_sign_as_attending=NULL').run(), /NOT NULL/);
+	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE id=1').run();
+	initializeSchema(db, schema);
+	assert.equal(db.prepare('SELECT can_sign_as_attending FROM users WHERE id=1').get().can_sign_as_attending, 1);
+	assertSignatureSchema(db);
+});
+
 test('fresh schema persists typist signatures and enforces signer references', (t) => {
 	const db = fixture(t, schema);
 	assertSignatureSchema(db);
@@ -111,6 +128,7 @@ test('contact removal user rebuild preserves all signature and account reference
 		)
 	);
 	db.exec(`
+		UPDATE users SET can_sign_as_attending=1 WHERE id=1;
 		UPDATE study_recordings SET typist_checked=1,typist_signed_by_user_id=3,typist_signed_at='2026-10-11T12:00:00Z';
 		INSERT INTO auth_credentials VALUES(3,'synthetic_typist','synthetic-hash');
 		INSERT INTO sessions(id,user_id,expires_at) VALUES('synthetic-session',3,'2099-01-01');
@@ -137,8 +155,9 @@ test('contact removal user rebuild preserves all signature and account reference
 			.prepare('PRAGMA table_info(users)')
 			.all()
 			.map((column) => column.name),
-		['id', 'full_name', 'role', 'telegram_user_id']
+		['id', 'full_name', 'role', 'telegram_user_id', 'can_sign_as_attending']
 	);
 	assertSignatureSchema(db);
+	assert.equal(db.prepare('SELECT can_sign_as_attending FROM users WHERE id=1').get().can_sign_as_attending, 1);
 	assert.throws(() => db.prepare('DELETE FROM users WHERE id=3').run(), /FOREIGN KEY/);
 });

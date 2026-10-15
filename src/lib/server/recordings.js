@@ -1,3 +1,5 @@
+import { isResidentAttendingDelegate } from '../signature-permissions.js';
+
 export function recordingError(message, status = 400) {
 	return Object.assign(new Error(message), { status });
 }
@@ -166,10 +168,14 @@ export function signRecording(db, studyId, recordingId, user, role, checked) {
 	const admin = user.role === 'admin';
 	const attending = user.role === 'attending' && user.id === study.corresponding_attending_id;
 	const resident = user.role === 'resident' && user.id === recording.corresponding_resident_id;
+	const delegatedAttending = role === 'attending' && resident && isResidentAttendingDelegate(
+		db.prepare('SELECT id, role, can_sign_as_attending FROM users WHERE id = ?').get(user.id),
+		recording
+	);
 	const authorized =
 		role === 'typist'
 			? admin || attending || resident || user.role === 'typist'
-			: admin || attending || (role === 'resident' && resident);
+			: admin || attending || delegatedAttending || (role === 'resident' && resident);
 	if (!authorized)
 		throw recordingError(
 			role === 'typist'

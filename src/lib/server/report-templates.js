@@ -4,10 +4,12 @@ const fail = (status, message) => { throw Object.assign(new Error(message), { st
 const validId = (value) => (typeof value === 'number' || typeof value === 'string') && /^[1-9]\d*$/.test(String(value)) && Number.isSafeInteger(Number(value));
 
 export const NORMAL_TEMPLATE_PROMPT = `Create a normal findings template.
-List only the relevant structures for the given body part and modality.
-Include key related systems or details.
-Each structure on its own line with 1–2 short normal sentences.
-No extra blank lines or spaces. No other sections.
+List only structures that belong to the exact given body part and modality.
+Do not include adjacent regions or unrelated structures (e.g. do not mention upper abdomen in a chest study).
+Include key related systems or details that are part of that body part.
+Write each finding as a short complete sentence (1–2 sentences).
+One structure or system per line.
+No labels with colons. No extra blank lines or spaces. No other sections.
 Modality: [MODALITY]
 Body part: [BODY PART]`;
 
