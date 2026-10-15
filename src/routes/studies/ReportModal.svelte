@@ -1,7 +1,7 @@
 <script>
   import { invalidateAll } from '$app/navigation';
   import { onDestroy } from 'svelte';
-  import { marked } from 'marked';
+  import { renderReportMarkdown } from '$lib/report-markdown.js';
   import DOMPurify from 'dompurify';
   import { studyLabel } from '$lib/study-label.js';
   import TypistSignature from './TypistSignature.svelte';
@@ -51,7 +51,7 @@
       frame.contentWindow?.print();
     };
     const heading = DOMPurify.sanitize(`<h1>${escapeHtml(studyLabel(study))} — Recording #${recording.id}</h1>`);
-    const signatures = `<p>Recording resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Study attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
+    const signatures = `<p>Resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
     frame.srcdoc = `<!doctype html><html><head><title>Radiology report</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
@@ -77,7 +77,7 @@
   });
 
   const previewHtml = $derived(
-    DOMPurify.sanitize(marked.parse(state.text || ''))
+    DOMPurify.sanitize(renderReportMarkdown(state.text))
   );
 
   async function save() {
@@ -128,7 +128,6 @@
       Text Report — {studyLabel(study)}, recording #{recording.id}
     </h3>
     <div class="text-sm mb-3">
-      <p>Recording resident: {recording.resident_fullname || 'Unassigned'} · Study attending: {study.attending_fullname || 'Not assigned'}</p>
       <p>{residentSignature}</p>
       <p>{attendingSignature}</p>
       <TypistSignature {study} {recording} {user} onChanged={onSaved ?? invalidateAll} disabled={state.loading || state.saving || !!state.error} />
@@ -182,6 +181,10 @@
             <div class="prose dark:prose-invert max-w-none">
               <!-- eslint-disable-next-line svelte/no-at-html-tags -- Markdown is sanitized with DOMPurify before rendering. -->
               {@html previewHtml}
+              <p class="mt-4 text-sm">
+                Resident: {recording.resident_fullname || 'Unassigned'}<br />
+                Attending: {study.attending_fullname || 'Not assigned'}
+              </p>
             </div>
           {:else}
             <div class="opacity-60 italic">Nothing to preview.</div>
