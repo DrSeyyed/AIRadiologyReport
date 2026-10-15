@@ -32,7 +32,7 @@ async function openaiTranscribe(filePath, fileName) {
 	return text;
 }
 
-async function openaiGenerateReport(prompt) {
+export async function openaiGenerateReport(prompt) {
 	const res = await fetch('https://api.openai.com/v1/responses', {
 		method: 'POST',
 		signal: AbortSignal.timeout(120000),
@@ -102,23 +102,26 @@ export async function generateRecordingReport(s, template) {
 	const examDetailsLabel = s.exam_details ? ` (${s.exam_details})` : '';
 	const studyLabel = `${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
 	const transcription = await openaiTranscribe(s.audio_report_path, basename(s.audio_report_path));
-	const prompt = `
-You are a radiology report generator.
-
-Use the following template exactly as a guide for formatting the report.
-
+	const prompt = `You are a radiology report generator.
+Translate the doctor's dictation into English and produce a professional radiology report.
+Use British radiology terminology and UK English spelling and phrasing.
+Follow the template structure, section order, and formatting as closely as possible.
+Preserve all clinically relevant information from the dictation. Do not omit any finding.
+Add relevant dictated findings that do not fit an existing section.
+Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
+Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
+Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
+Use concise professional language. Use only single line breaks between sections.
+Include a Conclusion that summarises important abnormal findings and relevant recommendations without repeating normals.
+If no significant abnormality, give a concise normal conclusion.
+Bold all recommendations in the body and Conclusion.
+Return only the final report text.
+Study label: ${studyLabel}
 Template:
-"
-${template}
-"
-
-Doctor's dictation: "${transcription}"
-
-Patient gender: ${s.patient_gender}
-
-Translate to English and produce the final ${studyLabel} report according to the template.
-Return only the report text. Bold ONLY pathologic/abnormal findings and recommendations by wrapping them in **double asterisks**; do not bold normal/negative statements. Do NOT omit any clinically relevant content from the dictation, even if it does not belong to the primary study region or is not represented in the template.
-`.trim();
+"${template}"
+Doctor's dictation:
+"${transcription}"
+Patient gender: ${s.patient_gender}`;
 
 	return openaiGenerateReport(prompt);
 }

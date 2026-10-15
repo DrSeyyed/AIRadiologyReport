@@ -1,6 +1,7 @@
 <script>
 	import TypistSignature from './TypistSignature.svelte';
-	let { study, recording, modalities, examTypes, residents, user, onChanged, onReport, onEditStudy } = $props();
+	import { canManageTemplates } from '$lib/template-permissions.js';
+	let { study, recording, modalities, examTypes, residents, user, onChanged, onReport, onEditStudy, onTemplate } = $props();
 	let modality = $state('');
 	let examination = $state('');
 	let details = $state('');
@@ -35,6 +36,46 @@
 	const canAttending = $derived((admin || matchingAttending) && (attendingSigned || residentSigned));
 	const residentOverride = $derived(recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id));
 	const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}`);
+	let templateStatus = $state('');
+	let templateError = $state('');
+	let templateRetry = $state(0);
+	let lastPromptedPair = '';
+	const selectedPair = $derived(modality && examination && canManageTemplates(user) && !signed && !working ? `${modality}:${examination}` : '');
+
+	function openTemplate() {
+		const key = selectedPair;
+		if (!key || !onTemplate) return;
+		onTemplate({ modalityId: modality, examTypeId: examination, onSaved: (saved) => {
+			if (selectedPair === key && `${saved.modality_id}:${saved.exam_type_id}` === key) { templateStatus = 'ready'; templateError = ''; }
+		} });
+	}
+
+	$effect(() => {
+		const key = selectedPair;
+		const attempt = templateRetry;
+		templateStatus = '';
+		templateError = '';
+		if (!key) return;
+		const controller = new AbortController();
+		const m = modality, e = examination;
+		const timer = setTimeout(async () => {
+			templateStatus = 'loading';
+			try {
+				const response = await fetch(`/api/report-templates?modality_id=${encodeURIComponent(m)}&exam_type_id=${encodeURIComponent(e)}&retry=${attempt}`, { signal: controller.signal });
+				const rows = await response.json();
+				if (!response.ok) throw new Error(rows.error || 'Unable to check template.');
+				if (controller.signal.aborted) return;
+				templateStatus = rows[0]?.text?.trim() ? 'ready' : 'missing';
+				if (templateStatus === 'missing' && lastPromptedPair !== key) {
+					lastPromptedPair = key;
+					openTemplate();
+				}
+			} catch (caught) {
+				if (!controller.signal.aborted) { templateStatus = 'error'; templateError = caught.message; }
+			}
+		}, 300);
+		return () => { clearTimeout(timer); controller.abort(); };
+	});
 
 	async function request(suffix, method, body) {
 		const response = await fetch(`${endpoint}${suffix}`, {
@@ -150,6 +191,14 @@
 			<input class="input input-bordered" bind:value={details} maxlength="200" placeholder="e.g. left, additional details" />
 		</label>
 	</fieldset>
+	{#if selectedPair}
+		<div class="flex flex-wrap items-center gap-2 text-sm">
+			{#if templateStatus === 'loading'}<span role="status">Checking template…</span>
+			{:else if templateStatus === 'missing'}<span class="text-warning">No template for this selection.</span><button class="btn btn-xs btn-outline" onclick={openTemplate}>Create template</button>
+			{:else if templateStatus === 'ready'}<button class="btn btn-xs btn-outline" onclick={openTemplate}>Edit template</button>
+			{:else if templateStatus === 'error'}<span role="alert">{templateError}</span><button class="btn btn-xs btn-outline" onclick={() => templateRetry++}>Retry template check</button>{/if}
+		</div>
+	{/if}
 	<p class="text-sm opacity-70">Configuration changes clear this recording's report and signatures.</p>
 	{#if assignmentLocked}<p class="text-sm">Resident locked to Telegram sender: {recording.sender_fullname || recording.resident_fullname || 'assigned resident'}.</p>{/if}
 	{#if !assigned}<p class="text-sm">Select and save a resident before creating a report.</p>{/if}

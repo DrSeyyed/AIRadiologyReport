@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { canManageTemplates } from '$lib/template-permissions.js';
 
 	let { data, children } = $props();
 
@@ -47,11 +48,13 @@
 			{#if data.user}
 				<li><a href={resolve('/account')} class="link link-primary p-3">Account</a></li>
 			{/if}
+			{#if canManageTemplates(data.user)}
+				<li><a href={resolve('/admin/templates')} class="link link-primary p-3">Templates</a></li>
+			{/if}
 			{#if data.user?.role === 'admin'}
 				<li class="menu-title">Admin</li>
 				<li><a href={resolve('/admin/users')} class="link link-primary p-3">Users</a></li>
 				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
-				<li><a href={resolve('/admin/templates')} class="link link-primary p-3">Templates</a></li>
 			{/if}
 		</ul>
 	</aside>

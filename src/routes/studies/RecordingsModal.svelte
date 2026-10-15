@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import RecordingCard from './RecordingCard.svelte';
 	import ReportModal from './ReportModal.svelte';
+	import TemplateModal from '$lib/components/TemplateModal.svelte';
 	import { studyLabel } from '$lib/study-label.js';
 
 	let { study, data, onClose, onEditStudy } = $props();
@@ -11,6 +12,7 @@
 	let busy = $state(false);
 	let error = $state('');
 	let report = $state(null);
+	let template = $state(null);
 	let recordingAudio = $state(false);
 	let recorder;
 	let stream;
@@ -120,7 +122,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={(event) => { if (event.key === 'Escape' && !report && !busy && !recordingAudio) onClose(); }} />
+<svelte:window onkeydown={(event) => { if (event.key === 'Escape' && !report && !template && !busy && !recordingAudio) onClose(); }} />
 
 <div class="modal modal-open">
 	<div role="dialog" aria-modal="true" aria-labelledby="recordings-title" class="modal-box max-w-6xl space-y-4">
@@ -149,12 +151,15 @@
 		{#if loading}<p>Loading recordings…</p>
 		{:else if detail}
 			{#each detail.recordings ?? [] as item (item.id)}
-				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} residents={data.residents} user={data.user} onChanged={changed} onReport={(item) => (report = item)} onEditStudy={readOnly || busy || recordingAudio ? undefined : () => onEditStudy(detail)} />
+				<RecordingCard study={detail} recording={item} modalities={data.modalities} examTypes={data.exam_types} residents={data.residents} user={data.user} onChanged={changed} onReport={(item) => (report = item)} onTemplate={(context) => { if (!template && !report) template = context; }} onEditStudy={readOnly || busy || recordingAudio ? undefined : () => onEditStudy(detail)} />
 			{:else}<p>No recordings yet.</p>{/each}
 		{/if}
 		<div class="modal-action"><button class="btn" disabled={busy || recordingAudio} onclick={onClose}>Close</button></div>
 	</div>
 </div>
+{#if template}
+	<TemplateModal modalities={data.modalities} examTypes={data.exam_types} modalityId={template.modalityId} examTypeId={template.examTypeId} onSaved={(saved) => { template.onSaved(saved); template = null; }} onClose={() => (template = null)} />
+{/if}
 {#if report}
 	<ReportModal user={data.user} study={detail ?? study} recording={detail?.recordings?.find((item) => item.id === report.id) ?? report} initialText={report.__initialText ?? ''} onSaved={changed} onClose={() => (report = null)} />
 {/if}
