@@ -101,7 +101,11 @@ export async function generateRecordingReport(s, template) {
 	const examTypeLabel = s.exam_type_name || s.exam_type_code;
 	const examDetailsLabel = s.exam_details ? ` (${s.exam_details})` : '';
 	const studyLabel = `${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
-	const transcription = await openaiTranscribe(s.audio_report_path, basename(s.audio_report_path));
+	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
+	const transcriptions = [];
+	for (const part of audioParts)
+		transcriptions.push(await openaiTranscribe(part.audio_report_path, basename(part.audio_report_path)));
+	const transcription = transcriptions.join('\n');
 	const prompt = `You are a radiology report generator.
 Translate the doctor's dictation into English and produce a professional radiology report.
 Use British radiology terminology and UK English spelling and phrasing.

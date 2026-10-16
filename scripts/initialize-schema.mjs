@@ -24,6 +24,8 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					DROP TRIGGER IF EXISTS trg_studies_ai_set_age;
 					DROP TRIGGER IF EXISTS trg_studies_au_set_age;
 					DROP TRIGGER IF EXISTS trg_patients_au_propagate_age;
+					DROP TABLE IF EXISTS study_telegram_voices;
+					DROP TABLE IF EXISTS recording_audio_parts;
 					DROP TABLE IF EXISTS study_recordings;
 					DROP TABLE IF EXISTS pending_voice;
 					DROP TABLE IF EXISTS pending_telegram;
@@ -84,6 +86,12 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				)
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
+			addColumn('studies', 'disabled', 'INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))');
+			addColumn('studies', 'telegram_send_started_at', 'INTEGER');
+			db.exec(`INSERT OR IGNORE INTO study_telegram_voices(study_id,chat_id,message_id)
+				SELECT study_id,chat_id,reply_message_id FROM pending_voice`);
+			addColumn('studies', 'needs_attention', 'INTEGER NOT NULL DEFAULT 0 CHECK (needs_attention IN (0, 1))');
+			addColumn('studies', 'attention_note', "TEXT NOT NULL DEFAULT '' CHECK (length(attention_note) <= 300)");
 			addColumn('users', 'telegram_user_id', 'TEXT');
 			addColumn('users', 'can_sign_as_attending', 'INTEGER NOT NULL DEFAULT 0 CHECK (can_sign_as_attending IN (0, 1))');
 			const userColumns = db
@@ -160,6 +168,8 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				db.exec(
 					"UPDATE study_recordings SET corresponding_resident_id = (SELECT corresponding_resident_id FROM studies WHERE studies.id = study_recordings.study_id), source = 'legacy'"
 				);
+			addColumn('pending_voice', 'parent_voice_job_id', 'INTEGER REFERENCES pending_voice(id) ON DELETE CASCADE');
+			addColumn('pending_voice', 'recording_id', 'INTEGER REFERENCES study_recordings(id) ON DELETE CASCADE');
 			addColumn(
 				'pending_voice',
 				'sender_user_id',

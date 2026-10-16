@@ -11,10 +11,15 @@ export async function processStudyNotification(
 		.get(now);
 	if (!job) return false;
 	const study = getStudyDetail(db, job.study_id);
-	if (!study || study.telegram_message_id) {
+	if (!study || study.disabled || study.telegram_message_id) {
 		db.prepare('DELETE FROM pending_telegram WHERE study_id = ?').run(job.study_id);
 		return true;
 	}
+	const started = Math.floor(Date.now() / 1000);
+	const claimed = db.prepare(`UPDATE studies SET telegram_send_started_at = ? WHERE id = ? AND disabled = 0
+		AND (telegram_send_started_at IS NULL OR telegram_send_started_at < ?)`)
+		.run(started, study.id, started - 60);
+	if (!claimed.changes) return false;
 	try {
 		const result = await send(study);
 		db.transaction(() => {
@@ -29,6 +34,8 @@ export async function processStudyNotification(
 		db.prepare(
 			'UPDATE pending_telegram SET attempts = attempts + 1, retry_at = ? WHERE study_id = ?'
 		).run(now + delay, job.study_id);
+	} finally {
+		db.prepare('UPDATE studies SET telegram_send_started_at = NULL WHERE id = ?').run(study.id);
 	}
 	return true;
 }

@@ -112,10 +112,12 @@ export const remove = handler(async ({ db, studyId, recordingId, recording }) =>
 
 export const audio = handler(
 	({ recording, request }) => {
-		if (!recording.audio_report_path || !existsSync(recording.audio_report_path))
+		const partId = new URL(request.url).searchParams.get('part') || '0';
+		const part = /^\d+$/.test(partId) ? recording.audio_parts.find((item) => item.id === Number(partId)) : null;
+		if (!part || !existsSync(part.audio_report_path))
 			throw recordingError('Audio file not found', 404);
-		const buffer = readFileSync(recording.audio_report_path);
-		const extension = extname(recording.audio_report_path).toLowerCase();
+		const buffer = readFileSync(part.audio_report_path);
+		const extension = extname(part.audio_report_path).toLowerCase();
 		const type =
 			{
 				'.ogg': 'audio/ogg',

@@ -87,6 +87,10 @@ export function buildStudyMessage(study) {
 	if (study.description && study.description !== study.source_description)
 		lines.push(`Note: ${esc(study.description.slice(0, 300))}`);
 
+	lines.push(`Needs attention: ${study.needs_attention ? '⚠️ Yes' : 'No'}`);
+	if (study.attention_note)
+		lines.push(`${study.needs_attention ? 'Attention note' : 'Previous attention note (reference)'}: ${esc(study.attention_note.slice(0, 300))}`);
+
 	lines.push(`Attending: ${esc(study.attending_fullname ?? '-')}`);
 
 	const recordings = study.recordings || [];
@@ -104,7 +108,7 @@ export function buildStudyMessage(study) {
 						.slice(0, 150)
 				: 'Examination pending';
 		lines.push(
-			`Recording #${esc(recording.id)}: ${esc(label)} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || '-')}`
+			`Recording #${esc(recording.id)}: ${esc(label)}${recording.audio_parts?.length > 1 ? ` (${recording.audio_parts.length} voice parts)` : ''} — ${recording.text_report_path ? 'report ready' : 'no report'} — Resident: ${esc(recording.resident_fullname || '-')}`
 		);
 		lines.push(
 			`Resident ${recording.resident_checked ? '✅' : '⬜'} • Attending ${recording.attending_checked ? '✅' : '⬜'} • Typist / printed ${recording.typist_checked ? `✅ (${esc((recording.typist_signer_fullname || 'Unknown signer').slice(0, 60))})` : '⬜'}`
@@ -114,7 +118,10 @@ export function buildStudyMessage(study) {
 
 	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
 
-	return lines.join('\n');
+	const text = lines.join('\n');
+	return study.disabled
+		? `<b>❌ DISABLED — replies are not processed</b>\n<s>${text}</s>`
+		: text;
 }
 
 // ---------- message send/edit/delete ----------
@@ -164,13 +171,17 @@ export async function editStudyMessage(study, chat_id) {
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
 	const text = buildStudyMessage(study);
-	await tgRequest('editMessageText', {
-		chat_id,
-		message_id,
-		text,
-		parse_mode: 'HTML',
-		disable_web_page_preview: true
-	});
+	try {
+		await tgRequest('editMessageText', {
+			chat_id,
+			message_id,
+			text,
+			parse_mode: 'HTML',
+			disable_web_page_preview: true
+		});
+	} catch (error) {
+		if (error.telegram_error_code !== 400 || !/message is not modified/i.test(error.message)) throw error;
+	}
 	return true;
 }
 
@@ -188,7 +199,11 @@ export async function deleteMessage(message_id, chat_id) {
 	chat_id = chat_id ?? getChatID();
 	assert(chat_id, 'chat_id is required');
 	assert(message_id, 'message_id is required');
-	await tgRequest('deleteMessage', { chat_id, message_id });
+	try {
+		await tgRequest('deleteMessage', { chat_id, message_id });
+	} catch (error) {
+		if (error.telegram_error_code !== 400 || !/message to delete not found/i.test(error.message)) throw error;
+	}
 	return true;
 }
 

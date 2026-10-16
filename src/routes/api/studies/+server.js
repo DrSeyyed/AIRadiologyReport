@@ -166,6 +166,7 @@ export async function POST({ request, locals }) {
 		const detail = getStudyDetail(db, studyId);
 		let notification_warning = null;
 		if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+			db.prepare('UPDATE studies SET telegram_send_started_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), studyId);
 			try {
 				const result = await sendStudyMessage(detail);
 				db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ?').run(
@@ -175,6 +176,8 @@ export async function POST({ request, locals }) {
 				detail.telegram_message_id = String(result.message_id);
 			} catch {
 				notification_warning = 'Study saved, but Telegram notification failed.';
+			} finally {
+				db.prepare('UPDATE studies SET telegram_send_started_at = NULL WHERE id = ?').run(studyId);
 			}
 		}
 		return json({ ...detail, notification_warning }, { status: 201 });

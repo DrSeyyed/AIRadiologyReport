@@ -1,4 +1,5 @@
 import { isResidentAttendingDelegate } from '../signature-permissions.js';
+import { assertStudyActive } from './study-state.js';
 
 export function recordingError(message, status = 400) {
 	return Object.assign(new Error(message), { status });
@@ -12,15 +13,15 @@ function clearExpiredProcessing(db) {
 
 export function listRecordings(db, studyId) {
 	clearExpiredProcessing(db);
-	return db
+	const recordings = db
 		.prepare(
-			`SELECT r.*, m.code AS modality_code, m.name AS modality_name,
+			`SELECT r.*, s.disabled AS study_disabled, m.code AS modality_code, m.name AS modality_name,
 		e.code AS exam_type_code, e.name AS exam_type_name,
 		resident.full_name AS resident_fullname, sender.full_name AS sender_fullname,
 		resident_signer.full_name AS resident_signer_fullname, attending_signer.full_name AS attending_signer_fullname,
 		typist_signer.full_name AS typist_signer_fullname,
 		(r.source = 'telegram' AND r.sender_role = 'resident' AND sender.id IS NOT NULL) AS resident_assignment_locked
-		FROM study_recordings r LEFT JOIN modalities m ON m.id = r.modality_id
+		FROM study_recordings r JOIN studies s ON s.id = r.study_id LEFT JOIN modalities m ON m.id = r.modality_id
 		LEFT JOIN exam_types e ON e.id = r.exam_type_id
 		LEFT JOIN users resident ON resident.id = r.corresponding_resident_id
 		LEFT JOIN users sender ON sender.id = r.sender_user_id
@@ -30,6 +31,14 @@ export function listRecordings(db, studyId) {
 		WHERE r.study_id = ? ORDER BY r.id`
 		)
 		.all(studyId);
+	const parts = db.prepare(`SELECT p.*, u.full_name AS sender_fullname
+		FROM recording_audio_parts p JOIN study_recordings r ON r.id = p.recording_id
+		LEFT JOIN users u ON u.id = p.sender_user_id WHERE r.study_id = ?
+		ORDER BY p.telegram_voice_job_id, p.id`).all(studyId);
+	return recordings.map((recording) => ({ ...recording, audio_parts: [
+		...(recording.audio_report_path ? [{ id: 0, audio_report_path: recording.audio_report_path, sender_fullname: recording.sender_fullname }] : []),
+		...parts.filter((part) => part.recording_id === recording.id)
+	] }));
 }
 
 export function getRecording(db, studyId, recordingId) {
@@ -42,8 +51,7 @@ export function appendRecording(
 	audioPath,
 	{ telegramVoiceJobId = null, senderUserId = null, source = 'browser' } = {}
 ) {
-	if (!db.prepare('SELECT id FROM studies WHERE id = ?').get(studyId))
-		throw recordingError('Study not found', 404);
+	assertStudyActive(db, studyId);
 	if (telegramVoiceJobId !== null) {
 		const existing = db
 			.prepare('SELECT id FROM study_recordings WHERE telegram_voice_job_id = ?')
@@ -79,10 +87,35 @@ export function appendRecording(
 
 export function assertRecordingMutable(recording) {
 	if (!recording) throw recordingError('Recording not found', 404);
+	if (recording.study_disabled) throw recordingError('This study is disabled.', 409);
 	if (recording.processing)
 		throw recordingError('Recording is being processed. Try again later.', 409);
 	if (recording.resident_checked || recording.attending_checked || recording.typist_checked)
 		throw recordingError('Unsign this report before changing it.', 409);
+}
+
+export function assertCanAppendRecordingAudio(db, studyId, recording, user) {
+	assertStudyActive(db, studyId);
+	assertRecordingMutable(recording);
+	const attendingId = db.prepare('SELECT corresponding_attending_id FROM studies WHERE id = ?').get(studyId)?.corresponding_attending_id;
+	if (!['resident', 'attending'].includes(user?.role) ||
+		![recording.sender_user_id, recording.corresponding_resident_id, attendingId].includes(user.id))
+		throw recordingError('Only the original sender, assigned resident or study attending may append audio.', 403);
+}
+
+export function appendRecordingAudio(db, studyId, recordingId, audioPath, telegramVoiceJobId, user) {
+	return db.transaction(() => {
+		const existing = db.prepare('SELECT recording_id FROM recording_audio_parts WHERE telegram_voice_job_id = ?').get(telegramVoiceJobId);
+		if (existing) {
+			if (existing.recording_id !== recordingId) throw recordingError('Voice already attached elsewhere.', 409);
+			return getRecording(db, studyId, recordingId);
+		}
+		const recording = getRecording(db, studyId, recordingId);
+		assertCanAppendRecordingAudio(db, studyId, recording, user);
+		db.prepare('INSERT INTO recording_audio_parts(recording_id,audio_report_path,telegram_voice_job_id,sender_user_id) VALUES(?,?,?,?)')
+			.run(recordingId, audioPath, telegramVoiceJobId, user.id);
+		return getRecording(db, studyId, recordingId);
+	})();
 }
 
 export function configureRecording(db, studyId, recordingId, input) {
@@ -159,6 +192,7 @@ export function assertRecordingReviewers(db, studyId, recording) {
 }
 
 export function signRecording(db, studyId, recordingId, user, role, checked) {
+	assertStudyActive(db, studyId);
 	const recording = getRecording(db, studyId, recordingId);
 	if (!recording) throw recordingError('Recording not found', 404);
 	if (recording.processing) throw recordingError('Recording is being processed.', 409);

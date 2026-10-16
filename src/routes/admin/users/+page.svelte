@@ -9,12 +9,23 @@
   let error = $state('');
   let success = $state('');
   let selectedUserIds = $state([]);
+  let websiteUrl = $state('');
+  const validWebsiteUrl = $derived(isValidWebsiteUrl(websiteUrl));
+
+  function isValidWebsiteUrl(value) {
+    try {
+      const url = new URL(value.trim());
+      return value.trim().length <= 2000 && ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }
   const eligibleUsers = $derived(data.users.filter(isTelegramEligible));
   const selectedIds = $derived(eligibleUsers
     .map((user) => Number(user.id))
     .filter((id) => selectedUserIds.includes(id)));
   const allSelected = $derived(eligibleUsers.length > 0 && selectedIds.length === eligibleUsers.length);
-  const hasPendingInvitations = $derived(data.users.some((user) => user.telegram_invite_status === 'pending'));
+  const hasPendingInvitations = $derived(data.users.some((user) => user.telegram_invite_status === 'pending' || user.telegram_website_status === 'pending'));
 
   function isTelegramEligible(user) {
     return Boolean(user.has_telegram) && Number.isSafeInteger(Number(user.id)) && Number(user.id) > 0;
@@ -28,9 +39,10 @@
       : selectedIds.filter((selectedId) => selectedId !== id);
   }
 
-  function invitationStatus(user) {
+  function invitationStatus(user, kind = 'group') {
     if (!user.has_telegram) return 'No Telegram';
-    return { pending: 'Queued', sent: 'Sent', failed: 'Failed' }[user.telegram_invite_status] ?? '-';
+    const status = kind === 'website' ? user.telegram_website_status : user.telegram_invite_status;
+    return { pending: 'Queued', sent: 'Sent', failed: 'Failed' }[status] ?? '-';
   }
 
   $effect(() => {
@@ -50,8 +62,8 @@
     return () => clearInterval(interval);
   });
 
-  async function sendGroupLink() {
-    if (loading || selectedIds.length === 0) return;
+  async function sendLink(kind) {
+    if (loading || selectedIds.length === 0 || (kind === 'website' && !validWebsiteUrl)) return;
     const userIds = [...selectedIds];
     loading = true;
     error = '';
@@ -60,15 +72,15 @@
       const response = await fetch('/api/users/telegram-invitations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_ids: userIds })
+        body: JSON.stringify({ user_ids: userIds, kind, ...(kind === 'website' ? { website_url: websiteUrl.trim() } : {}) })
       });
       const result = await response.json();
-      if (!response.ok || result.error) throw new Error(result.error || 'Unable to queue group links.');
+      if (!response.ok || result.error) throw new Error(result.error || 'Unable to queue Telegram links.');
       selectedUserIds = selectedUserIds.filter((id) => !userIds.includes(id));
-      success = `${result.queued ?? 0} queued; ${result.already_queued ?? 0} already queued; ${result.skipped?.length ?? 0} skipped.`;
+      success = `${kind === 'website' ? 'Website' : 'Group'} links: ${result.queued ?? 0} queued; ${result.already_queued ?? 0} already queued; ${result.skipped?.length ?? 0} skipped.`;
       await invalidateAll();
     } catch (caught) {
-      error = caught.message || 'Unable to queue group links.';
+      error = caught.message || 'Unable to queue Telegram links.';
     } finally {
       loading = false;
     }
@@ -217,8 +229,14 @@
 
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-sm" role="status">{selectedIds.length} selected</span>
-    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0} onclick={sendGroupLink}>Send group link</button>
+    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>
+    <label class="text-sm">
+      Website link
+      <input class="border rounded px-2 py-1" type="url" placeholder="https://reports.example.com" bind:value={websiteUrl} maxlength="2000" disabled={loading} />
+    </label>
+    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0 || !validWebsiteUrl} onclick={() => sendLink('website')}>Send website link</button>
   </div>
+  {#if websiteUrl && !validWebsiteUrl}<p class="text-sm text-red-600" role="alert">Enter a valid HTTP or HTTPS website link without embedded credentials.</p>{/if}
 
   <div class="border rounded overflow-auto">
     <table class="min-w-full text-sm">
@@ -231,6 +249,7 @@
           <th class="text-left p-2">Role</th>
           <th class="text-left p-2">Username</th>
           <th class="text-left p-2">Group link</th>
+          <th class="text-left p-2">Website link</th>
           <th class="text-left p-2">Actions</th>
         </tr>
       </thead>
@@ -238,12 +257,13 @@
         {#each data.users as user (user.id)}
           <tr class="border-t">
             <td class="p-2">
-              <input type="checkbox" class="align-middle" aria-label={`Select ${user.full_name} for a Telegram group link`} checked={selectedIds.includes(Number(user.id))} disabled={loading || !isTelegramEligible(user)} onchange={(event) => toggleUser(user, event.currentTarget.checked)} />
+              <input type="checkbox" class="align-middle" aria-label={`Select ${user.full_name} for a Telegram link`} checked={selectedIds.includes(Number(user.id))} disabled={loading || !isTelegramEligible(user)} onchange={(event) => toggleUser(user, event.currentTarget.checked)} />
             </td>
             <td class="p-2">{user.full_name}</td>
             <td class="p-2">{user.role}{user.role === 'resident' && user.can_sign_as_attending ? ' · Can sign as attending' : ''}</td>
             <td class="p-2">{user.username ?? '-'}</td>
             <td class="p-2 whitespace-nowrap">{invitationStatus(user)}</td>
+            <td class="p-2 whitespace-nowrap">{invitationStatus(user, 'website')}</td>
             <td class="p-2">
               <div class="flex gap-2">
                 <button class="border rounded px-3 py-1" disabled={loading} onclick={() => editUser(user)}>Edit</button>

@@ -45,7 +45,12 @@ export const POST = async ({ request }) => {
 			).catch(() => {});
 			return json({ ok: true });
 		}
-		queueVoiceReply(db, msg);
+		try {
+			queueVoiceReply(db, msg);
+		} catch (error) {
+			if (![400, 403, 404, 409].includes(error.status)) throw error;
+			await sendBotMessage(msg.chat.id, `Audio not attached: ${error.message}`, msg.message_id).catch(() => {});
+		}
 		return json({ ok: true });
 	} catch (error) {
 		return json(

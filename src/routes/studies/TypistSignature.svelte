@@ -7,7 +7,7 @@
 	const authorized = $derived(user?.role === 'admin' || user?.role === 'typist' ||
 		(user?.role === 'attending' && Number(user.id) === Number(study.corresponding_attending_id)) ||
 		(user?.role === 'resident' && Number(user.id) === Number(recording.corresponding_resident_id)));
-	const blocked = $derived(disabled || busy || Boolean(recording.processing) || !authorized || (!signed && !clinicallySigned));
+	const blocked = $derived(study.disabled || disabled || busy || Boolean(recording.processing) || !authorized || (!signed && !clinicallySigned));
 
 	async function sign(input) {
 		const checked = input.checked;

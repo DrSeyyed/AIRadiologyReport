@@ -20,7 +20,7 @@
 
   const title = $derived(reportTitle(recording));
   const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}/report`);
-  const editable = $derived(user?.role !== 'typist' && !recording.processing && !recording.resident_checked && !recording.attending_checked && !recording.typist_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
+  const editable = $derived(!study.disabled && user?.role !== 'typist' && !recording.processing && !recording.resident_checked && !recording.attending_checked && !recording.typist_checked && Boolean(recording.modality_id && recording.exam_type_id && recording.corresponding_resident_id && study.corresponding_attending_id));
   const residentSignature = $derived(recording.resident_checked
     ? `Resident signature: ${recording.resident_signer_fullname || 'Unknown signer'}${recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id) ? ` (on behalf of ${recording.resident_fullname || 'assigned resident'})` : ''}${recording.resident_signed_at ? ` · ${recording.resident_signed_at}` : ''}`
     : 'Resident signature: not signed');

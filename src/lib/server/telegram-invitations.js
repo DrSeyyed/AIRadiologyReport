@@ -6,10 +6,33 @@ export function validateInvitationUserIds(userIds) {
 	return [...new Set(userIds)];
 }
 
-export async function queueGroupInvitations(db, userIds, getLink = getStudyGroupInviteLink) {
+export function validateWebsiteUrl(value) {
+	try {
+		if (typeof value !== 'string' || value.trim().length > 2000) throw new Error();
+		const url = new URL(value.trim());
+		if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error();
+		return url.href;
+	} catch {
+		throw Object.assign(new Error('Enter a valid HTTP or HTTPS website link without embedded credentials (up to 2000 characters).'), { status: 400 });
+	}
+}
+
+const groupQueue = { table: 'telegram_group_invitations', linkColumn: 'invite_link', label: 'Study group', button: 'Join study group' };
+const websiteQueue = { table: 'telegram_website_links', linkColumn: 'website_url', label: 'Radiology reporting website', button: 'Open website' };
+
+export function queueGroupInvitations(db, userIds, getLink = getStudyGroupInviteLink) {
+	return queueLinks(db, userIds, getLink, groupQueue);
+}
+
+export function queueWebsiteLinks(db, userIds, websiteUrl) {
+	const link = validateWebsiteUrl(websiteUrl);
+	return queueLinks(db, userIds, async () => link, websiteQueue);
+}
+
+async function queueLinks(db, userIds, getLink, { table, linkColumn }) {
 	const ids = validateInvitationUserIds(userIds);
 	const getUser = db.prepare('SELECT telegram_user_id FROM users WHERE id = ?');
-	const getJob = db.prepare('SELECT status FROM telegram_group_invitations WHERE user_id = ?');
+	const getJob = db.prepare(`SELECT status FROM ${table} WHERE user_id = ?`);
 	const classify = () => {
 		const candidates = [], skipped = [];
 		let already_queued = 0;
@@ -30,9 +53,9 @@ export async function queueGroupInvitations(db, userIds, getLink = getStudyGroup
 		return { queued: 0, already_queued: initial.already_queued, skipped: initial.skipped };
 	const link = await getLink();
 	const enqueue = db.prepare(`
-		INSERT INTO telegram_group_invitations(user_id, telegram_user_id, invite_link) VALUES(?, ?, ?)
+		INSERT INTO ${table}(user_id, telegram_user_id, ${linkColumn}) VALUES(?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET telegram_user_id = excluded.telegram_user_id,
-		invite_link = excluded.invite_link, status = 'pending', attempts = 0,
+		${linkColumn} = excluded.${linkColumn}, status = 'pending', attempts = 0,
 		retry_at = 0, lease_until = 0, last_error = NULL, sent_at = NULL
 	`);
 	return db.transaction(() => {
@@ -42,21 +65,29 @@ export async function queueGroupInvitations(db, userIds, getLink = getStudyGroup
 	})();
 }
 
-export async function processGroupInvitation(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000)) {
+export function processGroupInvitation(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000)) {
+	return processLink(db, send, now, groupQueue);
+}
+
+export function processWebsiteLink(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000)) {
+	return processLink(db, send, now, websiteQueue);
+}
+
+async function processLink(db, send, now, { table, linkColumn, label, button }) {
 	const lease = now + 60;
 	const job = db.transaction(() => {
 		const item = db.prepare(`
-			SELECT * FROM telegram_group_invitations
+			SELECT * FROM ${table}
 			WHERE status = 'pending' AND retry_at <= ? AND lease_until <= ?
 			ORDER BY retry_at, user_id LIMIT 1
 		`).get(now, now);
 		if (!item) return null;
-		db.prepare('UPDATE telegram_group_invitations SET lease_until = ? WHERE user_id = ?').run(lease, item.user_id);
+		db.prepare(`UPDATE ${table} SET lease_until = ? WHERE user_id = ?`).run(lease, item.user_id);
 		return item;
 	})();
 	if (!job) return false;
 	const finish = db.prepare(`
-		UPDATE telegram_group_invitations SET status = ?, lease_until = 0, last_error = ?, sent_at = ?
+		UPDATE ${table} SET status = ?, lease_until = 0, last_error = ?, sent_at = ?
 		WHERE user_id = ? AND status = 'pending' AND lease_until = ?
 	`);
 	const user = db.prepare('SELECT telegram_user_id FROM users WHERE id = ?').get(job.user_id);
@@ -65,8 +96,8 @@ export async function processGroupInvitation(db, send = sendBotMessage, now = Ma
 		return true;
 	}
 	try {
-		await send(job.telegram_user_id, `Study group: ${job.invite_link}`, undefined, {
-			inline_keyboard: [[{ text: 'Join study group', url: job.invite_link }]]
+		await send(job.telegram_user_id, `${label}: ${job[linkColumn]}`, undefined, {
+			inline_keyboard: [[{ text: button, url: job[linkColumn] }]]
 		});
 		finish.run('sent', null, new Date(now * 1000).toISOString(), job.user_id, lease);
 	} catch (error) {
@@ -78,12 +109,12 @@ export async function processGroupInvitation(db, send = sendBotMessage, now = Ma
 			? Math.min(86400, retryAfter) : Math.min(3600, 30 * 2 ** Math.min(job.attempts, 7));
 		db.transaction(() => {
 			db.prepare(`
-				UPDATE telegram_group_invitations SET status = ?, attempts = ?, retry_at = ?,
+				UPDATE ${table} SET status = ?, attempts = ?, retry_at = ?,
 				lease_until = 0, last_error = 'Telegram delivery failed.'
 				WHERE user_id = ? AND status = 'pending' AND lease_until = ?
 			`).run(permanent || (!limited && attempts >= 5) ? 'failed' : 'pending', attempts, now + delay, job.user_id, lease);
-			if (limited) db.prepare(`
-				UPDATE telegram_group_invitations SET retry_at = MAX(retry_at, ?) WHERE status = 'pending'
+			if (limited) for (const queue of [groupQueue, websiteQueue]) db.prepare(`
+				UPDATE ${queue.table} SET retry_at = MAX(retry_at, ?) WHERE status = 'pending'
 			`).run(now + delay);
 		})();
 	}
@@ -92,13 +123,14 @@ export async function processGroupInvitation(db, send = sendBotMessage, now = Ma
 
 let worker;
 export function startGroupInvitationWorker(getDb) {
-	if (worker || !process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
+	if (worker || !process.env.TELEGRAM_BOT_TOKEN) return;
 	let busy = false;
 	worker = setInterval(async () => {
 		if (busy) return;
 		busy = true;
 		try {
 			await processGroupInvitation(getDb());
+			await processWebsiteLink(getDb());
 		} catch {
 			console.warn('Telegram invitation queue unavailable; retrying later.');
 		} finally {

@@ -10,10 +10,10 @@ export async function GET({ url, locals }) {
 	const admin = locals.user.role === 'admin';
 	let sql = `SELECT u.id, u.full_name, u.role, u.can_sign_as_attending,
                     ac.username
-                    ${admin ? ", (u.telegram_user_id IS NOT NULL AND u.telegram_user_id != '') AS has_telegram, invitations.status AS telegram_invite_status" : ''}
+                    ${admin ? ", (u.telegram_user_id IS NOT NULL AND u.telegram_user_id != '') AS has_telegram, invitations.status AS telegram_invite_status, website_links.status AS telegram_website_status" : ''}
              FROM users u
              LEFT JOIN auth_credentials ac ON ac.user_id = u.id
-             ${admin ? 'LEFT JOIN telegram_group_invitations invitations ON invitations.user_id = u.id' : ''}`;
+             ${admin ? 'LEFT JOIN telegram_group_invitations invitations ON invitations.user_id = u.id LEFT JOIN telegram_website_links website_links ON website_links.user_id = u.id' : ''}`;
 	const params = [];
 	if (role) {
 		sql += ` WHERE u.role = ?`;

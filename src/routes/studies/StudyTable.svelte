@@ -1,13 +1,14 @@
 <script>
 	import Filters from './Filters.svelte';
-	import { studyLabel } from '$lib/study-label.js';
+	import StudyAttention from './StudyAttention.svelte';
+	import DeleteStudyModal from './DeleteStudyModal.svelte';
 	import { canImportStudies } from '$lib/study-permissions.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
-	let error = $state('');
-	let deleting = $state(null);
+	let warning = $state('');
+	let deleteForStudy = $state(null);
 	const isAdmin = $derived(data.user?.role === 'admin');
 	const readOnly = $derived(data.user?.role === 'typist');
 
@@ -15,22 +16,10 @@
 		return isAdmin || !study.attending_checked_count || (data.user?.role === 'attending' && data.user.id === study.corresponding_attending_id);
 	}
 
-	async function deleteStudy(study) {
-		if (readOnly || deleting || !confirm(`Delete ${studyLabel(study)} and all recordings/reports? This cannot be undone.`)) return;
-		error = '';
-		deleting = study.id;
-		try {
-			const response = await fetch(`/api/studies/${study.id}`, { method: 'DELETE' });
-			if (!response.ok) {
-				const result = await response.json().catch(() => ({}));
-				throw new Error(result.error || 'Delete failed');
-			}
-			await invalidateAll();
-		} catch (caught) {
-			error = caught.message || 'Delete failed';
-		} finally {
-			deleting = null;
-		}
+	async function deleted(result) {
+		deleteForStudy = null;
+		warning = result.notification_warning || '';
+		await invalidateAll();
 	}
 </script>
 
@@ -40,16 +29,17 @@
 	{#if canImportStudies(data.user)}<a class="btn btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
 	{#if !readOnly}<button class="btn btn-secondary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}
 </div>
-{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
+{#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
+{#if deleteForStudy}<DeleteStudyModal study={deleteForStudy} onClose={() => (deleteForStudy = null)} onDeleted={deleted} />{/if}
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
-			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Actions</th></tr>
+			<tr><th>Code</th><th>Firstname</th><th>Lastname</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Attention</th><th>Actions</th></tr>
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
 				<tr>
-					<td>{study.patient_code}</td>
+					<td><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error">Disabled</div>{/if}</td>
 					<td>{study.patient_firstname}</td>
 					<td>{study.patient_lastname}</td>
 					<td>{study.patient_age == null ? '-' : `${study.patient_age} ${study.patient_age_unit ?? 'Y'}`}</td>
@@ -64,15 +54,16 @@
 					</td>
 					<td>
 						<div>{study.recording_count ?? 0} recordings · {study.report_count ?? 0} reports</div>
-						<button class="btn btn-sm btn-primary mt-1" onclick={() => { error = ''; recordingsForStudy = study; }}>Recordings & reports</button>
+						<button class="btn btn-sm btn-primary mt-1" onclick={() => { recordingsForStudy = study; }}>Recordings & reports</button>
 					</td>
 					<td>{study.resident_checked_count ?? 0} / {study.attending_checked_count ?? 0} / {study.typist_checked_count ?? 0}</td>
+					<td><StudyAttention {study} user={data.user} /></td>
 					<td>{#if !readOnly}<div class="flex gap-2">
-						<button class="btn btn-outline btn-xs" onclick={() => (showEditModal = study)}>Edit study</button>
-						<button class="btn btn-outline btn-xs btn-error" disabled={deleting !== null || !canDelete(study)} onclick={() => deleteStudy(study)}>{deleting === study.id ? 'Deleting…' : 'Delete'}</button>
+						<button class="btn btn-outline btn-xs" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
+						<button class="btn btn-outline btn-xs btn-error" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 					</div>{/if}</td>
 				</tr>
-			{:else}<tr><td colspan="12">No studies found.</td></tr>{/each}
+			{:else}<tr><td colspan="13">No studies found.</td></tr>{/each}
 		</tbody>
 	</table>
 </div>

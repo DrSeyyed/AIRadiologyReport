@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
-import { processGroupInvitation } from '../src/lib/server/telegram-invitations.js';
+import { processGroupInvitation, processWebsiteLink } from '../src/lib/server/telegram-invitations.js';
 
 async function loadModule(relativePath, key) {
 	const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8').replace(/from (['"])([^'"]+)\1/g, (statement, quote, specifier) => {
@@ -96,7 +96,7 @@ test('administrator POST queues selected users and exposes pending/sent states o
 	for (const role of ['resident', 'attending', 'typist']) {
 		const regular = await users({ id: 2, role });
 		assert.equal(regular.status, 200);
-		assert.ok(regular.rows.every((user) => !Object.hasOwn(user, 'has_telegram') && !Object.hasOwn(user, 'telegram_invite_status') && !Object.hasOwn(user, 'telegram_user_id')));
+		assert.ok(regular.rows.every((user) => !Object.hasOwn(user, 'has_telegram') && !Object.hasOwn(user, 'telegram_invite_status') && !Object.hasOwn(user, 'telegram_website_status') && !Object.hasOwn(user, 'telegram_user_id')));
 	}
 	assert.equal((await users(null)).status, 401);
 	const duplicate = await (await post({ user_ids: [4] })).json();
@@ -114,6 +114,32 @@ test('group permission errors leave no jobs and return a concise configuration e
 	assert.equal(response.status, 503);
 	assert.match((await response.json()).error, /bot invite permissions/);
 	assert.equal(db.prepare('SELECT count(*) AS n FROM telegram_group_invitations').get().n, 0);
+});
+
+test('website POST delivers the entered link without study group lookup or configuration', async (t) => {
+	const { db, post, users, requests } = await fixture(t);
+	delete process.env.TELEGRAM_CHAT_ID;
+	const response = await post({ kind: 'website', website_url: ' https://reports.example.test/login ', user_ids: [1, 2, 4] });
+	assert.equal(response.status, 200);
+	assert.equal((await response.json()).queued, 2);
+	assert.equal(requests.length, 0);
+	assert.equal((await users()).rows.find((user) => user.id === 2).telegram_website_status, 'pending');
+	await processWebsiteLink(db);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].endpoint, 'sendMessage');
+	assert.equal(requests[0].payload.chat_id, '200');
+	assert.deepEqual(requests[0].payload.reply_markup.inline_keyboard, [[{ text: 'Open website', url: 'https://reports.example.test/login' }]]);
+	assert.equal((await users()).rows.find((user) => user.id === 2).telegram_website_status, 'sent');
+	assert.equal((await users()).rows.find((user) => user.id === 2).telegram_invite_status, null);
+});
+
+test('invalid website links and link types fail before database or Telegram access', async (t) => {
+	const { post, key, requests } = await fixture(t);
+	for (const website_url of [undefined, '', '/login', 'javascript:alert(1)', 'https://user:password@example.test'])
+		assert.equal((await post({ kind: 'website', website_url, user_ids: [2] })).status, 400);
+	assert.equal((await post({ kind: 'unknown', user_ids: [2] })).status, 400);
+	assert.equal(globalThis[key + 'Calls'], 0);
+	assert.equal(requests.length, 0);
 });
 
 test('selecting only an unlinked admin skips delivery without calling Telegram', async (t) => {

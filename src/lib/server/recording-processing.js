@@ -8,9 +8,13 @@ import {
 	recordingError
 } from './recordings.js';
 import { getStudyDetail } from './studies.js';
+import { assertStudyActive } from './study-state.js';
 import { generateRecordingReport } from './recording-generation.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
+	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
+	if (!recording) throw recordingError('Recording no longer exists', 404);
+	assertStudyActive(db, recording.study_id);
 	mkdirSync(directory, { recursive: true });
 	const path = join(directory, `recording_${recordingId}_${randomUUID()}.txt`);
 	const temporary = `${path}.tmp`;
@@ -45,7 +49,7 @@ export async function processRecording(
 		throw recordingError(
 			'Select and save modality and examination (body part/contrast) before Transcribe & Generate.'
 		);
-	if (!recording.audio_report_path || !existsSync(recording.audio_report_path))
+	if (!recording.audio_parts.length || recording.audio_parts.some((part) => !existsSync(part.audio_report_path)))
 		throw recordingError('Audio file not found on server', 404);
 	const template = db
 		.prepare('SELECT text FROM report_templates WHERE modality_id = ? AND exam_type_id = ?')

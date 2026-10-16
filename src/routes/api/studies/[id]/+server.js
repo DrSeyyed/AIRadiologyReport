@@ -1,7 +1,8 @@
 import { getStudyDetail, normalizeStudyInput, studyFields } from '$lib/server/studies.js';
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
-import { editStudyMessage, deleteMessage } from '$lib/server/telegram.js';
+import { editStudyMessage } from '$lib/server/telegram.js';
+import { deleteStudy } from '$lib/server/study-deletion.js';
 
 // Optionally fetch one study
 export async function GET({ params, locals }) {
@@ -23,6 +24,7 @@ export async function PATCH({ params, request, locals }) {
 		const body = await request.json();
 		const current = getStudyDetail(db, id);
 		if (!current) return json({ error: 'Study not found' }, { status: 404 });
+		if (current.disabled) return json({ error: 'This study is disabled.' }, { status: 409 });
 		if (current.recordings.some((recording) => recording.processing))
 			return json({ error: 'A recording is being processed. Try again later.' }, { status: 409 });
 		const changes = Object.fromEntries(
@@ -62,24 +64,15 @@ export async function PATCH({ params, request, locals }) {
 	}
 }
 
-export async function DELETE({ params, locals }) {
-	if (!locals.user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+export async function DELETE({ params, request, locals }) {
+	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
 	if (locals.user.role === 'typist') return json({ error: 'Forbidden' }, { status: 403 });
-	const db = getDb();
-	const id = Number(params.id);
-	const detail = getStudyDetail(db, id);
-	if (detail?.recordings.some((recording) => recording.processing))
-		return json({ error: 'A recording is being processed. Try again later.' }, { status: 409 });
-	const info = db.prepare(`DELETE FROM studies WHERE id = ?`).run(id);
-	if (info.changes === 0) {
-		return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
+	if (!/^[1-9]\d*$/.test(params.id) || !Number.isSafeInteger(Number(params.id)))
+		return json({ error: 'Invalid study ID' }, { status: 400 });
+	const confirmation = await request.json().catch(() => ({}));
+	try {
+		return json(await deleteStudy(getDb(), Number(params.id), confirmation || {}));
+	} catch (error) {
+		return json({ error: error.message || 'Delete failed' }, { status: error.status || 500 });
 	}
-	if (detail.telegram_message_id) {
-		try {
-			await deleteMessage(detail.telegram_message_id);
-		} catch {
-			/* Deletion remains successful if the optional notification fails. */
-		}
-	}
-	return json({ ok: true });
 }

@@ -27,21 +27,21 @@
 	const residentSigned = $derived(Boolean(recording.resident_checked));
 	const attendingSigned = $derived(Boolean(recording.attending_checked));
 	const signed = $derived(residentSigned || attendingSigned || Boolean(recording.typist_checked));
-	const readOnly = $derived(user?.role === 'typist');
+	const readOnly = $derived(user?.role === 'typist' || Boolean(study.disabled));
 	const assignmentLocked = $derived(Boolean(recording.resident_assignment_locked));
 	const working = $derived(busy || Boolean(recording.processing));
 	const admin = $derived(user?.role === 'admin');
 	const matchingAttending = $derived(user?.role === 'attending' && hasAttending && Number(user.id) === Number(study.corresponding_attending_id));
 	const assignedResident = $derived(user?.role === 'resident' && assigned && Number(user.id) === Number(recording.corresponding_resident_id));
-	const canResident = $derived((admin || matchingAttending || assignedResident) && (admin || !attendingSigned));
-	const canAttending = $derived((admin || matchingAttending || isResidentAttendingDelegate(user, recording)) && (attendingSigned || residentSigned));
+	const canResident = $derived(!study.disabled && (admin || matchingAttending || assignedResident) && (admin || !attendingSigned));
+	const canAttending = $derived(!study.disabled && (admin || matchingAttending || isResidentAttendingDelegate(user, recording)) && (attendingSigned || residentSigned));
 	const residentOverride = $derived(recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id));
 	const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}`);
 	let templateStatus = $state('');
 	let templateError = $state('');
 	let templateRetry = $state(0);
 	let lastPromptedPair = '';
-	const selectedPair = $derived(modality && examination && canManageTemplates(user) && !signed && !working ? `${modality}:${examination}` : '');
+	const selectedPair = $derived(!study.disabled && modality && examination && canManageTemplates(user) && !signed && !working ? `${modality}:${examination}` : '');
 
 	function openTemplate() {
 		const key = selectedPair;
@@ -160,7 +160,11 @@
 	</div>
 	<p class="text-sm">Source: {recording.source || 'legacy'} · Sender: {recording.sender_fullname || 'Unknown'}{#if recording.sender_role} ({recording.sender_role}){/if}<br />Study attending: {study.attending_fullname || 'Not assigned'}</p>
 	{#if recording.audio_report_path}
-		<audio controls preload="none" src={`${endpoint}/audio`} class="w-full"><track kind="captions" /></audio>
+		{#each recording.audio_parts || [{ id: 0 }] as part, index (part.id)}
+			{#if recording.audio_parts?.length > 1}<p class="text-sm">Voice part {index + 1}{#if part.sender_fullname} · {part.sender_fullname}{/if}</p>{/if}
+			<audio controls preload="none" aria-label={`Voice part ${index + 1}`} src={`${endpoint}/audio?part=${part.id}`} class="w-full"><track kind="captions" /></audio>
+		{/each}
+		{#if recording.audio_parts?.length > 1}<p class="text-sm">All voice parts are included when you click Transcribe &amp; Generate. Attaching audio does not change the saved report.</p>{/if}
 	{:else}<p>No audio available.</p>{/if}
 	<fieldset disabled={readOnly || working || signed} class="grid gap-3 md:grid-cols-3" oninput={() => (error = '')} onchange={() => (error = '')}>
 		<label class="form-control">
@@ -204,7 +208,8 @@
 	{#if assignmentLocked}<p class="text-sm">Resident locked to Telegram sender: {recording.sender_fullname || recording.resident_fullname || 'assigned resident'}.</p>{/if}
 	{#if !assigned}<p class="text-sm">Select and save a resident before creating a report.</p>{/if}
 	{#if !hasAttending}<p class="text-sm text-warning">A study attending is required. {#if !readOnly}<button class="btn btn-xs btn-outline" disabled={working || !onEditStudy} onclick={onEditStudy}>Edit study to assign attending</button>{/if}</p>{/if}
-	{#if readOnly}<p class="text-sm">Typist access: read-only except for printing confirmation.</p>{/if}
+	{#if study.disabled}<p class="text-sm text-error">Disabled study: read-only. Telegram voice replies are not processed.</p>
+	{:else if readOnly}<p class="text-sm">Typist access: read-only except for printing confirmation.</p>{/if}
 	{#if !configured}<p class="text-sm">Select and save modality and examination before creating a report.</p>{/if}
 	{#if signed}<p class="text-sm">Signed report: withdraw printing confirmation, then attending and resident signatures before making changes.</p>{/if}
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}

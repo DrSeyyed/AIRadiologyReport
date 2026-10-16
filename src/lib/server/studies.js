@@ -1,5 +1,6 @@
 import jalaali from 'jalaali-js';
 import { listRecordings } from './recordings.js';
+import { telegramVoiceCount } from './study-state.js';
 
 export const studyFields = [
 	'patient_code',
@@ -37,6 +38,7 @@ export function getStudyDetail(db, id) {
 		)
 		.get(id);
 	if (!study) return undefined;
+	study.telegram_voice_count = telegramVoiceCount(db, id);
 	study.recordings = listRecordings(db, id);
 	study.recording_count = study.recordings.length;
 	study.report_count = study.recordings.filter((r) => r.text_report_path).length;

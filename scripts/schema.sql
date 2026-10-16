@@ -61,7 +61,11 @@ CREATE TABLE
     corresponding_attending_id INTEGER REFERENCES users (id) ON DELETE SET NULL,
     dicom_url TEXT,
     description TEXT,
-    telegram_message_id TEXT
+    needs_attention INTEGER NOT NULL DEFAULT 0 CHECK (needs_attention IN (0, 1)),
+    attention_note TEXT NOT NULL DEFAULT '' CHECK (length(attention_note) <= 300),
+    telegram_message_id TEXT,
+    disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+    telegram_send_started_at INTEGER
   );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_studies_source_uid ON studies(source_study_uid)
@@ -95,6 +99,16 @@ CREATE TABLE IF NOT EXISTS study_recordings (
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_study ON study_recordings(study_id);
 
+CREATE TABLE IF NOT EXISTS recording_audio_parts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,
+  audio_report_path TEXT NOT NULL,
+  telegram_voice_job_id INTEGER UNIQUE,
+  sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audio_parts_recording ON recording_audio_parts(recording_id);
+
 
 CREATE TABLE
   IF NOT EXISTS sessions (
@@ -113,12 +127,23 @@ CREATE TABLE IF NOT EXISTS pending_voice (
   study_id INTEGER NOT NULL REFERENCES studies (id) ON DELETE CASCADE,
   chat_id TEXT NOT NULL,
   reply_message_id INTEGER NOT NULL,
+  parent_voice_job_id INTEGER REFERENCES pending_voice(id) ON DELETE CASCADE,
+  recording_id INTEGER REFERENCES study_recordings(id) ON DELETE CASCADE,
   file_id TEXT NOT NULL,
   sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   sender_role TEXT CHECK (sender_role IN ('resident', 'attending')),
   process_at INTEGER NOT NULL,     -- unix epoch seconds when it’s due
   done INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS study_telegram_voices (
+  study_id INTEGER NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  chat_id TEXT NOT NULL,
+  message_id INTEGER NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+  PRIMARY KEY (chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_study_telegram_voices ON study_telegram_voices(study_id);
 
 CREATE TABLE IF NOT EXISTS pending_telegram (
   study_id INTEGER PRIMARY KEY REFERENCES studies (id) ON DELETE CASCADE,
@@ -130,6 +155,18 @@ CREATE TABLE IF NOT EXISTS telegram_group_invitations (
   user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
   telegram_user_id TEXT NOT NULL,
   invite_link TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  sent_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telegram_website_links (
+  user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  telegram_user_id TEXT NOT NULL,
+  website_url TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   retry_at INTEGER NOT NULL DEFAULT 0,
