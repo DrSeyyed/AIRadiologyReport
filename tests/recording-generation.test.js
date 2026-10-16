@@ -24,6 +24,14 @@ test('report generation sends the exact requested UK English prompt with recordi
 		if (url === 'https://api.openai.com/v1/audio/transcriptions') {
 			transcriptions++;
 			assert.equal(options.body.get('model'), 'gpt-transcribe');
+			const hint = options.body.get('prompt');
+			assert.match(hint, /فارسی/);
+			for (const term of ['high', 'low', 'T1', 'T2', 'low T1', 'high T2', 'hypodense', 'hyperdense', 'hyperintense', 'hypointense', 'FLAIR', 'DWI', 'ADC'])
+				assert.ok(hint.includes(term), `Missing transcription spelling hint: ${term}`);
+			assert.match(hint, /spelling hints only, not findings to insert/);
+			assert.match(hint, /Preserve negation, uncertainty, laterality, numbers, decimal points and measurement units/);
+			assert.match(hint, /Do not swap high with low, hypo with hyper, T1 with T2/);
+			assert.equal(options.body.has('language'), false);
 			assert.equal(options.body.get('file').name, 'synthetic.webm');
 			return { ok: true, json: async () => ({ text: transcription }) };
 		}
@@ -61,4 +69,34 @@ Patient gender: ${gender}`);
 	}
 	assert.equal(transcriptions, 2);
 	assert.equal(prompts.length, 2);
+});
+
+test('every audio part receives bilingual hints and mixed-language findings reach generation unchanged', async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), 'mixed-dictation-'));
+	const parts = ['first.ogg', 'reply.ogg'].map((name) => ({ audio_report_path: join(directory, name) }));
+	for (const part of parts) writeFileSync(part.audio_report_path, 'Synthetic test audio, not patient data');
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const dictations = [
+		'ضایعه سمت چپ 1.5 mm با low T1 و high T2 دیده می‌شود. diffusion restriction ندارد.',
+		'The right-sided focus is hypodense, not hyperdense. T1 hypointense and T2 hyperintense.'
+	];
+	const hints = [];
+	let calls = 0;
+	t.mock.method(globalThis, 'fetch', async (url, options) => {
+		if (url.endsWith('/audio/transcriptions')) {
+			assert.equal(options.body.get('file').name, ['first.ogg', 'reply.ogg'][calls]);
+			hints.push(options.body.get('prompt'));
+			assert.equal(options.body.has('language'), false);
+			return { ok: true, json: async () => ({ text: dictations[calls++] }) };
+		}
+		assert.equal(url, 'https://api.openai.com/v1/responses');
+		assert.equal(calls, 2);
+		const prompt = JSON.parse(options.body).input;
+		assert.ok(prompt.includes(`Doctor's dictation:\n"${dictations.join('\n')}"`));
+		return { ok: true, json: async () => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Synthetic final report.' }] }] }) };
+	});
+	assert.equal(await generateRecordingReport({ audio_parts: parts, modality_code: 'MR', exam_type_code: 'BRAIN', patient_gender: 'unknown' }, 'Synthetic template'), 'Synthetic final report.');
+	assert.equal(hints.length, 2);
+	assert.equal(hints[0], hints[1]);
+	assert.match(hints[0], /Persian accent/);
 });

@@ -1,10 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
+const transcriptionPrompt = `دیکتهٔ رادیولوژی ممکن است فارسی، انگلیسی یا ترکیبی از هر دو باشد. متن را به همان زبان گفتار پیاده کن و اصطلاحات انگلیسی رادیولوژی را با حروف لاتین بنویس. ترجمه یا گزارش‌نویسی نکن.
+Transcribe only what is audible. Preserve Persian speech and English medical terms in mixed-language dictation, including English terms spoken with a Persian accent. Use standard English spellings for clearly recognised radiology terms and keep sequence names in Latin characters.
+Radiology vocabulary (spelling hints only, not findings to insert): high, low, T1, T2, T1-weighted, T2-weighted, low T1, high T1, low T2, high T2, hypodense, hyperdense, isodense, hypointense, hyperintense, isointense, FLAIR, STIR, DWI, ADC, diffusion restriction, enhancement, with contrast, without contrast.
+Preserve negation, uncertainty, laterality, numbers, decimal points and measurement units exactly as dictated. Do not swap high with low, hypo with hyper, T1 with T2, or right with left. Do not infer a signal or density from the expected diagnosis. Do not add glossary terms, findings, normal statements or recommendations that were not spoken. Do not guess unclear words or complete missing speech.`;
+
 async function openaiTranscribe(filePath, fileName) {
 	const form = new FormData();
 
 	form.append('model', 'gpt-transcribe');
+	form.append('prompt', transcriptionPrompt);
 	form.append('file', new Blob([readFileSync(filePath)]), fileName);
 
 	const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
