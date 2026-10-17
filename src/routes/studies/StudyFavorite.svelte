@@ -21,8 +21,15 @@
 	}
 </script>
 
-<div class="space-y-1">
+<div class="flex flex-col items-start gap-1">
 	<button class="btn btn-sm btn-outline" aria-pressed={study.is_favorite} aria-label={`${study.is_favorite ? 'Remove' : 'Add'} ${study.patient_code} ${study.is_favorite ? 'from' : 'to'} favorites`} disabled={busy} onclick={toggle}>{study.is_favorite ? '★ Saved' : '☆ Favorite'}</button>
 	<button class="btn btn-xs btn-ghost" aria-label={`Choose favorite categories for ${study.patient_code}`} disabled={busy} onclick={() => onCategories(study)}>Categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
 	{#if error}<p class="text-error text-sm" role="alert">{error}</p>{/if}
 </div>
+
+<style>
+	button {
+		white-space: nowrap;
+		width: max-content;
+	}
+</style>

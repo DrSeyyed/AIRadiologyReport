@@ -73,6 +73,12 @@ test('study filter fields share centered text metrics instead of oversized selec
 	assert.equal(componentDeclarations('Filters.svelte', 'label').get('max-width'), '100%');
 });
 
+test('study favorite buttons keep complete labels on one line inside the scrolling table', () => {
+	const styles = componentDeclarations('StudyFavorite.svelte', 'button');
+	assert.equal(styles.get('white-space'), 'nowrap');
+	assert.equal(styles.get('width'), 'max-content');
+});
+
 test('favorite category containers and fields can shrink within narrow mobile boxes', () => {
 	for (const element of ['details', 'form', 'label', 'input']) {
 		const styles = componentDeclarations('FavoriteCategories.svelte', element);
