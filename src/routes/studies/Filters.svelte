@@ -9,6 +9,7 @@
 		for (const [k, v] of fd.entries()) {
 			if (v) params.set(k, v);
 		}
+		if ((params.get('favorites') || '') !== (data.filters.favorites || '')) params.set('page', '1');
 		const url = `/studies?${params.toString()}`;
 		window.location.href = url; // server-side load to refetch
 	}
@@ -22,6 +23,16 @@
 			applyFilters(e); // your existing function that reads FormData and updates the URL
 		}}
 	>
+		<label class="form-control w-56">
+			<span class="label-text mb-1 text-sm">My favorites</span>
+			<select name="favorites" class="select select-sm h-9" value={data.filters.favorites ?? ''}>
+				<option value="">All studies</option>
+				<option value="all">All favorites ({data.favorites.total})</option>
+				{#each data.favorites.categories as category (category.id)}
+					<option value={String(category.id)}>{category.name || `Unnamed category #${category.id}`} ({category.total})</option>
+				{/each}
+			</select>
+		</label>
 		<!-- Patient Code -->
 		<label class="form-control w-48">
 			<span class="label-text mb-1 text-sm">Patient Code</span>

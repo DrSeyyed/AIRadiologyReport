@@ -65,6 +65,14 @@ Patient demographics now belong to each study. There is no separate patient tabl
 
 Administrators, attendings and residents can open **Studies → Import studies** and upload an XLS/XLSX PACS export (first worksheet, up to 10 MB and 5,000 source rows). Required columns are `ID`, `NAME` or `SRC NAME`, `MODALITY`, `DESCRIPTION`, `STUDY DATE`, and `STUDY INST UID`. `STUDY KEY`, `SEX` and `AGE` are optional. `STUDY KEY` is shown in the import preview and stored per study as text, preserving formatted leading zeros; missing headers or blank cells are allowed. It does not replace `ID` or `STUDY INST UID` for patient codes or duplicate detection. Reimporting an existing UID still skips that study without overwriting its metadata; edit its Study key manually if needed. Both name columns contain complete names: each row uses nonblank `NAME`, falling back to `SRC NAME` only when `NAME` is blank; the two columns are never concatenated. A row with neither name is invalid. DICOM caret-separated names retain their prior display order (`FAMILY^GIVEN` becomes `GIVEN FAMILY`). DICOM ages such as `089Y` and formatted IDs with leading zeros are preserved.
 
+### Personal study favorites
+
+Every signed-in user, including typists, has a private **Favorites** list. Use **☆ Favorite** on a study to save it, or **★ Saved** to remove it from Favorites and all its categories. This does not edit the study, reports or signatures.
+
+Open **My study favorites — manage categories** to create, rename or delete categories. Category names are optional; blank names display as **Unnamed category #ID**. Use a study's **Categories** button to place it in multiple categories, or save with no categories to keep it only in the default Favorites list. Deleting a category leaves its studies in Favorites and other categories.
+
+Choose **My favorites → All favorites** or a category in the study filters, then apply the filters. Favorites combine with the existing patient, date, reviewer, signature, sorting and pagination controls. Other users (including administrators) do not see or manage your lists. Run `npm run db:init` before restarting the upgraded app to create the favorites tables; saved lists survive restarts and repeated initialization. Removing a study or user permanently also removes its associated favorites.
+
 ### PACS viewer links
 
 Administrators can configure **Admin → PACS viewer settings** with an HTTP(S) URL containing the literal `{studyKey}` placeholder. The default is `https://taleghanisms.pacs.sbmu.ac.ir:5010/adminpanel/LoadViewer?studyKey={studyKey}`. Leave it blank to disable links. Run `npm run db:init` before restarting to add the settings table; saved settings survive restarts and repeated initialization.

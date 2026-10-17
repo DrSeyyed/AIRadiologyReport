@@ -75,6 +75,30 @@ CREATE TABLE
     telegram_send_started_at INTEGER
   );
 
+CREATE TABLE IF NOT EXISTS study_favorites (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  study_id INTEGER NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, study_id)
+);
+CREATE INDEX IF NOT EXISTS idx_study_favorites_study ON study_favorites(study_id);
+
+CREATE TABLE IF NOT EXISTS study_favorite_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 100),
+  UNIQUE (user_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS study_favorite_memberships (
+  user_id INTEGER NOT NULL,
+  study_id INTEGER NOT NULL,
+  category_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, study_id, category_id),
+  FOREIGN KEY (user_id, study_id) REFERENCES study_favorites(user_id, study_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, category_id) REFERENCES study_favorite_categories(user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_favorite_memberships_category ON study_favorite_memberships(user_id, category_id, study_id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_studies_source_uid ON studies(source_study_uid)
   WHERE source_component IS NULL;
 

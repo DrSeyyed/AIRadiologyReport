@@ -4,6 +4,9 @@
 	import StudyAttention from './StudyAttention.svelte';
 	import PacsViewer from './PacsViewer.svelte';
 	import DeleteStudyModal from './DeleteStudyModal.svelte';
+	import FavoriteCategories from './FavoriteCategories.svelte';
+	import StudyFavorite from './StudyFavorite.svelte';
+	import FavoriteStudyModal from './FavoriteStudyModal.svelte';
 	import { canImportStudies } from '$lib/study-permissions.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -11,6 +14,7 @@
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
 	let deleteForStudy = $state(null);
+	let favoriteForStudy = $state(null);
 	const isAdmin = $derived(data.user?.role === 'admin');
 	const readOnly = $derived(data.user?.role === 'typist');
 
@@ -25,6 +29,12 @@
 	}
 </script>
 
+<FavoriteCategories {data} />
+{#if favoriteForStudy}
+	{#key favoriteForStudy.id}
+		<FavoriteStudyModal study={favoriteForStudy} categories={data.favorites.categories} onClose={() => (favoriteForStudy = null)} onSaved={async () => { favoriteForStudy = null; await invalidateAll(); }} />
+	{/key}
+{/if}
 <div class="flex flex-wrap items-end gap-3">
 	<Filters {data} />
 	<div class="flex-1"></div>
@@ -36,7 +46,7 @@
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
-			<tr><th>Code</th><th>Full name</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Attention</th><th>Actions</th></tr>
+			<tr><th>Code</th><th>Full name</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Attention</th><th>My favorites</th><th>Actions</th></tr>
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
@@ -59,12 +69,13 @@
 					</td>
 					<td>{study.resident_checked_count ?? 0} / {study.attending_checked_count ?? 0} / {study.typist_checked_count ?? 0}</td>
 					<td><StudyAttention {study} user={data.user} /></td>
+					<td><StudyFavorite {study} onCategories={(study) => (favoriteForStudy = study)} /></td>
 					<td><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} />{#if !readOnly}<div class="flex gap-2">
 						<button class="btn btn-outline btn-xs" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
 						<button class="btn btn-outline btn-xs btn-error" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 					</div>{/if}</td>
 				</tr>
-			{:else}<tr><td colspan="12">No studies found.</td></tr>{/each}
+			{:else}<tr><td colspan="13">No studies found.</td></tr>{/each}
 		</tbody>
 	</table>
 </div>

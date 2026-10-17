@@ -2,6 +2,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { getPacsViewerUrl } from '$lib/server/pacs-settings.js';
+import { getFavoriteSummary } from '$lib/server/study-favorites.js';
 
 export async function load({ locals, fetch, url }) {
   if (!locals.user) throw redirect(302, '/login');
@@ -18,6 +19,7 @@ export async function load({ locals, fetch, url }) {
   const corresponding_attending_id = url.searchParams.get('corresponding_attending_id')?.trim() ?? '';
   const date_from         = url.searchParams.get('date_from')?.trim() ?? '';
   const date_to           = url.searchParams.get('date_to')?.trim() ?? '';
+  const favorites         = url.searchParams.get('favorites')?.trim() ?? '';
 
   const signatureFilters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
     `${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() ?? ''
@@ -39,6 +41,7 @@ export async function load({ locals, fetch, url }) {
   if (corresponding_attending_id) qs.set('corresponding_attending_id', corresponding_attending_id);
   if (date_from)         qs.set('date_from', date_from);
   if (date_to)           qs.set('date_to', date_to);
+  if (favorites)         qs.set('favorites', favorites);
   for (const [key, value] of Object.entries(signatureFilters)) {
     if (value) qs.set(key, value);
   }
@@ -72,6 +75,7 @@ export async function load({ locals, fetch, url }) {
   return {
     user: locals.user,
     pacsViewerUrl: getPacsViewerUrl(getDb()),
+    favorites: getFavoriteSummary(getDb(), locals.user.id),
     filters: {
       patient_code,
       patient_fullname,
@@ -81,6 +85,7 @@ export async function load({ locals, fetch, url }) {
       corresponding_attending_id,
       date_from,
       date_to,
+      favorites,
       ...signatureFilters
     },
     // expose paging/sort so the UI can render controls

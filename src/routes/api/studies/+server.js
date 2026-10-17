@@ -3,6 +3,7 @@ import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { sendStudyMessage } from '$lib/server/telegram.js';
 import { patientName } from '$lib/patient-name.js';
+import { attachStudyFavorites, favoriteStudyFilter } from '$lib/server/study-favorites.js';
 
 const fullNameColumn = "COALESCE(NULLIF(trim(s.patient_fullname), ''), trim(s.patient_firstname || ' ' || s.patient_lastname))";
 
@@ -75,6 +76,9 @@ export async function GET({ url, locals }) {
 	}
 
 	try {
+		const favorites = favoriteStudyFilter(db, locals.user.id, url.searchParams.get('favorites')?.trim() || '');
+		baseSql += favorites.sql;
+		params.push(...favorites.params);
 		const filters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
 			`${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() || ''
 		]));
@@ -88,7 +92,7 @@ export async function GET({ url, locals }) {
 		baseSql += signatureFilter.sql;
 		params.push(...signatureFilter.params);
 	} catch (error) {
-		return json({ error: error.message }, { status: 400 });
+		return json({ error: error.message }, { status: error.status || 400 });
 	}
 
 	// --- Total count query ---
@@ -146,6 +150,7 @@ export async function GET({ url, locals }) {
 			residentsByStudy.get(study_id).push({ id, full_name });
 		}
 	}
+	attachStudyFavorites(db, locals.user.id, rows);
 	for (const row of rows) {
 		row.patient_fullname = patientName(row);
 		row.residents = residentsByStudy.get(row.id) ?? [];
