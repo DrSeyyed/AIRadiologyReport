@@ -5,22 +5,18 @@
 	let { study, template, user } = $props();
 	let error = $state('');
 	let saving = $state(false);
+	let enteringKey = $state(false);
+	let key = $state('');
 	const canSave = $derived(['admin', 'attending', 'resident'].includes(user?.role));
 	const link = $derived(pacsViewerLink(template || '', study.study_key));
+	const enteredLink = $derived(pacsViewerLink(template || '', key));
 
-	async function openViewer() {
-		if (saving) return;
-		error = '';
-		const key = window.prompt(canSave
-			? 'Enter the PACS Study key (saved to this study):'
-			: 'Enter the PACS Study key (used only to open the viewer; not saved):');
-		if (key === null) return;
-		const url = pacsViewerLink(template, key);
-		if (!url) {
-			error = 'Enter a Study key of 1–128 characters.';
+	async function saveKey(event) {
+		if (saving || !enteredLink) {
+			event.preventDefault();
 			return;
 		}
-		window.open(url, '_blank', 'noopener,noreferrer');
+		error = '';
 		if (!canSave) return;
 		saving = true;
 		try {
@@ -46,8 +42,26 @@
 			<!-- External PACS URLs are not application routes. -->
 			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
 			<a class="btn btn-outline btn-xs" href={link} target="_blank" rel="noopener noreferrer">Open PACS</a>
+		{:else if enteringKey}
+			<div class="min-w-48 space-y-2">
+				<label class="form-control">
+					<span class="label-text">PACS Study key</span>
+					<input class="input input-bordered input-sm" type="text" maxlength="128" bind:value={key} disabled={saving} />
+				</label>
+				<p class="text-xs">{canSave ? 'The key will be saved to this study.' : 'Temporary key; typists cannot save it.'}</p>
+				<div class="flex gap-2">
+					{#if enteredLink && !saving}
+						<!-- External PACS URLs are not application routes. -->
+						<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+						<a class="btn btn-outline btn-xs" href={enteredLink} target="_blank" rel="noopener noreferrer" onclick={saveKey}>Open PACS</a>
+					{:else}
+						<button class="btn btn-outline btn-xs" disabled>{saving ? 'Saving key…' : 'Open PACS'}</button>
+					{/if}
+					<button class="btn btn-ghost btn-xs" disabled={saving} onclick={() => { enteringKey = false; key = ''; error = ''; }}>Cancel</button>
+				</div>
+			</div>
 		{:else}
-			<button class="btn btn-outline btn-xs" disabled={saving} onclick={openViewer}>{saving ? 'Saving key…' : 'Open PACS'}</button>
+			<button class="btn btn-outline btn-xs" onclick={() => { enteringKey = true; }}>Open PACS</button>
 		{/if}
 		{#if error}<p class="text-error text-xs" role="alert">{error}</p>{/if}
 	</div>
