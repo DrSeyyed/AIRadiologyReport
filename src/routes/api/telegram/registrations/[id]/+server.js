@@ -10,7 +10,7 @@ export async function PATCH({ locals, params, request }) {
 		if (!body || typeof body !== 'object' || Array.isArray(body))
 			return json({ error: 'Invalid review request' }, { status: 400 });
 		const result = reviewTelegramRegistration(getDb(), Number(params.id), body);
-		let notification_warning = null;
+		let notification_warning = result.link_warning || null;
 		try {
 			await sendBotMessage(
 				result.registration.telegram_user_id,
@@ -19,7 +19,7 @@ export async function PATCH({ locals, params, request }) {
 					: 'Registration rejected. Send /register to reapply.'
 			);
 		} catch {
-			notification_warning = 'Review saved, but Telegram notification failed.';
+			notification_warning = [notification_warning, 'Review saved, but Telegram notification failed.'].filter(Boolean).join(' ');
 		}
 		return json({ ...result, notification_warning });
 	} catch (error) {

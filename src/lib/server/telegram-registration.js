@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { timingSafeEqual } from 'node:crypto';
 import { sendBotMessage, deleteMessage } from './telegram.js';
+import { queueApprovalLinks } from './telegram-invitations.js';
 
 function failure(message, status = 400) {
 	return Object.assign(new Error(message), { status });
@@ -211,6 +212,7 @@ export function reviewTelegramRegistration(db, id, { action, role }) {
 		if (request.step !== 'pending')
 			throw failure('Only pending registrations can be reviewed.', 409);
 		let user;
+		let link_warning = null;
 		if (action === 'approve') {
 			role = role || request.role;
 			if (
@@ -238,6 +240,7 @@ export function reviewTelegramRegistration(db, id, { action, role }) {
 				"UPDATE telegram_registrations SET step='approved',role=?,user_id=?,password_hash=NULL,updated_at=? WHERE id=?"
 			).run(role, userId, Math.floor(Date.now() / 1000), id);
 			user = { id: userId, full_name: request.full_name, role, username: request.username };
+			link_warning = queueApprovalLinks(db, userId, request.telegram_user_id);
 		} else
 			db.prepare(
 				"UPDATE telegram_registrations SET step='rejected',password_hash=NULL,updated_at=? WHERE id=?"
@@ -247,7 +250,7 @@ export function reviewTelegramRegistration(db, id, { action, role }) {
 			registration: db
 				.prepare(`SELECT ${publicColumns} FROM telegram_registrations WHERE id=?`)
 				.get(id),
-			...(user ? { user } : {})
+			...(user ? { user, link_warning } : {})
 		};
 	})();
 }

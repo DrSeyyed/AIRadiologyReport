@@ -1,5 +1,7 @@
 // Admin-only page and preload current users (for a small table)
 import { error, redirect } from '@sveltejs/kit';
+import { getDb } from '$lib/server/db';
+import { getTelegramWebsiteUrl } from '$lib/server/telegram-settings.js';
 
 export async function load({ locals, fetch }) {
 	if (!locals.user) throw redirect(302, '/login');
@@ -9,5 +11,5 @@ export async function load({ locals, fetch }) {
 	if (!res.ok) throw error(res.status, 'Unable to load users');
 	const users = await res.json();
 
-	return { users, user: locals.user };
+	return { users, user: locals.user, websiteUrl: getTelegramWebsiteUrl(getDb()) };
 }

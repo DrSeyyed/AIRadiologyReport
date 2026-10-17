@@ -9,7 +9,7 @@ import { processGroupInvitation, processWebsiteLink } from '../src/lib/server/te
 async function loadModule(relativePath, key) {
 	const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8').replace(/from (['"])([^'"]+)\1/g, (statement, quote, specifier) => {
 		let resolved;
-		if (specifier === '$lib/server/db') {
+		if (['$lib/server/db', '$lib/server/db.js'].includes(specifier)) {
 			resolved = `data:text/javascript,${encodeURIComponent(`export function getDb(){globalThis[${JSON.stringify(key + 'Calls')}]++;return globalThis[${JSON.stringify(key)}]}`)}`;
 		} else if (specifier.startsWith('$lib/')) resolved = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 		else resolved = import.meta.resolve(specifier);
@@ -27,7 +27,8 @@ async function fixture(t) {
 	globalThis[key] = db;
 	globalThis[key + 'Calls'] = 0;
 	t.after(() => { delete globalThis[key]; delete globalThis[key + 'Calls']; db.close(); });
-	const { POST } = await loadModule('../src/routes/api/users/telegram-invitations/+server.js', key);
+	const { POST, PATCH } = await loadModule('../src/routes/api/users/telegram-invitations/+server.js', key);
+	const { PATCH: review } = await loadModule('../src/routes/api/telegram/registrations/[id]/+server.js', key);
 	const { GET } = await loadModule('../src/routes/api/users/+server.js', key);
 	const requests = [];
 	const previous = { token: process.env.TELEGRAM_BOT_TOKEN, chat: process.env.TELEGRAM_CHAT_ID };
@@ -50,7 +51,7 @@ async function fixture(t) {
 		const response = await GET({ locals: { user }, url: new URL('http://localhost/api/users') });
 		return { status: response.status, rows: await response.json() };
 	};
-	return { db, key, POST, post, users, requests };
+	return { db, key, POST, PATCH, review, post, users, requests };
 }
 
 test('invitation POST enforces administrator authorization before body, database or Telegram access', async (t) => {
@@ -135,7 +136,7 @@ test('website POST delivers the entered link without study group lookup or confi
 
 test('invalid website links and link types fail before database or Telegram access', async (t) => {
 	const { post, key, requests } = await fixture(t);
-	for (const website_url of [undefined, '', '/login', 'javascript:alert(1)', 'https://user:password@example.test'])
+	for (const website_url of ['', '/login', 'javascript:alert(1)', 'https://user:password@example.test'])
 		assert.equal((await post({ kind: 'website', website_url, user_ids: [2] })).status, 400);
 	assert.equal((await post({ kind: 'unknown', user_ids: [2] })).status, 400);
 	assert.equal(globalThis[key + 'Calls'], 0);
@@ -148,4 +149,53 @@ test('selecting only an unlinked admin skips delivery without calling Telegram',
 	assert.equal(response.status, 200);
 	assert.deepEqual(await response.json(), { queued: 0, already_queued: 0, skipped: [{ id: 1, reason: 'No Telegram account.' }] });
 	assert.equal(requests.length, 0);
+});
+
+const settingsRequest = (website_url) => new Request('http://localhost/api/users/telegram-invitations', {
+	method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website_url })
+});
+
+test('only admins can change the persistent website link, before any body or database access', async (t) => {
+	const { PATCH, key, requests } = await fixture(t);
+	for (const user of [null, { role: 'resident' }, { role: 'attending' }, { role: 'typist' }]) {
+		const response = await PATCH({ locals: { user }, request: { json: () => assert.fail('Unauthorized body access') } });
+		assert.equal(response.status, user ? 403 : 401);
+	}
+	assert.equal(globalThis[key + 'Calls'], 0);
+	assert.equal(requests.length, 0);
+});
+
+test('saved website settings persist, are reused without entry, and can be changed or cleared', async (t) => {
+	const { db, PATCH, post, requests } = await fixture(t);
+	const locals = { user: { id: 1, role: 'admin' } };
+	assert.equal((await post({ kind: 'website', user_ids: [2] })).status, 400);
+	for (const value of [undefined, null, '/login', 'javascript:alert(1)', 'https://example.test/' + 'x'.repeat(2000)])
+		assert.equal((await PATCH({ locals, request: settingsRequest(value) })).status, 400);
+	assert.equal((await PATCH({ locals, request: settingsRequest(' https://reports.example.test/login ') })).status, 200);
+	initializeSchema(db, readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8'));
+	assert.equal(db.prepare("SELECT value FROM application_settings WHERE key='telegram_website_url'").get().value, 'https://reports.example.test/login');
+	assert.equal((await post({ kind: 'website', user_ids: [2] })).status, 200);
+	assert.equal(db.prepare('SELECT website_url FROM telegram_website_links WHERE user_id=2').get().website_url, 'https://reports.example.test/login');
+	await PATCH({ locals, request: settingsRequest('https://new.example.test/') });
+	assert.equal((await post({ kind: 'website', user_ids: [3] })).status, 200);
+	assert.equal(db.prepare('SELECT website_url FROM telegram_website_links WHERE user_id=3').get().website_url, 'https://new.example.test/');
+	assert.equal(db.prepare('SELECT website_url FROM telegram_website_links WHERE user_id=2').get().website_url, 'https://reports.example.test/login');
+	await PATCH({ locals, request: settingsRequest('') });
+	assert.equal((await post({ kind: 'website', user_ids: [4] })).status, 400);
+	assert.equal(requests.length, 0);
+});
+
+test('approval route queues both links even if the immediate approval notice fails', async (t) => {
+	const { db, PATCH, review } = await fixture(t);
+	const locals = { user: { id: 1, role: 'admin' } };
+	await PATCH({ locals, request: settingsRequest('https://reports.example.test/login') });
+	db.exec("INSERT INTO telegram_registrations(id,telegram_user_id,full_name,role,username,password_hash,step) VALUES(1,'900','Synthetic New User','resident','synthetic_user','synthetic-hash','pending')");
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('Synthetic network failure'); });
+	const response = await review({ locals, params: { id: '1' }, request: new Request('http://localhost/api/telegram/registrations/1', { method: 'PATCH', body: JSON.stringify({ action: 'approve' }) }) });
+	assert.equal(response.status, 200);
+	const result = await response.json();
+	assert.match(result.notification_warning, /notification failed/);
+	assert.equal(db.prepare('SELECT status FROM telegram_group_invitations WHERE user_id=?').get(result.user.id).status, 'pending');
+	assert.equal(db.prepare('SELECT status FROM telegram_website_links WHERE user_id=?').get(result.user.id).status, 'pending');
+	assert.equal(db.prepare('SELECT step FROM telegram_registrations WHERE id=1').get().step, 'approved');
 });

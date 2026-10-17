@@ -52,7 +52,7 @@
 		<h1 class="text-2xl font-semibold">Telegram registrations</h1>
 		<a class="btn btn-ghost" href={resolve('/admin/users')}>User management</a>
 	</div>
-	<p>Verify identity and role before approving.</p>
+	<p>Verify identity and role before approving. Approval automatically queues the study group/channel and saved website links for Telegram delivery. Configure the website link in User management.</p>
 	{#if !data.telegramConfigured}
 		<div class="alert alert-warning" role="status">Telegram bot configuration required for registrations and notifications.</div>
 	{/if}

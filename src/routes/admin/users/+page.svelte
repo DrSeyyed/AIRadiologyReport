@@ -1,5 +1,6 @@
 <script>
   import { invalidateAll } from '$app/navigation';
+  import { untrack } from 'svelte';
   import { resolve } from '$app/paths';
   let { data } = $props();
 
@@ -9,7 +10,7 @@
   let error = $state('');
   let success = $state('');
   let selectedUserIds = $state([]);
-  let websiteUrl = $state('');
+  let websiteUrl = $state(untrack(() => data.websiteUrl || ''));
   const validWebsiteUrl = $derived(isValidWebsiteUrl(websiteUrl));
 
   function isValidWebsiteUrl(value) {
@@ -62,8 +63,32 @@
     return () => clearInterval(interval);
   });
 
+  async function saveWebsite(event) {
+    event.preventDefault();
+    if (loading || (websiteUrl.trim() && !validWebsiteUrl)) return;
+    loading = true;
+    error = '';
+    success = '';
+    try {
+      const response = await fetch('/api/users/telegram-invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ website_url: websiteUrl.trim() })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to save website link.');
+      websiteUrl = result.website_url;
+      await invalidateAll();
+      success = 'Website link saved. Future approvals and website-link sends use this address.';
+    } catch (caught) {
+      error = caught.message || 'Unable to save website link.';
+    } finally {
+      loading = false;
+    }
+  }
+
   async function sendLink(kind) {
-    if (loading || selectedIds.length === 0 || (kind === 'website' && !validWebsiteUrl)) return;
+    if (loading || selectedIds.length === 0 || (kind === 'website' && !data.websiteUrl)) return;
     const userIds = [...selectedIds];
     loading = true;
     error = '';
@@ -72,7 +97,7 @@
       const response = await fetch('/api/users/telegram-invitations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_ids: userIds, kind, ...(kind === 'website' ? { website_url: websiteUrl.trim() } : {}) })
+        body: JSON.stringify({ user_ids: userIds, kind })
       });
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || 'Unable to queue Telegram links.');
@@ -227,14 +252,20 @@
     </form>
   {/if}
 
+  <form class="space-y-3 border rounded p-4" onsubmit={saveWebsite}>
+    <h3 class="font-semibold">Telegram onboarding links</h3>
+    <p class="text-sm">Approval automatically queues the configured study group/channel invitation and the saved website link for the user's Telegram. Configure the website once; administrators can change it here.</p>
+    <label class="text-sm block">
+      Website link
+      <input class="border rounded px-2 py-1 w-full" type="url" placeholder="https://reports.example.com" bind:value={websiteUrl} maxlength="2000" disabled={loading} />
+    </label>
+    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="submit" disabled={loading || (Boolean(websiteUrl.trim()) && !validWebsiteUrl)}>Save website link</button>
+    <p class="text-sm">Saved website: {data.websiteUrl || 'Not configured — website links will not be sent.'} Changes apply to future queued messages; already queued links keep their original address.</p>
+  </form>
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-sm" role="status">{selectedIds.length} selected</span>
     <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>
-    <label class="text-sm">
-      Website link
-      <input class="border rounded px-2 py-1" type="url" placeholder="https://reports.example.com" bind:value={websiteUrl} maxlength="2000" disabled={loading} />
-    </label>
-    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0 || !validWebsiteUrl} onclick={() => sendLink('website')}>Send website link</button>
+    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0 || !data.websiteUrl} onclick={() => sendLink('website')}>Send website link</button>
   </div>
   {#if websiteUrl && !validWebsiteUrl}<p class="text-sm text-red-600" role="alert">Enter a valid HTTP or HTTPS website link without embedded credentials.</p>{/if}
 

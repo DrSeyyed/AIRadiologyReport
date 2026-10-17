@@ -1,20 +1,11 @@
 import { getStudyGroupInviteLink, sendBotMessage } from './telegram.js';
+import { getTelegramWebsiteUrl, validateWebsiteUrl } from './telegram-settings.js';
+export { validateWebsiteUrl } from './telegram-settings.js';
 
 export function validateInvitationUserIds(userIds) {
 	if (!Array.isArray(userIds) || !userIds.length || userIds.some((id) => !Number.isSafeInteger(id) || id <= 0))
 		throw Object.assign(new Error('Select valid users.'), { status: 400 });
 	return [...new Set(userIds)];
-}
-
-export function validateWebsiteUrl(value) {
-	try {
-		if (typeof value !== 'string' || value.trim().length > 2000) throw new Error();
-		const url = new URL(value.trim());
-		if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error();
-		return url.href;
-	} catch {
-		throw Object.assign(new Error('Enter a valid HTTP or HTTPS website link without embedded credentials (up to 2000 characters).'), { status: 400 });
-	}
 }
 
 const groupQueue = { table: 'telegram_group_invitations', linkColumn: 'invite_link', label: 'Study group', button: 'Join study group' };
@@ -24,9 +15,18 @@ export function queueGroupInvitations(db, userIds, getLink = getStudyGroupInvite
 	return queueLinks(db, userIds, getLink, groupQueue);
 }
 
-export function queueWebsiteLinks(db, userIds, websiteUrl) {
+export function queueWebsiteLinks(db, userIds, websiteUrl = getTelegramWebsiteUrl(db)) {
 	const link = validateWebsiteUrl(websiteUrl);
 	return queueLinks(db, userIds, async () => link, websiteQueue);
+}
+
+export function queueApprovalLinks(db, userId, telegramId) {
+	const websiteUrl = getTelegramWebsiteUrl(db);
+	db.prepare(`INSERT INTO telegram_group_invitations(user_id, telegram_user_id, invite_link)
+		VALUES (?, ?, '')`).run(userId, telegramId);
+	if (websiteUrl) db.prepare(`INSERT INTO telegram_website_links(user_id, telegram_user_id, website_url)
+		VALUES (?, ?, ?)`).run(userId, telegramId, websiteUrl);
+	return websiteUrl ? null : 'Website link was not queued: configure the saved website link in User Management.';
 }
 
 async function queueLinks(db, userIds, getLink, { table, linkColumn }) {
@@ -65,15 +65,15 @@ async function queueLinks(db, userIds, getLink, { table, linkColumn }) {
 	})();
 }
 
-export function processGroupInvitation(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000)) {
-	return processLink(db, send, now, groupQueue);
+export function processGroupInvitation(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000), getLink = getStudyGroupInviteLink) {
+	return processLink(db, send, now, groupQueue, getLink);
 }
 
 export function processWebsiteLink(db, send = sendBotMessage, now = Math.floor(Date.now() / 1000)) {
 	return processLink(db, send, now, websiteQueue);
 }
 
-async function processLink(db, send, now, { table, linkColumn, label, button }) {
+async function processLink(db, send, now, { table, linkColumn, label, button }, getLink) {
 	const lease = now + 60;
 	const job = db.transaction(() => {
 		const item = db.prepare(`
@@ -96,6 +96,18 @@ async function processLink(db, send, now, { table, linkColumn, label, button }) 
 		return true;
 	}
 	try {
+		if (!job[linkColumn] && getLink) {
+			job[linkColumn] = await getLink();
+			const updated = db.prepare(`UPDATE ${table} SET ${linkColumn} = ?
+				WHERE user_id = ? AND status = 'pending' AND lease_until = ?`)
+				.run(job[linkColumn], job.user_id, lease);
+			if (!updated.changes) return true;
+			const recipient = db.prepare('SELECT telegram_user_id FROM users WHERE id = ?').get(job.user_id);
+			if (!recipient || recipient.telegram_user_id !== job.telegram_user_id) {
+				finish.run('failed', 'Telegram account unavailable.', null, job.user_id, lease);
+				return true;
+			}
+		}
 		await send(job.telegram_user_id, `${label}: ${job[linkColumn]}`, undefined, {
 			inline_keyboard: [[{ text: button, url: job[linkColumn] }]]
 		});
