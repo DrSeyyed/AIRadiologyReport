@@ -5,6 +5,7 @@ import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
 import autoprefixer from 'autoprefixer';
 import config from '../tailwind.config.js';
+import { compile } from 'svelte/compiler';
 
 test('stylesheet generates legacy-compatible colors and contained page layout utilities', async () => {
 	const source = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
@@ -45,4 +46,38 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 			`Uncompiled or unsupported CSS rule: @${rule.name}`
 		)
 	);
+});
+
+function componentDeclarations(filename, element) {
+	const source = readFileSync(new URL(`../src/routes/studies/${filename}`, import.meta.url), 'utf8');
+	const { css } = compile(source, { filename, generate: 'server' });
+	const declarations = new Map();
+	postcss.parse(css.code).walkRules(rule => {
+		if (rule.selector.split(',').some(selector => selector.trim().startsWith(`${element}.`)))
+			rule.walkDecls(declaration => declarations.set(declaration.prop, declaration.value));
+	});
+	return declarations;
+}
+
+test('study filter fields share centered text metrics instead of oversized select-sm line heights', () => {
+	for (const element of ['input', 'select']) {
+		const styles = componentDeclarations('Filters.svelte', element);
+		assert.equal(styles.get('height'), '2.25rem');
+		assert.equal(styles.get('line-height'), '1.5');
+		assert.equal(styles.get('padding-top'), '0');
+		assert.equal(styles.get('padding-bottom'), '0');
+		assert.equal(styles.get('width'), '100%');
+		assert.equal(styles.get('min-width'), '0');
+		assert.equal(styles.get('max-width'), '100%');
+	}
+	assert.equal(componentDeclarations('Filters.svelte', 'label').get('max-width'), '100%');
+});
+
+test('favorite category containers and fields can shrink within narrow mobile boxes', () => {
+	for (const element of ['details', 'form', 'label', 'input']) {
+		const styles = componentDeclarations('FavoriteCategories.svelte', element);
+		assert.equal(styles.get('min-width'), '0');
+		assert.equal(styles.get('max-width'), '100%');
+	}
+	assert.equal(componentDeclarations('FavoriteCategories.svelte', 'input').get('width'), '100%');
 });

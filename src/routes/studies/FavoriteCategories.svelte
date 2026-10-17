@@ -49,3 +49,23 @@
 		{#if error}<p role="alert" class="text-error">{error}</p>{/if}
 	</div>
 </details>
+
+<style>
+	details,
+	form {
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	label {
+		width: 16rem;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	input {
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+	}
+</style>

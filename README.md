@@ -39,7 +39,7 @@ You can preview the production build with `npm run preview`.
 
 The site uses Tailwind CSS 3 and DaisyUI 4, with JavaScript/CSS builds targeting Chrome and Edge 109 (the final versions available on Windows 7). Keep these styling major versions when updating dependencies: Tailwind CSS 4 requires newer browser features. The site has an explicit light theme, including fallback colors for browsers without OKLCH support. Internet Explorer is not supported; prefer a supported operating system and current browser when possible.
 
-The green page background covers the full document. Wide study and administration tables scroll inside their own containers rather than expanding the page; the header wraps on narrow screens.
+The green page background covers the full document. Wide study and administration tables scroll inside their own containers rather than expanding the page; the header wraps on narrow screens. Study filter controls share consistent text alignment, and favorites filters/category fields shrink to fit narrow mobile screens.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
 

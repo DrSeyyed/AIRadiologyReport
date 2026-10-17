@@ -15,7 +15,7 @@
 	}
 </script>
 
-<div>
+<div class="min-w-0 w-full">
 	<form
 		class="flex flex-wrap items-end gap-3"
 		onsubmit={(e) => {
@@ -98,7 +98,7 @@
 
 		<!-- Date To -->
 		<label class="form-control w-32">
-			<span class="label-text mb-1 text-sm h-9">To (Jalali)</span>
+			<span class="label-text mb-1 text-sm">To (Jalali)</span>
 			<input
 				name="date_to"
 				class="input-bordered input input-sm"
@@ -210,3 +210,21 @@
 		</button>
 	</form>
 </div>
+
+<style>
+	label {
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	input,
+	select {
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		height: 2.25rem;
+		line-height: 1.5;
+		padding-top: 0;
+		padding-bottom: 0;
+	}
+</style>
