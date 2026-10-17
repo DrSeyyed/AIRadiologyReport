@@ -2,24 +2,25 @@
 	import TypistSignature from './TypistSignature.svelte';
 	import { canManageTemplates } from '$lib/template-permissions.js';
 	import { isResidentAttendingDelegate } from '$lib/signature-permissions.js';
+	import { recordingExaminations } from '$lib/recording-examinations.js';
 	let { study, recording, modalities, examTypes, residents, user, onChanged, onReport, onEditStudy, onTemplate } = $props();
 	let modality = $state('');
-	let examination = $state('');
+	let examinations = $state([]);
 	let details = $state('');
 	let resident = $state('');
 	let busy = $state(false);
 	let generating = $state(false);
 	let error = $state('');
 
-	const savedConfiguration = $derived(JSON.stringify([recording.id, recording.modality_id, recording.exam_type_id, recording.exam_details, recording.corresponding_resident_id]));
+	const savedConfiguration = $derived(JSON.stringify([recording.id, recording.modality_id, recordingExaminations(recording).map((exam) => String(exam.id)), recording.exam_details, recording.corresponding_resident_id]));
 	$effect(() => {
 		const [, savedModality, savedExamination, savedDetails, savedResident] = JSON.parse(savedConfiguration);
 		modality = String(savedModality ?? '');
-		examination = String(savedExamination ?? '');
+		examinations = savedExamination;
 		details = savedDetails ?? '';
 		resident = String(savedResident ?? '');
 	});
-	const dirty = $derived(modality !== String(recording.modality_id ?? '') || examination !== String(recording.exam_type_id ?? '') || details !== (recording.exam_details ?? '') || resident !== String(recording.corresponding_resident_id ?? ''));
+	const dirty = $derived(modality !== String(recording.modality_id ?? '') || JSON.stringify(examinations) !== JSON.stringify(recordingExaminations(recording).map((exam) => String(exam.id))) || details !== (recording.exam_details ?? '') || resident !== String(recording.corresponding_resident_id ?? ''));
 	const configured = $derived(Boolean(recording.modality_id && recording.exam_type_id));
 	const assigned = $derived(Boolean(recording.corresponding_resident_id));
 	const hasAttending = $derived(Boolean(study.corresponding_attending_id));
@@ -38,16 +39,28 @@
 	const residentOverride = $derived(recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id));
 	const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}`);
 	let templateStatus = $state('');
+	let templateChecks = $state({});
 	let templateError = $state('');
 	let templateRetry = $state(0);
 	let lastPromptedPair = '';
-	const selectedPair = $derived(!study.disabled && modality && examination && canManageTemplates(user) && !signed && !working ? `${modality}:${examination}` : '');
+	const selectedPair = $derived(!study.disabled && modality && examinations.length && canManageTemplates(user) && !signed && !working ? `${modality}:${examinations.join(',')}` : '');
 
-	function openTemplate() {
+	function examinationName(id) {
+		const exam = examTypes.find((option) => String(option.id) === id);
+		return exam?.name || exam?.code || id;
+	}
+
+	function moveExamination(index, offset) {
+		const next = [...examinations];
+		[next[index], next[index + offset]] = [next[index + offset], next[index]];
+		examinations = next;
+	}
+
+	function openTemplate(examId) {
 		const key = selectedPair;
-		if (!key || !onTemplate) return;
-		onTemplate({ modalityId: modality, examTypeId: examination, onSaved: (saved) => {
-			if (selectedPair === key && `${saved.modality_id}:${saved.exam_type_id}` === key) { templateStatus = 'ready'; templateError = ''; }
+		if (!key || !onTemplate || !examinations.includes(examId)) return;
+		onTemplate({ modalityId: modality, examTypeId: examId, onSaved: () => {
+			if (selectedPair === key) templateRetry++;
 		} });
 	}
 
@@ -55,21 +68,28 @@
 		const key = selectedPair;
 		const attempt = templateRetry;
 		templateStatus = '';
+		templateChecks = {};
 		templateError = '';
 		if (!key) return;
 		const controller = new AbortController();
-		const m = modality, e = examination;
+		const m = modality, ids = [...examinations];
 		const timer = setTimeout(async () => {
 			templateStatus = 'loading';
 			try {
-				const response = await fetch(`/api/report-templates?modality_id=${encodeURIComponent(m)}&exam_type_id=${encodeURIComponent(e)}&retry=${attempt}`, { signal: controller.signal });
-				const rows = await response.json();
-				if (!response.ok) throw new Error(rows.error || 'Unable to check template.');
+				const checks = await Promise.all(ids.map(async (id) => {
+					const response = await fetch(`/api/report-templates?modality_id=${encodeURIComponent(m)}&exam_type_id=${encodeURIComponent(id)}&retry=${attempt}`, { signal: controller.signal });
+					const rows = await response.json();
+					if (!response.ok) throw new Error(rows.error || 'Unable to check template.');
+					return [id, rows[0]?.text?.trim() ? 'ready' : 'missing'];
+				}));
 				if (controller.signal.aborted) return;
-				templateStatus = rows[0]?.text?.trim() ? 'ready' : 'missing';
-				if (templateStatus === 'missing' && lastPromptedPair !== key) {
-					lastPromptedPair = key;
-					openTemplate();
+				templateChecks = Object.fromEntries(checks);
+				const missing = checks.find(([, status]) => status === 'missing')?.[0];
+				templateStatus = missing ? 'missing' : 'ready';
+				const pair = `${m}:${missing}`;
+				if (missing && lastPromptedPair !== pair) {
+					lastPromptedPair = pair;
+					openTemplate(missing);
 				}
 			} catch (caught) {
 				if (!controller.signal.aborted) { templateStatus = 'error'; templateError = caught.message; }
@@ -107,12 +127,12 @@
 		return act(async () => {
 			const result = await request('', 'PATCH', {
 				modality_id: modality ? Number(modality) : null,
-				exam_type_id: examination ? Number(examination) : null,
+				exam_type_ids: examinations.map(Number),
 				exam_details: details,
 				corresponding_resident_id: resident ? Number(resident) : null
 			});
 			modality = String(result.recording.modality_id ?? '');
-			examination = String(result.recording.exam_type_id ?? '');
+			examinations = recordingExaminations(result.recording).map((exam) => String(exam.id));
 			details = result.recording.exam_details ?? '';
 			resident = String(result.recording.corresponding_resident_id ?? '');
 		});
@@ -185,12 +205,29 @@
 			</select>
 		</label>
 		<label class="form-control">
-			<span class="label-text">Examination / body part & contrast (required)</span>
-			<select class="select select-bordered" bind:value={examination}>
+			<span class="label-text">Add examination / body part & contrast (at least one required)</span>
+			<select class="select select-bordered" value="" onchange={(event) => {
+				const id = event.currentTarget.value;
+				if (id && !examinations.includes(id)) examinations = [...examinations, id];
+				event.currentTarget.value = '';
+			}}>
 				<option value="">Select examination including contrast</option>
-				{#each examTypes as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
+				{#each examTypes.filter((option) => !examinations.includes(String(option.id))) as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
 			</select>
 		</label>
+		<div class="md:col-span-3 space-y-2">
+			<ol class="space-y-2" aria-label="Selected examinations in report order">
+				{#each examinations as id, index (id)}
+					<li class="flex flex-wrap items-center gap-2">
+						<span>{index + 1}. {examinationName(id)}</span>
+						<button class="btn btn-xs btn-outline" aria-label={`Move ${examinationName(id)} up`} disabled={index === 0} onclick={() => moveExamination(index, -1)}>↑</button>
+						<button class="btn btn-xs btn-outline" aria-label={`Move ${examinationName(id)} down`} disabled={index === examinations.length - 1} onclick={() => moveExamination(index, 1)}>↓</button>
+						<button class="btn btn-xs btn-outline" aria-label={`Remove ${examinationName(id)}`} onclick={() => examinations = examinations.filter((selected) => selected !== id)}>Remove</button>
+					</li>
+				{/each}
+			</ol>
+			<p class="text-sm opacity-70">One modality for all selected examinations. Templates merge in this order with body-part headings and one shared Conclusion. Details / side apply to all selected body parts.</p>
+		</div>
 		<label class="form-control">
 			<span class="label-text">Details / side (optional)</span>
 			<input class="input input-bordered" bind:value={details} maxlength="200" placeholder="e.g. left, additional details" />
@@ -198,10 +235,14 @@
 	</fieldset>
 	{#if selectedPair}
 		<div class="flex flex-wrap items-center gap-2 text-sm">
-			{#if templateStatus === 'loading'}<span role="status">Checking template…</span>
-			{:else if templateStatus === 'missing'}<span class="text-warning">No template for this selection.</span><button class="btn btn-xs btn-outline" onclick={openTemplate}>Create template</button>
-			{:else if templateStatus === 'ready'}<button class="btn btn-xs btn-outline" onclick={openTemplate}>Edit template</button>
-			{:else if templateStatus === 'error'}<span role="alert">{templateError}</span><button class="btn btn-xs btn-outline" onclick={() => templateRetry++}>Retry template check</button>{/if}
+			{#if templateStatus === 'loading'}<span role="status">Checking templates…</span>
+			{:else if templateStatus === 'error'}<span role="alert">{templateError}</span><button class="btn btn-xs btn-outline" onclick={() => templateRetry++}>Retry template check</button>
+			{:else if templateStatus === 'missing' || templateStatus === 'ready'}
+				{#if templateStatus === 'missing'}<span class="text-warning">Every selected examination needs a template.</span>{/if}
+				{#each examinations as id (id)}
+					<button class="btn btn-xs btn-outline" onclick={() => openTemplate(id)}>{templateChecks[id] === 'missing' ? 'Create' : 'Edit'} template — {examinationName(id)}</button>
+				{/each}
+			{/if}
 		</div>
 	{/if}
 	<p class="text-sm opacity-70">Configuration changes clear this recording's report and signatures.</p>

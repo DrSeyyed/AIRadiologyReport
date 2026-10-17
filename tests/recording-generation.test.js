@@ -55,7 +55,7 @@ Add relevant dictated findings that do not fit an existing section.
 Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
 Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
 Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
-Use concise professional language. Use only single line breaks between sections.
+Use concise professional language. Use only single line breaks between sections, except for one blank line before the Conclusion.
 Include a Conclusion that summarises important abnormal findings and relevant recommendations without repeating normals.
 If no significant abnormality, give a concise normal conclusion.
 Bold all recommendations in the body and Conclusion.

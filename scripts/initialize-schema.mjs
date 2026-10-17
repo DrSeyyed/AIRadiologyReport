@@ -25,6 +25,7 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					DROP TRIGGER IF EXISTS trg_studies_au_set_age;
 					DROP TRIGGER IF EXISTS trg_patients_au_propagate_age;
 					DROP TABLE IF EXISTS study_telegram_voices;
+					DROP TABLE IF EXISTS recording_examinations;
 					DROP TABLE IF EXISTS recording_audio_parts;
 					DROP TABLE IF EXISTS study_recordings;
 					DROP TABLE IF EXISTS pending_voice;
@@ -86,6 +87,10 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				)
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
+			db.exec(`INSERT OR IGNORE INTO recording_examinations(recording_id, exam_type_id, position)
+				SELECT r.id, r.exam_type_id, 0 FROM study_recordings r
+				WHERE r.exam_type_id IS NOT NULL AND NOT EXISTS
+				(SELECT 1 FROM recording_examinations e WHERE e.recording_id = r.id)`);
 			addColumn('studies', 'disabled', 'INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))');
 			addColumn('studies', 'telegram_send_started_at', 'INTEGER');
 			db.exec(`INSERT OR IGNORE INTO study_telegram_voices(study_id,chat_id,message_id)

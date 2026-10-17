@@ -89,6 +89,9 @@ test('automatic migration preserves legacy recordings, reports, signatures, stud
 	assert.equal(first.recordings[0].resident_checked, 1);
 	assert.equal(first.recordings[0].attending_checked, 1);
 	assert.equal(second.recordings[0].exam_details, 'Right');
+	assert.deepEqual(first.recordings[0].exam_type_ids, [1]);
+	assert.deepEqual(second.recordings[0].exam_type_ids, [2]);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM recording_examinations').get().n, 2);
 	assert.equal(first.source_modality, 'MR');
 	assert.equal(first.telegram_message_id, '42');
 	assert.equal(db.prepare('SELECT study_id FROM pending_voice').get().study_id, 7);

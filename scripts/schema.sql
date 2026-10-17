@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS study_recordings (
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_study ON study_recordings(study_id);
 
+CREATE TABLE IF NOT EXISTS recording_examinations (
+  recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,
+  exam_type_id INTEGER NOT NULL REFERENCES exam_types(id) ON DELETE RESTRICT,
+  position INTEGER NOT NULL CHECK (position >= 0),
+  PRIMARY KEY (recording_id, exam_type_id),
+  UNIQUE (recording_id, position)
+);
+
 CREATE TABLE IF NOT EXISTS recording_audio_parts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,

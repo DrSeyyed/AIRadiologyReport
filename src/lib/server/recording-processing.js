@@ -10,6 +10,7 @@ import {
 import { getStudyDetail } from './studies.js';
 import { assertStudyActive } from './study-state.js';
 import { generateRecordingReport } from './recording-generation.js';
+import { recordingTemplate } from './recording-templates.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -51,11 +52,7 @@ export async function processRecording(
 		);
 	if (!recording.audio_parts.length || recording.audio_parts.some((part) => !existsSync(part.audio_report_path)))
 		throw recordingError('Audio file not found on server', 404);
-	const template = db
-		.prepare('SELECT text FROM report_templates WHERE modality_id = ? AND exam_type_id = ?')
-		.get(recording.modality_id, recording.exam_type_id)?.text;
-	if (!template?.trim())
-		throw recordingError('No report template configured for this modality and examination.');
+	const template = recordingTemplate(db, recording);
 	if (generate === generateRecordingReport && !process.env.OPENAI_API_KEY)
 		throw recordingError('Set OPENAI_API_KEY to enable transcription and report generation.', 501);
 	const started = Math.floor(Date.now() / 1000);

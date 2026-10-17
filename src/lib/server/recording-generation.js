@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
+import { recordingExaminations } from '../recording-examinations.js';
 
 const transcriptionPrompt = `دیکتهٔ رادیولوژی ممکن است فارسی، انگلیسی یا ترکیبی از هر دو باشد. متن را به همان زبان گفتار پیاده کن و اصطلاحات انگلیسی رادیولوژی را با حروف لاتین بنویس. ترجمه یا گزارش‌نویسی نکن.
 Transcribe only what is audible. Preserve Persian speech and English medical terms in mixed-language dictation, including English terms spoken with a Persian accent. Use standard English spellings for clearly recognised radiology terms and keep sequence names in Latin characters.
@@ -104,7 +105,10 @@ export async function openaiGenerateReport(prompt) {
 
 export async function generateRecordingReport(s, template) {
 	const modalityLabel = s.modality_name || s.modality_code;
-	const examTypeLabel = s.exam_type_name || s.exam_type_code;
+	const examinations = recordingExaminations(s);
+	const combined = examinations.length > 1;
+	const examTypeLabel = combined ? examinations.map((exam) => exam.name || exam.code).join(' + ') : s.exam_type_name || s.exam_type_code;
+	const combinedInstructions = combined ? '\nThis is one combined examination using a single modality. Use a separate body-part heading for each selected examination in the order listed. Keep each finding under its correct body part; do not duplicate it across body parts or apply it to other examinations. Include exactly one shared Conclusion at the end, not a Conclusion or Impression for each body part. Ignore prewritten conclusions in the source templates; derive the shared Conclusion only from the dictation. Do not copy normal template statements that contradict the dictation.' : '';
 	const examDetailsLabel = s.exam_details ? ` (${s.exam_details})` : '';
 	const studyLabel = `${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
@@ -121,14 +125,14 @@ Add relevant dictated findings that do not fit an existing section.
 Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
 Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
 Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
-Use concise professional language. Use only single line breaks between sections.
+Use concise professional language. Use only single line breaks between sections, except for one blank line before the Conclusion.
 Include a Conclusion that summarises important abnormal findings and relevant recommendations without repeating normals.
 If no significant abnormality, give a concise normal conclusion.
 Bold all recommendations in the body and Conclusion.
 Return only the final report text.
 Study label: ${studyLabel}
 Template:
-"${template}"
+"${template}"${combinedInstructions}
 Doctor's dictation:
 "${transcription}"
 Patient gender: ${s.patient_gender}`;

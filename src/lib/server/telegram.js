@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { studyLabel } from '../study-label.js';
+import { recordingExaminations } from '../recording-examinations.js';
 
 function getToken() {
 	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -103,7 +104,7 @@ export function buildStudyMessage(study) {
 	for (const recording of recordings.slice(0, 5)) {
 		const label =
 			recording.modality_id && recording.exam_type_id
-				? `${recording.modality_code || ''} ${recording.exam_type_code || ''} ${recording.exam_details || ''}`
+				? `${recording.modality_code || ''} ${recordingExaminations(recording).map((exam) => exam.code || exam.name).join(' + ')} ${recording.exam_details || ''}`
 						.trim()
 						.slice(0, 150)
 				: 'Examination pending';

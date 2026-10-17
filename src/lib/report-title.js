@@ -1,8 +1,18 @@
+import { recordingExaminations } from './recording-examinations.js';
+
 function clean(value) {
 	return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
 export function reportTitle(recording) {
+	const examinations = recordingExaminations(recording);
+	if (examinations.length > 1) return examinations.map((exam) => singleReportTitle({
+		...recording, exam_type_name: exam.name, exam_type_code: exam.code
+	})).join(' + ');
+	return singleReportTitle(recording);
+}
+
+function singleReportTitle(recording) {
 	const code = clean(recording?.modality_code).toUpperCase();
 	const modality = { MR: 'MRI', MRI: 'MRI', CT: 'CT', US: 'Ultrasound', XR: 'X-ray' }[code]
 		|| clean(recording?.modality_name) || code;

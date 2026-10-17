@@ -39,3 +39,12 @@ test('unknown and legacy selections use saved labels rather than guessing an exa
 	assert.equal(reportTitle({}), 'Radiology report');
 	assert.equal(reportTitle(null), 'Radiology report');
 });
+
+test('combined titles preserve examination order, individual contrast and shared details', () => {
+	const recording = { ...mri, exam_details: 'Right', exam_types: [
+		{ id: 2, name: 'Hand with contrast' }, { id: 1, name: 'Knee without contrast' }
+	] };
+	assert.equal(reportTitle(recording), 'Right Hand MRI with contrast + Right Knee MRI without contrast');
+	assert.equal(reportTitle({ ...recording, exam_types: [...recording.exam_types].reverse() }), 'Right Knee MRI without contrast + Right Hand MRI with contrast');
+	assert.equal(reportTitle({ ...recording, exam_details: 'follow-up' }), 'Hand MRI with contrast (follow-up) + Knee MRI without contrast (follow-up)');
+});

@@ -53,7 +53,7 @@
       frame.contentWindow?.print();
     };
     const heading = DOMPurify.sanitize(`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(studyLabel(study))} — Recording #${recording.id}</p>`);
-    const signatures = `<p>Resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
+    const signatures = `<p style="margin-top:1.5em">Resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
     frame.srcdoc = `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
@@ -184,7 +184,7 @@
               <h2 class="mt-0">{title}</h2>
               <!-- eslint-disable-next-line svelte/no-at-html-tags -- Markdown is sanitized with DOMPurify before rendering. -->
               {@html previewHtml}
-              <p class="mt-4 text-sm">
+              <p class="text-sm" style="margin-top:1.5em">
                 Resident: {recording.resident_fullname || 'Unassigned'}<br />
                 Attending: {study.attending_fullname || 'Not assigned'}
               </p>
