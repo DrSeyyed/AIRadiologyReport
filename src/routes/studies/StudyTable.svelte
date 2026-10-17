@@ -59,7 +59,7 @@
 					</td>
 					<td>{study.resident_checked_count ?? 0} / {study.attending_checked_count ?? 0} / {study.typist_checked_count ?? 0}</td>
 					<td><StudyAttention {study} user={data.user} /></td>
-					<td><PacsViewer {study} template={data.pacsViewerUrl} />{#if !readOnly}<div class="flex gap-2">
+					<td><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} />{#if !readOnly}<div class="flex gap-2">
 						<button class="btn btn-outline btn-xs" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
 						<button class="btn btn-outline btn-xs btn-error" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 					</div>{/if}</td>
