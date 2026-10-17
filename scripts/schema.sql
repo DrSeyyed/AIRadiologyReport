@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS application_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE
   IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,6 +48,8 @@ CREATE TABLE
   IF NOT EXISTS studies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     patient_code TEXT NOT NULL,
+    study_key TEXT NOT NULL DEFAULT '',
+    patient_fullname TEXT NOT NULL DEFAULT '',
     patient_firstname TEXT NOT NULL DEFAULT '',
     patient_lastname TEXT NOT NULL DEFAULT '',
     patient_gender TEXT NOT NULL DEFAULT 'unknown' CHECK (patient_gender IN ('male', 'female', 'unknown')),

@@ -2,6 +2,9 @@ import { getStudyDetail, insertStudy, studySignatureFilter } from '$lib/server/s
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { sendStudyMessage } from '$lib/server/telegram.js';
+import { patientName } from '$lib/patient-name.js';
+
+const fullNameColumn = "COALESCE(NULLIF(trim(s.patient_fullname), ''), trim(s.patient_firstname || ' ' || s.patient_lastname))";
 
 export async function GET({ url, locals }) {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
@@ -16,6 +19,7 @@ export async function GET({ url, locals }) {
 		orderedby: url.searchParams.get('orderedby')?.trim() || '',
 		orderdir: url.searchParams.get('orderdir')?.trim().toUpperCase() === 'ASC' ? 'ASC' : 'DESC',
 		patient_code: url.searchParams.get('patient_code')?.trim() || '',
+		patient_fullname: url.searchParams.get('patient_fullname')?.trim() || '',
 		patient_firstname: url.searchParams.get('patient_firstname')?.trim() || '',
 		patient_lastname: url.searchParams.get('patient_lastname')?.trim() || '',
 		modality_id: url.searchParams.get('modality_id')?.trim() || '',
@@ -42,13 +46,10 @@ export async function GET({ url, locals }) {
 		baseSql += ` AND s.patient_code = ?`;
 		params.push(q.patient_code);
 	}
-	if (q.patient_firstname) {
-		baseSql += ` AND s.patient_firstname LIKE ?`;
-		params.push(`%${q.patient_firstname}%`);
-	}
-	if (q.patient_lastname) {
-		baseSql += ` AND s.patient_lastname LIKE ?`;
-		params.push(`%${q.patient_lastname}%`);
+	for (const name of [q.patient_fullname, q.patient_firstname, q.patient_lastname]) {
+		if (!name) continue;
+		baseSql += ` AND ${fullNameColumn} LIKE ?`;
+		params.push(`%${name}%`);
 	}
 
 	// Modality filter
@@ -97,8 +98,7 @@ export async function GET({ url, locals }) {
 	// --- Data query ---
 	const allowedColumns = [
 		's.patient_code',
-		's.patient_firstname',
-		's.patient_lastname',
+		's.patient_fullname',
 		's.modality_id',
 		's.patient_age',
 		's.exam_type_id',
@@ -106,12 +106,14 @@ export async function GET({ url, locals }) {
 	];
 	const legacySortColumns = {
 		'p.patient_code': 's.patient_code',
-		'p.firstname': 's.patient_firstname',
-		'p.lastname': 's.patient_lastname'
+		'p.firstname': 's.patient_fullname',
+		'p.lastname': 's.patient_fullname',
+		's.patient_firstname': 's.patient_fullname',
+		's.patient_lastname': 's.patient_fullname'
 	};
 	const requestedColumn = legacySortColumns[q.orderedby] || q.orderedby;
 	const orderCol = allowedColumns.includes(requestedColumn)
-		? requestedColumn
+		? requestedColumn === 's.patient_fullname' ? fullNameColumn : requestedColumn
 		: 's.exam_date_jalali';
 
 	let dataSql = `
@@ -144,7 +146,10 @@ export async function GET({ url, locals }) {
 			residentsByStudy.get(study_id).push({ id, full_name });
 		}
 	}
-	for (const row of rows) row.residents = residentsByStudy.get(row.id) ?? [];
+	for (const row of rows) {
+		row.patient_fullname = patientName(row);
+		row.residents = residentsByStudy.get(row.id) ?? [];
+	}
 
 	return json({
 		total,

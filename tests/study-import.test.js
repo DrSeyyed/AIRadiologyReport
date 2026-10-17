@@ -101,6 +101,43 @@ test('demographics remain independent; age zero/unknown and optional staff are v
 		assert.throws(() => normalizeStudyInput(db, input(invalid)));
 });
 
+test('study keys are optional text metadata with validation and safe upgrade defaults', (t) => {
+	const db = fixture(t);
+	for (const study_key of [undefined, null, '', '   '])
+		assert.equal(normalizeStudyInput(db, input({ study_key })).study_key, '');
+	assert.equal(normalizeStudyInput(db, input({ study_key: '  000042  ' })).study_key, '000042');
+	for (const study_key of [42, {}, 'K'.repeat(129)])
+		assert.throws(() => normalizeStudyInput(db, input({ study_key })));
+	const id = insertStudy(db, input());
+	db.exec('ALTER TABLE studies DROP COLUMN study_key');
+	initializeSchema(db, schema);
+	assert.equal(getStudyDetail(db, id).study_key, '');
+	assert.equal(getStudyDetail(db, id).patient_fullname, 'Sample Patient');
+	db.prepare('UPDATE studies SET study_key=? WHERE id=?').run('000042', id);
+	initializeSchema(db, schema);
+	assert.equal(getStudyDetail(db, id).study_key, '000042');
+	assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('Excel study keys persist on import without changing UID duplicate detection', (t) => {
+	const db = fixture(t);
+	const workbook = XLSX.utils.book_new();
+	XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+		['ID', 'NAME', 'STUDY KEY', 'MODALITY', 'DESCRIPTION', 'STUDY DATE', 'STUDY INST UID'],
+		['KEYED', 'Complete Name', '000042', 'MR', 'Synthetic', '2026-10-08', 'KEY.1'],
+		['BLANK', 'Another Name', '', 'CT', 'Synthetic', '2026-10-08', 'KEY.2']
+	]), 'Studies');
+	const parsed = parseStudyWorkbook(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+	const preview = previewStudyImport(db, parsed);
+	assert.deepEqual(preview.rows.map((item) => [item.status, item.study_key]), [['ready', '000042'], ['ready', '']]);
+	assert.deepEqual(commitStudyImport(db, preview, [2, 3]), { inserted: 2, skipped: 0 });
+	assert.deepEqual(db.prepare('SELECT study_key FROM studies ORDER BY id').all(), [{ study_key: '000042' }, { study_key: '' }]);
+	const repeated = previewStudyImport(db, parsed.map((row) => ({ ...row, study_key: 'Different metadata' })));
+	assert.ok(repeated.rows.every((row) => row.status === 'duplicate'));
+	assert.deepEqual(commitStudyImport(db, repeated, [2, 3]), { inserted: 0, skipped: 2 });
+	assert.equal(getStudyDetail(db, 1).study_key, '000042');
+});
+
 test('preview is read-only and accepts arbitrary descriptions and unknown source modalities', (t) => {
 	const db = fixture(t);
 	const preview = previewStudyImport(db, [
@@ -142,6 +179,21 @@ test('one source UID creates one study and repeated rows/imports are skipped', (
 	assert.equal(repeated.rows[0].status, 'duplicate');
 	assert.deepEqual(commitStudyImport(db, repeated, [2]), { inserted: 0, skipped: 1 });
 	assert.notEqual(repeated.token, preview.token);
+});
+
+test('full-name imports match existing split names without false UID conflicts', (t) => {
+	const db = fixture(t);
+	commitStudyImport(db, previewStudyImport(db, [row()]), [2]);
+	db.exec("UPDATE studies SET patient_fullname = ''");
+	const canonical = row({ patient_fullname: 'Sample Patient', patient_firstname: '', patient_lastname: '' });
+	assert.equal(previewStudyImport(db, [canonical]).rows[0].status, 'duplicate');
+	assert.equal(previewStudyImport(db, [{ ...canonical, patient_fullname: 'Changed Name' }]).rows[0].status, 'conflict');
+	assert.equal(getStudyDetail(db, 1).patient_fullname, 'Sample Patient');
+	const next = { ...canonical, source_study_uid: '1.2.4' };
+	const preview = previewStudyImport(db, [next]);
+	commitStudyImport(db, preview, [2]);
+	assert.equal(getStudyDetail(db, 2).patient_fullname, 'Sample Patient');
+	assert.equal(previewStudyImport(db, [row({ source_study_uid: '1.2.4' })]).rows[0].status, 'duplicate');
 });
 
 test('selecting only a repeated workbook row still imports its UID once', (t) => {
@@ -224,7 +276,7 @@ test('real workbook creates one study with age from AGE, not birth date', (t) =>
 	const study = db.prepare('SELECT * FROM studies LIMIT 1').get();
 	assert.equal(study.patient_age, 45);
 	assert.equal(study.patient_gender, 'female');
-	assert.equal(study.patient_firstname, 'Sample');
+	assert.equal(study.patient_fullname, 'Sample Patient');
 	assert.equal(previewStudyImport(db, parsed).rows[0].status, 'duplicate');
 });
 

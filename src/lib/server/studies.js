@@ -1,9 +1,12 @@
 import jalaali from 'jalaali-js';
 import { listRecordings } from './recordings.js';
 import { telegramVoiceCount } from './study-state.js';
+import { patientName } from '../patient-name.js';
 
 export const studyFields = [
 	'patient_code',
+	'study_key',
+	'patient_fullname',
 	'patient_firstname',
 	'patient_lastname',
 	'patient_gender',
@@ -38,6 +41,7 @@ export function getStudyDetail(db, id) {
 		)
 		.get(id);
 	if (!study) return undefined;
+	study.patient_fullname = patientName(study);
 	study.telegram_voice_count = telegramVoiceCount(db, id);
 	study.recordings = listRecordings(db, id);
 	study.recording_count = study.recordings.length;
@@ -79,6 +83,7 @@ export function normalizeStudyInput(db, input) {
 	const output = {};
 	for (const key of [
 		'patient_code',
+		'study_key',
 		'patient_firstname',
 		'patient_lastname',
 		'exam_details',
@@ -92,14 +97,19 @@ export function normalizeStudyInput(db, input) {
 				? 2000
 				: key === 'dicom_url'
 					? 2000
-					: key === 'patient_code'
+					: key === 'patient_code' || key === 'study_key'
 						? 128
 						: 200;
 		if (output[key].length > limit) throw new Error(`${key} is too long`);
 	}
 	if (!output.patient_code) throw new Error('Patient code is required');
-	if (!output.patient_firstname && !output.patient_lastname)
-		throw new Error('Patient name is required');
+	if ('patient_fullname' in input && typeof input.patient_fullname !== 'string')
+		throw new Error('Invalid patient_fullname');
+	output.patient_fullname = 'patient_fullname' in input
+		? input.patient_fullname.trim().replace(/\s+/g, ' ')
+		: patientName(output);
+	if (!output.patient_fullname) throw new Error('Patient full name is required');
+	if (output.patient_fullname.length > 401) throw new Error('Patient full name is too long');
 	output.patient_gender = input.patient_gender || 'unknown';
 	if (!['male', 'female', 'unknown'].includes(output.patient_gender))
 		throw new Error('Invalid patient gender');

@@ -52,6 +52,38 @@ function parseValues(values, options) {
 }
 
 for (const bookType of ['xls', 'xlsx']) {
+	test(`${bookType}: optional STUDY KEY preserves formatted zeros, text and blank values`, () => {
+		const studies = parseStudyWorkbook(workbook([
+			[...HEADERS, 'STUDY KEY'],
+			[...DATA, 42],
+			[...DATA, '  000045  '],
+			[...DATA, null],
+			[...DATA, 0],
+			[...DATA, 'K'.repeat(129)]
+		], { bookType, edit: (sheet) => { sheet.I2.z = '000000'; } }));
+		assert.deepEqual(studies.map((study) => study.study_key), ['000042', '000045', '', '0', 'K'.repeat(129)]);
+		assert.ok(studies.slice(0, 4).every((study) => study.errors.length === 0));
+		assert.deepEqual(studies[4].errors, ['STUDY KEY exceeds 128 characters']);
+		assert.equal(parseValues([{}], { bookType })[0].study_key, '');
+	});
+	test(`${bookType}: complete names use NAME then SRC NAME per row without concatenation`, () => {
+		const names = [
+			['نام کامل بیمار', 'Different Complete Name'],
+			['   ', 'Fallback Complete Name'],
+			[null, 'نام جایگزین'],
+			['Single', 'Unused Name'],
+			['', '']
+		];
+		const studies = parseStudyWorkbook(workbook([
+			[...HEADERS, 'SRC NAME'],
+			...names.map(([name, sourceName]) => [DATA[0], name, ...DATA.slice(2), sourceName])
+		], { bookType }));
+		assert.deepEqual(studies.map((study) => study.patient_fullname), [
+			'نام کامل بیمار', 'Fallback Complete Name', 'نام جایگزین', 'Single', ''
+		]);
+		assert.ok(studies.slice(0, 4).every((study) => study.errors.length === 0));
+		assert.deepEqual(studies[4].errors, ['SRC NAME is required']);
+	});
 	test(`${bookType}: first sheet roundtrip, formatted IDs, blank first column and headers`, () => {
 		const rows = [
 			['Synthetic export'],
@@ -84,8 +116,8 @@ for (const bookType of ['xls', 'xlsx']) {
 			row: 3,
 			source_study_uid: 'TEST.UID.1',
 			patient_code: '000012',
-			patient_firstname: 'GIVEN MIDDLE',
-			patient_lastname: 'FAMILY',
+			study_key: '',
+			patient_fullname: 'GIVEN MIDDLE FAMILY',
 			patient_gender: 'male',
 			patient_age: 89,
 			patient_age_unit: 'Y',
@@ -98,8 +130,7 @@ for (const bookType of ['xls', 'xlsx']) {
 		assert.equal(studies.length, 2);
 		assert.equal(studies[1].row, 5);
 		assert.equal(studies[1].patient_code, '42');
-		assert.equal(studies[1].patient_lastname, 'SINGLE');
-		assert.equal(studies[1].patient_firstname, '');
+		assert.equal(studies[1].patient_fullname, 'SINGLE');
 		assert.equal(studies[1].patient_age, null);
 		assert.equal(studies[1].patient_age_unit, 'Y');
 		assert.equal(studies[1].patient_gender, 'unknown');
@@ -142,14 +173,14 @@ test('description normalization retains punctuation and makes no splitting decis
 
 test('SRC NAME fallback and NAME preference; PATIENT KEY never substitutes for ID', () => {
 	const fallback = HEADERS.map((header) => (header === 'NAME' ? 'SRC NAME' : header));
-	assert.equal(parseStudyWorkbook(workbook([fallback, DATA]))[0].patient_lastname, 'FAMILY');
+	assert.equal(parseStudyWorkbook(workbook([fallback, DATA]))[0].patient_fullname, 'GIVEN FAMILY');
 	const preferred = parseStudyWorkbook(
 		workbook([
 			[...HEADERS, 'SRC NAME'],
 			[...DATA, 'OTHER^VALUE']
 		])
 	)[0];
-	assert.equal(preferred.patient_lastname, 'FAMILY');
+	assert.equal(preferred.patient_fullname, 'GIVEN FAMILY');
 	const noId = HEADERS.map((header) => (header === 'ID' ? 'PATIENT KEY' : header));
 	assert.throws(() => parseStudyWorkbook(workbook([noId, DATA])), /headers/);
 	const missingId = parseStudyWorkbook(
@@ -300,7 +331,7 @@ test('oversize strings are flagged without truncation or exposing cell contents'
 		}
 	]);
 	assert.equal(study.patient_code.length, 129);
-	assert.equal(study.patient_lastname.length, 201);
+	assert.equal(study.patient_fullname.length, 201);
 	assert.equal(study.source_description.length, 501);
 	assert.equal(study.source_study_uid.length, 129);
 	assert.deepEqual(study.errors, [

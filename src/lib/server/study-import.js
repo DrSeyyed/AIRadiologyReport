@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { patientName } from '../patient-name.js';
 function normalizeDescription(value = '') {
 	return value.trim().replace(/\s+/g, ' ').toUpperCase();
 }
@@ -7,8 +8,7 @@ import { insertStudy, normalizeStudyInput } from './studies.js';
 function fingerprint(row) {
 	return JSON.stringify([
 		row.patient_code,
-		row.patient_firstname,
-		row.patient_lastname,
+		patientName(row),
 		row.patient_gender,
 		row.patient_age,
 		row.patient_age_unit,

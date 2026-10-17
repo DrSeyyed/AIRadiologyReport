@@ -87,6 +87,10 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				)
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
+			addColumn('studies', 'study_key', "TEXT NOT NULL DEFAULT ''");
+			addColumn('studies', 'patient_fullname', "TEXT NOT NULL DEFAULT ''");
+			db.exec(`UPDATE studies SET patient_fullname = trim(patient_firstname || ' ' || patient_lastname)
+				WHERE trim(patient_fullname) = ''`);
 			db.exec(`INSERT OR IGNORE INTO recording_examinations(recording_id, exam_type_id, position)
 				SELECT r.id, r.exam_type_id, 0 FROM study_recordings r
 				WHERE r.exam_type_id IS NOT NULL AND NOT EXISTS

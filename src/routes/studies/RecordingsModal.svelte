@@ -5,6 +5,7 @@
 	import ReportModal from './ReportModal.svelte';
 	import TemplateModal from '$lib/components/TemplateModal.svelte';
 	import { studyLabel } from '$lib/study-label.js';
+	import { patientName } from '$lib/patient-name.js';
 
 	let { study, data, onClose, onEditStudy } = $props();
 	let detail = $state(null);
@@ -127,7 +128,7 @@
 <div class="modal modal-open">
 	<div role="dialog" aria-modal="true" aria-labelledby="recordings-title" class="modal-box max-w-6xl space-y-4">
 		<h3 id="recordings-title" class="text-lg font-bold">Recordings & reports — {studyLabel(study)}</h3>
-		<p>{study.patient_code} — {study.patient_firstname} {study.patient_lastname}</p>
+		<p>{study.patient_code} — {patientName(detail ?? study)}</p>
 		{#if detail?.disabled ?? study.disabled}<p class="alert alert-warning">Disabled study: recordings and reports are read-only. New Telegram voice replies are not processed.</p>{/if}
 		<p class="text-sm">Source modality: {detail?.source_modality || detail?.modality_code || study.modality_code || 'Not specified'}<br />Source description (reference only): {detail?.source_description || detail?.description || study.source_description || study.description || 'Not specified'}</p>
 		<p class="text-sm">Study attending: {detail?.attending_fullname || study.attending_fullname || 'Not assigned'}</p>

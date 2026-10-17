@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { studyLabel } from '../study-label.js';
+import { patientName } from '../patient-name.js';
 import { recordingExaminations } from '../recording-examinations.js';
 
 function getToken() {
@@ -70,7 +71,7 @@ export function buildStudyMessage(study) {
 		);
 
 	lines.push(
-		`Patient: <b>${esc(study.patient_firstname ?? '-')} ${esc(study.patient_lastname ?? '-')}</b> ` +
+		`Patient: <b>${esc(patientName(study) || '-')}</b> ` +
 			`<i>(code ${esc(study.patient_code ?? '-')})</i>`
 	);
 	const ageGender = [

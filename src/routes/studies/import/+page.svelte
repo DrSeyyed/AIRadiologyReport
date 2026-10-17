@@ -1,5 +1,6 @@
 <script>
 	import { resolve } from '$app/paths';
+	import { patientName } from '$lib/patient-name.js';
 	import { SvelteSet } from 'svelte/reactivity';
 	let { data } = $props();
 	let file = $state(null);
@@ -136,7 +137,7 @@
 			<table class="table table-zebra">
 				<thead
 					><tr
-						><th>Select</th><th>Row / UID</th><th>Patient ID / name</th><th>Gender / age</th><th
+						><th>Select</th><th>Row / UID</th><th>Study key</th><th>Patient ID / Full name</th><th>Gender / age</th><th
 							>Modality / description</th
 						><th>Date / time</th><th>Status / errors</th></tr
 					></thead
@@ -158,9 +159,10 @@
 								>{row.row}
 								<div class="max-w-40 break-all text-xs">{row.source_study_uid}</div></td
 							>
+							<td class="max-w-40 break-all">{row.study_key || '—'}</td>
 							<td
 								>{row.patient_code}
-								<div>{row.patient_firstname} {row.patient_lastname}</div></td
+								<div>{patientName(row)}</div></td
 							>
 							<td
 								>{row.patient_gender}

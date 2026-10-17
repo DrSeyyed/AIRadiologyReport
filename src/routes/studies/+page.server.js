@@ -1,5 +1,7 @@
 // +page.server.ts
 import { error, redirect } from '@sveltejs/kit';
+import { getDb } from '$lib/server/db';
+import { getPacsViewerUrl } from '$lib/server/pacs-settings.js';
 
 export async function load({ locals, fetch, url }) {
   if (!locals.user) throw redirect(302, '/login');
@@ -8,6 +10,8 @@ export async function load({ locals, fetch, url }) {
   const patient_code      = url.searchParams.get('patient_code')?.trim() ?? '';
   const patient_firstname = url.searchParams.get('patient_firstname')?.trim() ?? '';
   const patient_lastname  = url.searchParams.get('patient_lastname')?.trim() ?? '';
+  const patient_fullname = url.searchParams.get('patient_fullname')?.trim()
+    || [patient_firstname, patient_lastname].filter(Boolean).join(' ');
   const modality_id       = url.searchParams.get('modality_id')?.trim() ?? '';
   const exam_type_id      = url.searchParams.get('exam_type_id')?.trim() ?? '';
   const corresponding_resident_id = url.searchParams.get('corresponding_resident_id')?.trim() ?? '';
@@ -28,8 +32,7 @@ export async function load({ locals, fetch, url }) {
   // Build querystring for /api/studies
   const qs = new URLSearchParams();
   if (patient_code)      qs.set('patient_code', patient_code);
-  if (patient_firstname) qs.set('patient_firstname', patient_firstname);
-  if (patient_lastname)  qs.set('patient_lastname', patient_lastname);
+  if (patient_fullname)  qs.set('patient_fullname', patient_fullname);
   if (modality_id)       qs.set('modality_id', modality_id);
   if (exam_type_id)      qs.set('exam_type_id', exam_type_id);
   if (corresponding_resident_id) qs.set('corresponding_resident_id', corresponding_resident_id);
@@ -68,10 +71,10 @@ export async function load({ locals, fetch, url }) {
 
   return {
     user: locals.user,
+    pacsViewerUrl: getPacsViewerUrl(getDb()),
     filters: {
       patient_code,
-      patient_firstname,
-      patient_lastname,
+      patient_fullname,
       modality_id,
       exam_type_id,
       corresponding_resident_id,

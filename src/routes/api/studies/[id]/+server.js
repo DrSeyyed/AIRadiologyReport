@@ -31,7 +31,11 @@ export async function PATCH({ params, request, locals }) {
 			studyFields.filter((field) => field in body).map((field) => [field, body[field]])
 		);
 		if (!Object.keys(changes).length) return json({ error: 'Nothing to update' }, { status: 400 });
-		const payload = normalizeStudyInput(db, { ...current, ...changes });
+		const input = { ...current, ...changes };
+		if (!('patient_fullname' in changes) &&
+			('patient_firstname' in changes || 'patient_lastname' in changes))
+			delete input.patient_fullname;
+		const payload = normalizeStudyInput(db, input);
 		if (
 			payload.corresponding_attending_id !== current.corresponding_attending_id &&
 			current.recordings.some(

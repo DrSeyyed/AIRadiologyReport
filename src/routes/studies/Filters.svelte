@@ -1,4 +1,6 @@
 <script>
+	import { patientName } from '$lib/patient-name.js';
+
 	let { data } = $props();
 
 	function applyFilters(e) {
@@ -31,25 +33,14 @@
 			/>
 		</label>
 
-		<!-- Patient Name -->
+		<!-- Patient Full Name -->
 		<label class="form-control w-48">
-			<span class="label-text mb-1 text-sm">Patient Name</span>
+			<span class="label-text mb-1 text-sm">Full name</span>
 			<input
-				name="patient_firstname"
+				name="patient_fullname"
 				class="input-bordered input input-sm h-9"
-				value={data.filters.patient_firstname}
-				placeholder="e.g., Ali"
-			/>
-		</label>
-
-		<!-- Patient Family -->
-		<label class="form-control w-48 text-sm">
-			<span class="label-text mb-1">Patient Family</span>
-			<input
-				name="patient_lastname"
-				class="input-bordered input input-sm h-9"
-				value={data.filters.patient_lastname}
-				placeholder="e.g., Alimi"
+				value={patientName(data.filters)}
+				placeholder="e.g., Ali Ahmadi"
 			/>
 		</label>
 
@@ -174,8 +165,7 @@
 			>
 				<option value="s.exam_date_jalali">Exam Date</option>
 				<option value="s.patient_code">Patient Code</option>
-				<option value="s.patient_firstname">Patient Firstname</option>
-				<option value="s.patient_lastname">Patient Lastname</option>
+				<option value="s.patient_fullname">Full name</option>
 				<option value="s.patient_age">Patient Age</option>
 				<option value="s.modality_id">Modality</option>
 			</select>

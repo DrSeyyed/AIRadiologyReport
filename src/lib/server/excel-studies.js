@@ -158,7 +158,6 @@ export function parseStudyWorkbook(buffer) {
 		}
 	}
 	if (!header) throw new Error('Required Excel headers not found in the first 20 rows');
-	const nameHeader = header.has('NAME') ? 'NAME' : 'SRC NAME';
 	const date1904 = Boolean(workbook.Workbook?.WBProps?.date1904);
 	const studies = [];
 	for (let row = headerRow + 1; row <= range.e.r; row++) {
@@ -180,6 +179,9 @@ export function parseStudyWorkbook(buffer) {
 			return value;
 		};
 		const patientCode = required('ID', 128, true);
+		const studyKey = cellText(cell('STUDY KEY'), true);
+		if (studyKey.length > 128) errors.push('STUDY KEY exceeds 128 characters');
+		const nameHeader = cellText(cell('NAME')) ? 'NAME' : header.has('SRC NAME') ? 'SRC NAME' : 'NAME';
 		const name = required(nameHeader, 200);
 		const components = name.split('^').map((part) => part.trim());
 		const modality = required('MODALITY', 128).toUpperCase();
@@ -194,8 +196,8 @@ export function parseStudyWorkbook(buffer) {
 			row: row + 1,
 			source_study_uid: uid,
 			patient_code: patientCode,
-			patient_firstname: components.slice(1).filter(Boolean).join(' '),
-			patient_lastname: components[0],
+			study_key: studyKey,
+			patient_fullname: [...components.slice(1), components[0]].filter(Boolean).join(' '),
 			patient_gender: gender,
 			patient_age: age.age,
 			patient_age_unit: age.unit,

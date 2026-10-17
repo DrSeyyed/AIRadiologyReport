@@ -1,5 +1,6 @@
 <script>
 	import { date, time } from '$lib/time.client';
+	import { patientName } from '$lib/patient-name.js';
 
 	let { data, saveEdit, onClose, setSuccessMsg, successMsg, study } = $props();
 
@@ -8,8 +9,8 @@
 		exam_time: study?.exam_time ?? $time,
 		modality_id: study?.modality_id ?? '',
 		patient_code: study?.patient_code ?? '',
-		patient_firstname: study?.patient_firstname ?? '',
-		patient_lastname: study?.patient_lastname ?? '',
+		study_key: study?.study_key ?? '',
+		patient_fullname: patientName(study),
 		patient_gender: study?.patient_gender ?? 'unknown',
 		patient_age: study?.patient_age ?? '',
 		patient_age_unit: study?.patient_age_unit ?? 'Y',
@@ -39,8 +40,8 @@
 				return;
 			}
 		}
-		if (!form.patient_firstname.trim() && !form.patient_lastname.trim()) {
-			errorMsg = 'At least one patient name is required.';
+		if (!form.patient_fullname.trim()) {
+			errorMsg = 'Patient full name is required.';
 			return;
 		}
 		if (!form.corresponding_attending_id) {
@@ -57,8 +58,8 @@
 			await saveEdit({
 				...form,
 				patient_code: form.patient_code.trim(),
-				patient_firstname: form.patient_firstname.trim(),
-				patient_lastname: form.patient_lastname.trim(),
+				study_key: form.study_key.trim(),
+				patient_fullname: form.patient_fullname.trim(),
 				patient_age: age,
 				modality_id: optionalNumber(form.modality_id),
 				exam_time: form.exam_time || $time,
@@ -120,24 +121,25 @@
 					bind:value={form.patient_code}
 					required
 				/>
-				<span class="text-xs opacity-70">At least one patient name is required.</span>
 			</label>
 
-			<label class="form-control">
-				<div class="label"><span class="label-text">First Name</span></div>
+			<label class="form-control md:col-span-2">
+				<div class="label"><span class="label-text">Study key (optional)</span></div>
 				<input
 					class="input-bordered input w-full"
-					bind:value={form.patient_firstname}
-					placeholder="e.g., Ali"
+					bind:value={form.study_key}
+					maxlength="128"
 				/>
 			</label>
 
-			<label class="form-control">
-				<div class="label"><span class="label-text">Family Name</span></div>
+			<label class="form-control md:col-span-2">
+				<div class="label"><span class="label-text">Full name</span></div>
 				<input
 					class="input-bordered input w-full"
-					bind:value={form.patient_lastname}
-					placeholder="e.g., Ahmadi"
+					bind:value={form.patient_fullname}
+					placeholder="e.g., Ali Ahmadi"
+					maxlength="401"
+					required
 				/>
 			</label>
 
