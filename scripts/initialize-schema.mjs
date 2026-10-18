@@ -91,8 +91,21 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 			addColumn('studies', 'patient_fullname', "TEXT NOT NULL DEFAULT ''");
 			db.exec(`UPDATE studies SET patient_fullname = trim(patient_firstname || ' ' || patient_lastname)
 				WHERE trim(patient_fullname) = ''`);
-			db.exec(`INSERT OR IGNORE INTO recording_examinations(recording_id, exam_type_id, position)
-				SELECT r.id, r.exam_type_id, 0 FROM study_recordings r
+			const examinationColumns = db.prepare('PRAGMA table_info(recording_examinations)').all();
+			if (!examinationColumns.some((column) => column.name === 'exam_details') ||
+				!examinationColumns.some((column) => column.name === 'position' && column.pk === 2)) {
+				const definition = schema.match(/CREATE TABLE IF NOT EXISTS recording_examinations\s*\([\s\S]*?\n\);/);
+				if (!definition) throw new Error('Missing recording examinations schema');
+				db.exec(definition[0].replace('IF NOT EXISTS recording_examinations', 'recording_examinations_new'));
+				const details = examinationColumns.some((column) => column.name === 'exam_details') ? 'x.exam_details' : "coalesce(r.exam_details, '')";
+				db.exec(`INSERT INTO recording_examinations_new(recording_id, exam_type_id, position, exam_details)
+					SELECT x.recording_id, x.exam_type_id, x.position, ${details}
+					FROM recording_examinations x JOIN study_recordings r ON r.id = x.recording_id;
+					DROP TABLE recording_examinations;
+					ALTER TABLE recording_examinations_new RENAME TO recording_examinations;`);
+			}
+			db.exec(`INSERT OR IGNORE INTO recording_examinations(recording_id, exam_type_id, position, exam_details)
+				SELECT r.id, r.exam_type_id, 0, coalesce(r.exam_details, '') FROM study_recordings r
 				WHERE r.exam_type_id IS NOT NULL AND NOT EXISTS
 				(SELECT 1 FROM recording_examinations e WHERE e.recording_id = r.id)`);
 			addColumn('studies', 'disabled', 'INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))');

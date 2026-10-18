@@ -36,13 +36,13 @@ export function listRecordings(db, studyId) {
 		FROM recording_audio_parts p JOIN study_recordings r ON r.id = p.recording_id
 		LEFT JOIN users u ON u.id = p.sender_user_id WHERE r.study_id = ?
 		ORDER BY p.telegram_voice_job_id, p.id`).all(studyId);
-	const examinations = db.prepare(`SELECT x.recording_id, e.id, e.code, e.name
+	const examinations = db.prepare(`SELECT x.recording_id, x.exam_details, e.id, e.code, e.name
 		FROM recording_examinations x JOIN exam_types e ON e.id = x.exam_type_id
 		JOIN study_recordings r ON r.id = x.recording_id WHERE r.study_id = ?
 		ORDER BY x.recording_id, x.position`).all(studyId);
 	return recordings.map((recording) => {
 		const selected = examinations.filter((exam) => exam.recording_id === recording.id)
-			.map(({ id, code, name }) => ({ id, code, name }));
+			.map(({ id, code, name, exam_details }) => ({ id, code, name, exam_details }));
 		const examTypes = selected.length ? selected : recordingExaminations(recording);
 		return { ...recording, exam_types: examTypes, exam_type_ids: examTypes.map((exam) => exam.id), audio_parts: [
 			...(recording.audio_report_path ? [{ id: 0, audio_report_path: recording.audio_report_path, sender_fullname: recording.sender_fullname }] : []),
@@ -144,22 +144,44 @@ export function configureRecording(db, studyId, recordingId, input) {
 		)
 			throw recordingError(`Select a valid ${field.replace('_id', '')}`);
 	}
-	let examIds = current.exam_type_ids;
-	if ('exam_type_ids' in input) {
-		if (!Array.isArray(input.exam_type_ids) || input.exam_type_ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(input.exam_type_ids).size !== input.exam_type_ids.length)
-			throw recordingError('Select valid, distinct examinations.');
-		examIds = input.exam_type_ids;
-		if ('exam_type_id' in input && (input.exam_type_id == null ? null : Number(input.exam_type_id)) !== (examIds[0] ?? null))
-			throw recordingError('Conflicting examination selections.');
-	} else if ('exam_type_id' in input) {
-		const value = input.exam_type_id;
-		examIds = value == null || value === '' ? [] : [Number(value)];
+	function normalizeDetails(value) {
+		if (typeof value !== 'string' || value.trim().length > 200)
+			throw recordingError('Invalid examination details');
+		return value.trim();
 	}
-	for (const id of examIds)
-		if (!Number.isSafeInteger(id) || id <= 0 || !db.prepare('SELECT id FROM exam_types WHERE id = ?').get(id))
+	const sharedDetails = normalizeDetails('exam_details' in input ? input.exam_details : current.exam_details);
+	const currentExaminations = recordingExaminations(current).map((exam) => ({ exam_type_id: exam.id, exam_details: exam.exam_details }));
+	let examinations = currentExaminations;
+	if ('examinations' in input) {
+		if (['exam_type_ids', 'exam_type_id', 'exam_details'].some((field) => field in input))
+			throw recordingError('Conflicting examination selections.');
+		if (!Array.isArray(input.examinations)) throw recordingError('Select valid examinations.');
+		examinations = input.examinations.map((exam) => {
+			if (!exam || typeof exam !== 'object' || Array.isArray(exam)) throw recordingError('Select valid examinations.');
+			return { exam_type_id: exam.exam_type_id, exam_details: normalizeDetails(exam.exam_details === undefined ? '' : exam.exam_details) };
+		});
+	} else {
+		let examIds = current.exam_type_ids;
+		if ('exam_type_ids' in input) {
+			if (!Array.isArray(input.exam_type_ids) || input.exam_type_ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(input.exam_type_ids).size !== input.exam_type_ids.length)
+				throw recordingError('Select valid, distinct examinations.');
+			examIds = input.exam_type_ids;
+			if ('exam_type_id' in input && (input.exam_type_id == null ? null : Number(input.exam_type_id)) !== (examIds[0] ?? null))
+				throw recordingError('Conflicting examination selections.');
+		} else if ('exam_type_id' in input) {
+			const value = input.exam_type_id;
+			examIds = value == null || value === '' ? [] : [Number(value)];
+		}
+		if ('exam_type_ids' in input || 'exam_type_id' in input)
+			examinations = examIds.map((id) => ({ exam_type_id: id, exam_details: currentExaminations.find((exam) => exam.exam_type_id === id)?.exam_details ?? sharedDetails }));
+		if ('exam_details' in input) examinations = examinations.map((exam) => ({ ...exam, exam_details: sharedDetails }));
+	}
+	for (const exam of examinations)
+		if (!Number.isSafeInteger(exam.exam_type_id) || exam.exam_type_id <= 0 || !db.prepare('SELECT id FROM exam_types WHERE id = ?').get(exam.exam_type_id))
 			throw recordingError('Select a valid exam_type');
-	output.exam_type_id = examIds[0] ?? null;
-	const examinationsChanged = JSON.stringify(examIds) !== JSON.stringify(current.exam_type_ids);
+	output.exam_type_id = examinations[0]?.exam_type_id ?? null;
+	output.exam_details = examinations[0]?.exam_details ?? ('examinations' in input ? '' : sharedDetails);
+	const examinationsChanged = JSON.stringify(examinations) !== JSON.stringify(currentExaminations);
 	const resident =
 		'corresponding_resident_id' in input
 			? input.corresponding_resident_id
@@ -178,10 +200,6 @@ export function configureRecording(db, studyId, recordingId, input) {
 				.get(output.corresponding_resident_id))
 	)
 		throw recordingError('Select a valid resident');
-	const details = 'exam_details' in input ? input.exam_details : current.exam_details;
-	if (typeof details !== 'string' || details.trim().length > 200)
-		throw recordingError('Invalid examination details');
-	output.exam_details = details.trim();
 	const changed = examinationsChanged || Object.keys(output).some((field) => output[field] !== current[field]);
 	if (changed) db.transaction(() => {
 		db.prepare(
@@ -192,8 +210,8 @@ export function configureRecording(db, studyId, recordingId, input) {
 		resident_signed_at = NULL, attending_signed_at = NULL, typist_signed_at = NULL WHERE id = @id`
 		).run({ ...output, id: recordingId });
 		db.prepare('DELETE FROM recording_examinations WHERE recording_id = ?').run(recordingId);
-		const insert = db.prepare('INSERT INTO recording_examinations(recording_id, exam_type_id, position) VALUES(?, ?, ?)');
-		examIds.forEach((id, position) => insert.run(recordingId, id, position));
+		const insert = db.prepare('INSERT INTO recording_examinations(recording_id, exam_type_id, position, exam_details) VALUES(?, ?, ?, ?)');
+		examinations.forEach((exam, position) => insert.run(recordingId, exam.exam_type_id, position, exam.exam_details));
 	})();
 	return getRecording(db, studyId, recordingId);
 }

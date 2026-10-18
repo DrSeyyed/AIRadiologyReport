@@ -1,11 +1,11 @@
-import { recordingExaminations } from '../recording-examinations.js';
+import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
 import { recordingError } from './recordings.js';
 
 export function recordingTemplate(db, recording) {
 	const examinations = recordingExaminations(recording);
 	const lookup = db.prepare('SELECT text FROM report_templates WHERE modality_id = ? AND exam_type_id = ?');
 	const templates = examinations.map((exam) => ({
-		name: String(exam.name || exam.code || exam.id).replace(/\s+/g, ' ').trim(),
+		name: examinationLabel(exam),
 		text: lookup.get(recording.modality_id, exam.id)?.text
 	}));
 	const missing = templates.filter((template) => !template.text?.trim());

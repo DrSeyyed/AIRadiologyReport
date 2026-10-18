@@ -90,10 +90,12 @@ test('all signing, processing and disabled guards protect plural selection chang
 	for (const column of ['resident_checked', 'attending_checked', 'typist_checked', 'processing']) {
 		db.prepare(`UPDATE study_recordings SET ${column} = 1 WHERE id = ?`).run(id);
 		assert.throws(() => configureRecording(db, studyId, id, { exam_type_ids: [2, 1] }), { status: 409 });
+		assert.throws(() => configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 3, exam_details: 'left' }, { exam_type_id: 3, exam_details: 'right' }] }), { status: 409 });
 		db.prepare(`UPDATE study_recordings SET ${column} = 0 WHERE id = ?`).run(id);
 	}
 	db.prepare('UPDATE studies SET disabled = 1 WHERE id = ?').run(studyId);
 	assert.throws(() => configureRecording(db, studyId, id, { exam_type_ids: [2, 1] }), { status: 409 });
+	assert.throws(() => configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 3, exam_details: 'left' }, { exam_type_id: 3, exam_details: 'right' }] }), { status: 409 });
 	assert.deepEqual(getRecording(db, studyId, id).exam_type_ids, [1, 2]);
 });
 
@@ -155,11 +157,116 @@ test('processing uses all ordered templates, selected titles, and one combined g
 		assert.equal(recording.modality_id, 1);
 		assert.ok(template.indexOf('Spine findings') < template.indexOf('Brain findings'));
 		assert.equal(reportTitle(recording), 'Left Cervical spine MRI without contrast + Left Brain MRI without contrast');
-		assert.match(buildStudyMessage({ id: studyId, recordings: [recording] }), /CSPINE_WO \+ BRAIN_WO/);
+		assert.match(buildStudyMessage({ id: studyId, recordings: [recording] }), /CSPINE_WO \(Left\) \+ BRAIN_WO \(Left\)/);
 		return 'Synthetic combined report';
 	}, directory);
 	assert.equal(calls, 1);
 	assert.equal(getRecording(db, studyId, id).processing, 0);
+});
+
+test('repeated examinations persist independent details through reorder, partial updates and removal', (t) => {
+	const { db, studyId, id, audio, directory } = fixture(t);
+	const other = appendRecording(db, studyId, audio);
+	const otherPath = saveRecordingReport(db, other.id, 'Other report', directory);
+	const selections = [
+		{ exam_type_id: 3, exam_details: '  left  ' },
+		{ exam_type_id: 3, exam_details: 'right' },
+		{ exam_type_id: 1 }
+	];
+	let saved = configureRecording(db, studyId, id, { examinations: selections });
+	assert.deepEqual(saved.exam_type_ids, [3, 3, 1]);
+	assert.deepEqual(saved.exam_types.map((exam) => exam.exam_details), ['left', 'right', '']);
+	assert.equal(saved.exam_details, 'left');
+	const path = saveRecordingReport(db, id, 'Saved report', directory);
+	assert.equal(configureRecording(db, studyId, id, { examinations: selections }).text_report_path, path);
+	assert.equal(configureRecording(db, studyId, id, { modality_id: 1 }).text_report_path, path);
+	assert.deepEqual(getRecording(db, studyId, id).exam_types.map((exam) => exam.exam_details), ['left', 'right', '']);
+	const reversed = [selections[1], selections[0], selections[2]];
+	saved = configureRecording(db, studyId, id, { examinations: reversed });
+	assert.equal(saved.text_report_path, null);
+	assert.deepEqual(saved.exam_types.map((exam) => exam.exam_details), ['right', 'left', '']);
+	assert.equal(saved.exam_details, 'right');
+	assert.equal(getRecording(db, studyId, other.id).text_report_path, otherPath);
+	saved = configureRecording(db, studyId, id, { examinations: [selections[0], selections[2]] });
+	assert.deepEqual(saved.exam_type_ids, [3, 1]);
+	assert.deepEqual(saved.exam_types.map((exam) => exam.exam_details), ['left', '']);
+	const updatedPath = saveRecordingReport(db, id, 'Updated report', directory);
+	saved = configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 3, exam_details: 'left follow-up' }, selections[2]] });
+	assert.equal(saved.text_report_path, null);
+	assert.notEqual(updatedPath, null);
+	assert.deepEqual(configureRecording(db, studyId, id, { examinations: [] }).exam_types, []);
+	assert.equal(getRecording(db, studyId, id).exam_details, '');
+});
+
+test('invalid per-entry details and mixed payload formats do not alter any selections or report', (t) => {
+	const { db, studyId, id, directory } = fixture(t);
+	const path = saveRecordingReport(db, id, 'Saved report', directory);
+	for (const examinations of [null, {}, '1', [null], [[]], [1], [{ exam_type_id: '1' }], [{ exam_type_id: 0 }], [{ exam_type_id: 999 }],
+		[{ exam_type_id: 1, exam_details: 2 }], [{ exam_type_id: 1, exam_details: null }], [{ exam_type_id: 1, exam_details: 'x'.repeat(201) }]]) {
+		assert.throws(() => configureRecording(db, studyId, id, { examinations }), { status: 400 });
+		assert.deepEqual(getRecording(db, studyId, id).exam_type_ids, [1, 2]);
+		assert.equal(getRecording(db, studyId, id).text_report_path, path);
+	}
+	for (const legacy of [{ exam_type_ids: [1] }, { exam_type_id: 1 }, { exam_details: 'left' }])
+		assert.throws(() => configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 1 }], ...legacy }), { status: 400 });
+	assert.equal(getRecording(db, studyId, id).text_report_path, path);
+	db.exec("CREATE TRIGGER fail_second_entry BEFORE INSERT ON recording_examinations WHEN NEW.position = 1 BEGIN SELECT RAISE(ABORT, 'Synthetic second entry failure'); END;");
+	assert.throws(() => configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 3, exam_details: 'left' }, { exam_type_id: 3, exam_details: 'right' }] }), /Synthetic second entry failure/);
+	assert.deepEqual(getRecording(db, studyId, id).exam_type_ids, [1, 2]);
+	assert.equal(getRecording(db, studyId, id).text_report_path, path);
+});
+
+test('upgrading the distinct-examination schema copies shared details to every entry without touching signed reports', (t) => {
+	const { db, studyId, id } = fixture(t);
+	db.exec(`DROP TABLE recording_examinations;
+		CREATE TABLE recording_examinations (
+			recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,
+			exam_type_id INTEGER NOT NULL REFERENCES exam_types(id) ON DELETE RESTRICT,
+			position INTEGER NOT NULL CHECK(position >= 0),
+			PRIMARY KEY(recording_id, exam_type_id), UNIQUE(recording_id, position));`);
+	db.prepare('INSERT INTO recording_examinations VALUES(?,2,0),(?,1,1)').run(id, id);
+	db.prepare("UPDATE study_recordings SET exam_type_id=2, exam_details='right', resident_checked=1, text_report_path='preserved.txt' WHERE id=?").run(id);
+	for (let attempt = 0; attempt < 2; attempt++) {
+		initializeSchema(db, schema);
+		const recording = getRecording(db, studyId, id);
+		assert.deepEqual(recording.exam_type_ids, [2, 1]);
+		assert.deepEqual(recording.exam_types.map((exam) => exam.exam_details), ['right', 'right']);
+		assert.equal(recording.resident_checked, 1);
+		assert.equal(recording.text_report_path, 'preserved.txt');
+		assert.deepEqual(db.pragma('foreign_key_check'), []);
+	}
+	db.prepare('UPDATE study_recordings SET resident_checked=0 WHERE id=?').run(id);
+	configureRecording(db, studyId, id, { examinations: [{ exam_type_id: 3, exam_details: 'left' }, { exam_type_id: 3, exam_details: 'right' }] });
+	initializeSchema(db, schema);
+	assert.deepEqual(getRecording(db, studyId, id).exam_type_ids, [3, 3]);
+	assert.deepEqual(getRecording(db, studyId, id).exam_types.map((exam) => exam.exam_details), ['left', 'right']);
+	db.prepare('DELETE FROM study_recordings WHERE id=?').run(id);
+	assert.deepEqual(selected(db, id), []);
+});
+
+test('repeated body parts use independent headings, print titles, Telegram labels and generation context', async (t) => {
+	const { db, studyId, id } = fixture(t);
+	db.exec("INSERT INTO report_templates(modality_id,exam_type_id,text) VALUES(1,3,'Hand findings')");
+	const recording = configureRecording(db, studyId, id, { examinations: [
+		{ exam_type_id: 3, exam_details: 'left' }, { exam_type_id: 3, exam_details: 'right' }, { exam_type_id: 1, exam_details: '' }
+	] });
+	const template = recordingTemplate(db, recording);
+	assert.equal(template, '## Hand with contrast (left)\nHand findings\n\n## Hand with contrast (right)\nHand findings\n\n## Brain without contrast\nBrain findings\nConclusion: normal\n\n## Conclusion');
+	assert.equal(reportTitle(recording), 'Left Hand MRI with contrast + Right Hand MRI with contrast + Brain MRI without contrast');
+	assert.match(buildStudyMessage({ id: studyId, recordings: [recording] }), /HAND_WC \(left\) \+ HAND_WC \(right\) \+ BRAIN_WO/);
+	let generations = 0;
+	t.mock.method(globalThis, 'fetch', async (url, options) => {
+		if (url.endsWith('/audio/transcriptions')) return { ok: true, json: async () => ({ text: 'Synthetic dictation' }) };
+		generations++;
+		const prompt = JSON.parse(options.body).input;
+		assert.match(prompt, /Study label: Hand with contrast \(left\) \+ Hand with contrast \(right\) \+ Brain without contrast, MRI/);
+		assert.match(prompt, /Repeated body parts are separate entries/);
+		assert.match(prompt, /never apply the details of one entry to another/);
+		assert.match(prompt, /exactly one shared Conclusion/);
+		return { ok: true, json: async () => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Synthetic report' }] }] }) };
+	});
+	assert.equal(await generateRecordingReport(recording, template), 'Synthetic report');
+	assert.equal(generations, 1);
 });
 
 test('multi-body generation requests ordered headings, attributed findings and one shared Conclusion', async (t) => {

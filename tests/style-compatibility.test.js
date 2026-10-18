@@ -73,6 +73,11 @@ test('study filter fields share centered text metrics instead of oversized selec
 	assert.equal(componentDeclarations('Filters.svelte', 'label').get('max-width'), '100%');
 });
 
+test('recording configuration aligns control bottoms when selector labels wrap', () => {
+	const styles = componentDeclarations('RecordingCard.svelte', '.configuration-fields');
+	assert.equal(styles.get('align-items'), 'end');
+});
+
 test('study favorite buttons keep complete labels on one line inside the scrolling table', () => {
 	const styles = componentDeclarations('StudyFavorite.svelte', 'button');
 	assert.equal(styles.get('white-space'), 'nowrap');

@@ -40,6 +40,12 @@ test('unknown and legacy selections use saved labels rather than guessing an exa
 	assert.equal(reportTitle(null), 'Radiology report');
 });
 
+test('a single explicit examination uses its own details instead of the legacy shared field', () => {
+	const recording = { ...mri, exam_details: 'left', exam_types: [{ id: 3, name: 'Hand with contrast', exam_details: '' }] };
+	assert.equal(reportTitle(recording), 'Hand MRI with contrast');
+	assert.equal(reportTitle({ ...recording, exam_types: [{ ...recording.exam_types[0], exam_details: 'right' }] }), 'Right Hand MRI with contrast');
+});
+
 test('combined titles preserve examination order, individual contrast and shared details', () => {
 	const recording = { ...mri, exam_details: 'Right', exam_types: [
 		{ id: 2, name: 'Hand with contrast' }, { id: 1, name: 'Knee without contrast' }

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { recordingExaminations } from '../recording-examinations.js';
+import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
 
 const transcriptionPrompt = `دیکتهٔ رادیولوژی ممکن است فارسی، انگلیسی یا ترکیبی از هر دو باشد. متن را به همان زبان گفتار پیاده کن و اصطلاحات انگلیسی رادیولوژی را با حروف لاتین بنویس. ترجمه یا گزارش‌نویسی نکن.
 Transcribe only what is audible. Preserve Persian speech and English medical terms in mixed-language dictation, including English terms spoken with a Persian accent. Use standard English spellings for clearly recognised radiology terms and keep sequence names in Latin characters.
@@ -107,10 +107,10 @@ export async function generateRecordingReport(s, template) {
 	const modalityLabel = s.modality_name || s.modality_code;
 	const examinations = recordingExaminations(s);
 	const combined = examinations.length > 1;
-	const examTypeLabel = combined ? examinations.map((exam) => exam.name || exam.code).join(' + ') : s.exam_type_name || s.exam_type_code;
-	const combinedInstructions = combined ? '\nThis is one combined examination using a single modality. Use a separate body-part heading for each selected examination in the order listed. Keep each finding under its correct body part; do not duplicate it across body parts or apply it to other examinations. Include exactly one shared Conclusion at the end, not a Conclusion or Impression for each body part. Ignore prewritten conclusions in the source templates; derive the shared Conclusion only from the dictation. Do not copy normal template statements that contradict the dictation.' : '';
-	const examDetailsLabel = s.exam_details ? ` (${s.exam_details})` : '';
-	const studyLabel = `${examTypeLabel}${examDetailsLabel}, ${modalityLabel}`;
+	const examTypeLabel = examinations.length ? examinations.map(examinationLabel).join(' + ')
+		: examinationLabel({ name: s.exam_type_name, code: s.exam_type_code, exam_details: s.exam_details });
+	const combinedInstructions = combined ? '\nThis is one combined examination using a single modality. Use a separate body-part heading for each selected examination in the order listed. Keep each finding under its correct body part; do not duplicate it across body parts or apply it to other examinations. Each listed examination has its own optional details/laterality; never apply the details of one entry to another. Repeated body parts are separate entries and must retain separate headings, distinguished by their details or entry order; do not merge them. Include exactly one shared Conclusion at the end, not a Conclusion or Impression for each body part. Ignore prewritten conclusions in the source templates; derive the shared Conclusion only from the dictation. Do not copy normal template statements that contradict the dictation.' : '';
+	const studyLabel = `${examTypeLabel}, ${modalityLabel}`;
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	const transcriptions = [];
 	for (const part of audioParts)

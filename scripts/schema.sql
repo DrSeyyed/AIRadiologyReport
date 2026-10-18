@@ -134,8 +134,8 @@ CREATE TABLE IF NOT EXISTS recording_examinations (
   recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,
   exam_type_id INTEGER NOT NULL REFERENCES exam_types(id) ON DELETE RESTRICT,
   position INTEGER NOT NULL CHECK (position >= 0),
-  PRIMARY KEY (recording_id, exam_type_id),
-  UNIQUE (recording_id, position)
+  exam_details TEXT NOT NULL DEFAULT '' CHECK (length(exam_details) <= 200),
+  PRIMARY KEY (recording_id, position)
 );
 
 CREATE TABLE IF NOT EXISTS recording_audio_parts (

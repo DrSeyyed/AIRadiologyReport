@@ -6,8 +6,8 @@ function clean(value) {
 
 export function reportTitle(recording) {
 	const examinations = recordingExaminations(recording);
-	if (examinations.length > 1) return examinations.map((exam) => singleReportTitle({
-		...recording, exam_type_name: exam.name, exam_type_code: exam.code
+	if (examinations.length) return examinations.map((exam) => singleReportTitle({
+		...recording, exam_type_name: exam.name, exam_type_code: exam.code, exam_details: exam.exam_details
 	})).join(' + ');
 	return singleReportTitle(recording);
 }
