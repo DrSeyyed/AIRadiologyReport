@@ -3,6 +3,7 @@ import { error, redirect } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { getPacsViewerUrl } from '$lib/server/pacs-settings.js';
 import { getFavoriteSummary } from '$lib/server/study-favorites.js';
+import { normalizeStudySort } from '$lib/study-sorting.js';
 
 export async function load({ locals, fetch, url }) {
   if (!locals.user) throw redirect(302, '/login');
@@ -20,6 +21,7 @@ export async function load({ locals, fetch, url }) {
   const date_from         = url.searchParams.get('date_from')?.trim() ?? '';
   const date_to           = url.searchParams.get('date_to')?.trim() ?? '';
   const favorites         = url.searchParams.get('favorites')?.trim() ?? '';
+  const date_range        = url.searchParams.get('date_range')?.trim() ?? '';
 
   const signatureFilters = Object.fromEntries(['resident', 'attending', 'typist'].map((role) => [
     `${role}_checked`, url.searchParams.get(`${role}_checked`)?.trim() ?? ''
@@ -28,7 +30,7 @@ export async function load({ locals, fetch, url }) {
   // Pagination + sorting from URL
   const page       = Math.max(1, Number(url.searchParams.get('page') ?? '1') || 1);
   const rowcount   = Math.min(100, Math.max(1, Number(url.searchParams.get('rowcount') ?? '20') || 20));
-  const orderedby  = url.searchParams.get('orderedby')?.trim() ?? '';
+  const orderedby  = normalizeStudySort(url.searchParams.get('orderedby')?.trim() ?? '');
   const orderdir   = (url.searchParams.get('orderdir')?.trim()?.toUpperCase() === 'ASC') ? 'ASC' : 'DESC';
 
   // Build querystring for /api/studies
@@ -41,6 +43,7 @@ export async function load({ locals, fetch, url }) {
   if (corresponding_attending_id) qs.set('corresponding_attending_id', corresponding_attending_id);
   if (date_from)         qs.set('date_from', date_from);
   if (date_to)           qs.set('date_to', date_to);
+  if (date_range)        qs.set('date_range', date_range);
   if (favorites)         qs.set('favorites', favorites);
   for (const [key, value] of Object.entries(signatureFilters)) {
     if (value) qs.set(key, value);
@@ -83,8 +86,9 @@ export async function load({ locals, fetch, url }) {
       exam_type_id,
       corresponding_resident_id,
       corresponding_attending_id,
-      date_from,
-      date_to,
+      date_from: studiesPayload.date_bounds?.date_from ?? date_from,
+      date_to: studiesPayload.date_bounds?.date_to ?? date_to,
+      date_range,
       favorites,
       ...signatureFilters
     },

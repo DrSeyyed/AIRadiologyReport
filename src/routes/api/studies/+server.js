@@ -4,6 +4,8 @@ import { getDb } from '$lib/server/db';
 import { sendStudyMessage } from '$lib/server/telegram.js';
 import { patientName } from '$lib/patient-name.js';
 import { attachStudyFavorites, favoriteStudyFilter } from '$lib/server/study-favorites.js';
+import { examinationDateRange } from '$lib/study-date-ranges.js';
+import { normalizeStudySort } from '$lib/study-sorting.js';
 
 const fullNameColumn = "COALESCE(NULLIF(trim(s.patient_fullname), ''), trim(s.patient_firstname || ' ' || s.patient_lastname))";
 
@@ -65,7 +67,13 @@ export async function GET({ url, locals }) {
 		params.push(Number(q.exam_type_id));
 	}
 
-	// Date range
+	// Presets are resolved for every request so saved links remain relative to today.
+	try {
+		const range = examinationDateRange(url.searchParams.get('date_range')?.trim() || '');
+		if (range) Object.assign(q, range);
+	} catch (error) {
+		return json({ error: error.message }, { status: 400 });
+	}
 	if (q.date_from) {
 		baseSql += ` AND s.exam_date_jalali >= ?`;
 		params.push(q.date_from);
@@ -100,25 +108,30 @@ export async function GET({ url, locals }) {
 	const { total } = db.prepare(countSql).get(...params);
 
 	// --- Data query ---
-	const allowedColumns = [
-		's.patient_code',
-		's.patient_fullname',
-		's.modality_id',
-		's.patient_age',
-		's.exam_type_id',
-		's.exam_date_jalali'
-	];
-	const legacySortColumns = {
-		'p.patient_code': 's.patient_code',
-		'p.firstname': 's.patient_fullname',
-		'p.lastname': 's.patient_fullname',
-		's.patient_firstname': 's.patient_fullname',
-		's.patient_lastname': 's.patient_fullname'
+	const sortColumns = {
+		's.patient_code': 's.patient_code COLLATE NOCASE',
+		's.patient_fullname': `${fullNameColumn} COLLATE NOCASE`,
+		's.modality_id': 's.modality_id',
+		's.exam_type_id': 's.exam_type_id',
+		's.patient_age': "s.patient_age * CASE s.patient_age_unit WHEN 'Y' THEN 365.25 WHEN 'M' THEN 30.4375 WHEN 'W' THEN 7 ELSE 1 END",
+		's.exam_date_jalali': 's.exam_date_jalali',
+		source_modality: "COALESCE(NULLIF(s.source_modality, ''), m.code, '') COLLATE NOCASE",
+		source_description: "COALESCE(NULLIF(s.source_description, ''), NULLIF(s.description, ''), '') COLLATE NOCASE",
+		attending_fullname: "COALESCE(ua.full_name, '') COLLATE NOCASE",
+		residents: `COALESCE((SELECT group_concat(full_name, ', ') FROM (
+			SELECT DISTINCT u.id, u.full_name FROM study_recordings r JOIN users u ON u.id = r.corresponding_resident_id
+			WHERE r.study_id = s.id ORDER BY u.full_name COLLATE NOCASE, u.id)), '') COLLATE NOCASE`,
+		recording_count: 'recording_count',
+		report_count: 'report_count',
+		resident_checked_count: 'resident_checked_count',
+		attending_checked_count: 'attending_checked_count',
+		typist_checked_count: 'typist_checked_count',
+		is_favorite: 'EXISTS (SELECT 1 FROM study_favorites f WHERE f.study_id = s.id AND f.user_id = ?)'
 	};
-	const requestedColumn = legacySortColumns[q.orderedby] || q.orderedby;
-	const orderCol = allowedColumns.includes(requestedColumn)
-		? requestedColumn === 's.patient_fullname' ? fullNameColumn : requestedColumn
-		: 's.exam_date_jalali';
+	const sortKey = normalizeStudySort(q.orderedby);
+	const orderCol = sortColumns[sortKey];
+	const timeOrder = sortKey === 's.exam_date_jalali' ? q.orderdir : 'DESC';
+	const sortParams = sortKey === 'is_favorite' ? [locals.user.id] : [];
 
 	let dataSql = `
     SELECT
@@ -133,10 +146,10 @@ export async function GET({ url, locals }) {
       ur.full_name   AS resident_fullname,
       ua.full_name   AS attending_fullname
     ${baseSql}
-    ORDER BY ${orderCol} ${q.orderdir}, s.exam_date_jalali DESC, s.exam_time DESC, s.id DESC
+    ORDER BY ${orderCol} ${q.orderdir}, s.exam_date_jalali DESC, s.exam_time ${timeOrder}, s.id DESC
     LIMIT ? OFFSET ?
   `;
-	const rows = db.prepare(dataSql).all(...params, q.rowcount, (q.page - 1) * q.rowcount);
+	const rows = db.prepare(dataSql).all(...params, ...sortParams, q.rowcount, (q.page - 1) * q.rowcount);
 	const residentsByStudy = new Map();
 	if (rows.length) {
 		const residents = db.prepare(`
@@ -160,6 +173,7 @@ export async function GET({ url, locals }) {
 		total,
 		page: q.page,
 		rowcount: q.rowcount,
+		date_bounds: { date_from: q.date_from, date_to: q.date_to },
 		rows
 	});
 }

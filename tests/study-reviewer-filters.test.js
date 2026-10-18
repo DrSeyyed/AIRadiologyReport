@@ -6,6 +6,8 @@ import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import { insertStudy } from '../src/lib/server/studies.js';
 import { appendRecording } from '../src/lib/server/recordings.js';
+import { examinationDateRange, studyDatePresets } from '../src/lib/study-date-ranges.js';
+import { saveStudyFavorite } from '../src/lib/server/study-favorites.js';
 
 async function loadModule(relativePath, dbKey) {
 	const url = new URL(relativePath, import.meta.url);
@@ -130,4 +132,109 @@ test('page load forwards and preserves both reviewer selections along with signa
 	assert.equal(data.studies.length, 1);
 	assert.equal(data.paging.total, 1);
 	assert.equal(data.paging.rowcount, 10);
+});
+
+test('date presets filter examination dates inclusively before pagination and combine with reviewers', async (t) => {
+	t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-18T12:00:00Z') });
+	const { db, request, multi, other, beta, empty, unassigned } = await fixture(t);
+	const dates = ['1405-07-26', '1405-07-25', '1405-07-24', '1405-07-19', '1405-07-27'];
+	for (const [index, id] of [multi, other, beta, empty, unassigned].entries())
+		db.prepare('UPDATE studies SET exam_date_jalali = ? WHERE id = ?').run(dates[index], id);
+	for (const preset of studyDatePresets) {
+		const bounds = examinationDateRange(preset.value);
+		const expected = dates.filter((date) => date >= bounds.date_from && date <= bounds.date_to).length;
+		const result = await request({ date_range: preset.value, rowcount: '1', date_from: '9999-01-01' });
+		assert.equal(result.status, 200, preset.value);
+		assert.equal(result.total, expected, preset.value);
+		assert.equal(result.rows.length, Math.min(1, expected));
+		assert.deepEqual(result.date_bounds, bounds);
+	}
+	const combined = await request({ date_range: '3-days', corresponding_attending_id: '3', corresponding_resident_id: '2', resident_checked: '0' });
+	assert.deepEqual(combined.rows.map((row) => row.id), [multi]);
+	const custom = await request({ date_from: dates[2], date_to: dates[1] });
+	assert.deepEqual(custom.rows.map((row) => row.id), [other, beta]);
+	assert.equal((await request({ date_range: 'last-century' })).status, 400);
+});
+
+test('column sorting uses displayed text, chronological date/time and age units across all pages', async (t) => {
+	const { db, request, multi, other, beta, empty, unassigned } = await fixture(t);
+	const ids = [multi, other, beta, empty, unassigned];
+	const names = ['Zulu', 'Alpha', 'Echo', 'Bravo', 'Delta'];
+	const modalities = ['US', 'CT', 'XR', 'MR', 'XA'];
+	const descriptions = ['Fifth', 'First', 'Third', 'Fourth', 'Second'];
+	const ages = [[1, 'Y'], [11, 'M'], [30, 'W'], [150, 'D'], [2, 'Y']];
+	for (const [index, id] of ids.entries()) {
+		db.prepare('UPDATE studies SET patient_fullname = ?, source_modality = ?, source_description = ?, patient_age = ?, patient_age_unit = ?, exam_time = ? WHERE id = ?')
+			.run(names[index], modalities[index], descriptions[index], ...ages[index], `0${9 - index}:00`, id);
+	}
+	const check = async (column, expected) => {
+		for (const direction of ['ASC', 'DESC']) {
+			const order = direction === 'ASC' ? expected : [...expected].reverse();
+			const all = await request({ orderedby: column, orderdir: direction });
+			assert.deepEqual(all.rows.map((row) => row.id), order, `${column} ${direction}`);
+			const second = await request({ orderedby: column, orderdir: direction, rowcount: '2', page: '2' });
+			assert.equal(second.total, ids.length);
+			assert.deepEqual(second.rows.map((row) => row.id), order.slice(2, 4));
+		}
+	};
+	await check('s.patient_fullname', [other, empty, unassigned, beta, multi]);
+	await check('p.firstname', [other, empty, unassigned, beta, multi]);
+	await check('s.patient_code', [beta, empty, multi, other, unassigned]);
+	await check('source_modality', [other, empty, multi, unassigned, beta]);
+	await check('source_description', [multi, other, empty, unassigned, beta]);
+	await check('s.patient_age', [empty, beta, other, multi, unassigned]);
+	await check('s.exam_date_jalali', [unassigned, empty, beta, other, multi]);
+	const invalid = await request({ orderedby: 's.id; DROP TABLE studies', orderdir: 'ASC' });
+	assert.deepEqual(invalid.rows.map((row) => row.id), [unassigned, empty, beta, other, multi]);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 5);
+});
+
+test('aggregate columns, recording residents, attending names and private favorites sort server-side', async (t) => {
+	const { db, request, multi, other, beta, empty } = await fixture(t);
+	db.prepare("UPDATE study_recordings SET text_report_path = 'synthetic-report.md' WHERE study_id = ?").run(multi);
+	saveStudyFavorite(db, 1, other, []);
+	saveStudyFavorite(db, 4, multi, []);
+	for (const column of ['recording_count', 'report_count', 'resident_checked_count', 'attending_checked_count', 'typist_checked_count']) {
+		for (const direction of ['ASC', 'DESC']) {
+			const result = await request({ orderedby: column, orderdir: direction });
+			const values = result.rows.map((row) => row[column]);
+			assert.deepEqual(values, [...values].sort((a, b) => direction === 'ASC' ? a - b : b - a), `${column} ${direction}`);
+			assert.ok(new Set(values).size > 1);
+		}
+	}
+	const resident = await request({ orderedby: 'residents', orderdir: 'ASC' });
+	assert.ok(resident.rows.findIndex((row) => row.id === empty) < resident.rows.findIndex((row) => row.id === other));
+	assert.ok(resident.rows.findIndex((row) => row.id === other) < resident.rows.findIndex((row) => row.id === multi));
+	assert.ok(resident.rows.findIndex((row) => row.id === multi) < resident.rows.findIndex((row) => row.id === beta));
+	const attending = await request({ orderedby: 'attending_fullname', orderdir: 'DESC' });
+	assert.equal(attending.rows[0].id, other);
+	for (const [userId, favorite] of [[1, other], [4, multi]]) {
+		const user = { id: userId, role: userId === 1 ? 'admin' : 'resident' };
+		assert.equal((await request({ orderedby: 'is_favorite', orderdir: 'DESC', rowcount: '1' }, user)).rows[0].id, favorite);
+		const asc = await request({ orderedby: 'is_favorite', orderdir: 'ASC' }, user);
+		assert.equal(asc.rows.at(-1).id, favorite);
+		assert.equal(asc.rows.filter((row) => row.is_favorite).length, 1);
+	}
+	assert.equal((await request({ orderedby: 'is_favorite', favorites: 'all', corresponding_resident_id: '2' })).rows[0].id, other);
+});
+
+test('page load retains date presets, effective Jalali bounds and header sort selections', async (t) => {
+	t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-18T12:00:00Z') });
+	const { key, GET } = await fixture(t);
+	const { load } = await loadModule('../src/routes/studies/+page.server.js', key);
+	const locals = { user: { id: 1, role: 'admin' } };
+	const url = new URL('http://localhost/studies?date_range=7-days&date_from=1400-01-01&orderedby=report_count&orderdir=ASC&rowcount=10');
+	let query;
+	const data = await load({ locals, url, fetch: async (path) => {
+		if (!path.startsWith('/api/studies?')) return Response.json([]);
+		query = new URL(path, url);
+		return GET({ locals, url: query });
+	} });
+	assert.equal(query.searchParams.get('date_range'), '7-days');
+	assert.equal(data.filters.date_range, '7-days');
+	assert.equal(data.filters.date_from, '1405-07-20');
+	assert.equal(data.filters.date_to, '1405-07-26');
+	assert.equal(data.paging.orderedby, 'report_count');
+	assert.equal(data.paging.orderdir, 'ASC');
+	assert.equal(data.paging.total, 5);
 });

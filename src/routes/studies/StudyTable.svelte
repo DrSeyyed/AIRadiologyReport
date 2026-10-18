@@ -10,6 +10,8 @@
 	import { canImportStudies } from '$lib/study-permissions.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
+	import { studySortHref } from '$lib/study-sorting.js';
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
@@ -17,6 +19,21 @@
 	let favoriteForStudy = $state(null);
 	const isAdmin = $derived(data.user?.role === 'admin');
 	const readOnly = $derived(data.user?.role === 'typist');
+	const headers = [
+		{ label: 'Code', columns: [{ key: 's.patient_code', label: 'Code' }] },
+		{ label: 'Full name', columns: [{ key: 's.patient_fullname', label: 'Full name' }] },
+		{ label: 'Age', columns: [{ key: 's.patient_age', label: 'Age' }] },
+		{ label: 'Source modality', columns: [{ key: 'source_modality', label: 'Source modality' }] },
+		{ label: 'Source description (reference)', columns: [{ key: 'source_description', label: 'Source description (reference)' }] },
+		{ label: 'Date / time', columns: [{ key: 's.exam_date_jalali', label: 'Date / time' }] },
+		{ label: 'Study attending', columns: [{ key: 'attending_fullname', label: 'Study attending' }] },
+		{ label: 'Resident', columns: [{ key: 'residents', label: 'Resident' }] },
+		{ label: 'Recordings / reports', columns: [{ key: 'recording_count', label: 'Recordings' }, { key: 'report_count', label: 'Reports' }] },
+		{ label: 'Signed (R/A/T)', columns: [{ key: 'resident_checked_count', label: 'R', name: 'Resident signatures' }, { key: 'attending_checked_count', label: 'A', name: 'Attending signatures' }, { key: 'typist_checked_count', label: 'T', name: 'Typist signatures' }] },
+		{ label: 'Attention', columns: [] },
+		{ label: 'My favorites', columns: [{ key: 'is_favorite', label: 'My favorites' }] },
+		{ label: 'Actions', columns: [] }
+	];
 
 	function canDelete(study) {
 		return isAdmin || !study.attending_checked_count || (data.user?.role === 'attending' && data.user.id === study.corresponding_attending_id);
@@ -46,7 +63,25 @@
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
-			<tr><th>Code</th><th>Full name</th><th>Age</th><th>Source modality</th><th>Source description (reference)</th><th>Date / time</th><th>Study attending</th><th>Resident</th><th>Recordings / reports</th><th>Signed (R/A/T)</th><th>Attention</th><th>My favorites</th><th>Actions</th></tr>
+			<tr>
+				{#each headers as header (header.label)}
+					<th scope="col" aria-sort={header.columns.length ? header.columns.some((column) => column.key === data.paging.orderedby) ? data.paging.orderdir === 'ASC' ? 'ascending' : 'descending' : 'none' : undefined}>
+						{#if !header.columns.length}{header.label}{/if}
+						{#if header.columns.length > 1}<div>{header.label}</div>{/if}
+						<div class="flex flex-wrap gap-2">
+							{#each header.columns as column (column.key)}
+								{@const active = data.paging.orderedby === column.key}
+								{@const nextDirection = active && data.paging.orderdir === 'ASC' ? 'descending' : 'ascending'}
+								<a class="sort-link" class:sort-active={active}
+									href={resolve(studySortHref(page.url.search, column.key, data.paging.orderedby, data.paging.orderdir))}
+									aria-label={`Sort by ${column.name || column.label}, ${nextDirection}`}>
+									{column.label} <span aria-hidden="true">{active ? data.paging.orderdir === 'ASC' ? '↑' : '↓' : '↕'}</span>
+								</a>
+							{/each}
+						</div>
+					</th>
+				{/each}
+			</tr>
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
@@ -79,3 +114,22 @@
 		</tbody>
 	</table>
 </div>
+
+<style>
+	.sort-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		white-space: nowrap;
+	}
+
+	.sort-link:hover,
+	.sort-active {
+		text-decoration: underline;
+	}
+
+	.sort-link:focus-visible {
+		outline: 2px solid currentColor;
+		outline-offset: 3px;
+	}
+</style>

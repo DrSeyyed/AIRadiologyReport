@@ -1,7 +1,24 @@
 <script>
 	import { patientName } from '$lib/patient-name.js';
+	import { examinationDateRange, studyDatePresets } from '$lib/study-date-ranges.js';
+	import { studySortOptions } from '$lib/study-sorting.js';
 
 	let { data } = $props();
+	let dateRange = $state('');
+	let dateFrom = $state('');
+	let dateTo = $state('');
+	$effect(() => {
+		dateRange = data.filters.date_range || '';
+		dateFrom = data.filters.date_from || '';
+		dateTo = data.filters.date_to || '';
+	});
+
+	function selectDateRange(event) {
+		dateRange = event.currentTarget.value;
+		const range = examinationDateRange(dateRange);
+		dateFrom = range?.date_from || '';
+		dateTo = range?.date_to || '';
+	}
 
 	function applyFilters(e) {
 		const fd = new FormData(e.currentTarget);
@@ -9,7 +26,9 @@
 		for (const [k, v] of fd.entries()) {
 			if (v) params.set(k, v);
 		}
-		if ((params.get('favorites') || '') !== (data.filters.favorites || '')) params.set('page', '1');
+		const current = { ...data.filters, ...data.paging };
+		if (['favorites', 'date_range', 'date_from', 'date_to', 'orderedby', 'orderdir', 'rowcount'].some((key) => (params.get(key) || '') !== String(current[key] ?? '')))
+			params.set('page', '1');
 		const url = `/studies?${params.toString()}`;
 		window.location.href = url; // server-side load to refetch
 	}
@@ -85,13 +104,24 @@
 			</select>
 		</label>
 
+		<label class="form-control w-56">
+			<span class="label-text mb-1 text-sm">Examination date</span>
+			<select name="date_range" class="select select-sm h-9" value={dateRange} onchange={selectDateRange}>
+				<option value="">All dates / custom range</option>
+				{#each studyDatePresets as preset (preset.value)}
+					<option value={preset.value}>{preset.label}</option>
+				{/each}
+			</select>
+		</label>
+
 		<!-- Date From -->
 		<label class="form-control w-32">
 			<span class="label-text mb-1 text-sm">From (Jalali)</span>
 			<input
 				name="date_from"
 				class="input-bordered input input-sm h-9"
-				value={data.filters.date_from}
+				bind:value={dateFrom}
+				oninput={() => (dateRange = '')}
 				placeholder="1403-01-01"
 			/>
 		</label>
@@ -102,7 +132,8 @@
 			<input
 				name="date_to"
 				class="input-bordered input input-sm"
-				value={data.filters.date_to}
+				bind:value={dateTo}
+				oninput={() => (dateRange = '')}
 				placeholder="1403-12-29"
 			/>
 		</label>
@@ -174,11 +205,9 @@
 				class="select select-sm leading-normal h-9"
 				value={data.paging?.orderedby || 's.exam_date_jalali'}
 			>
-				<option value="s.exam_date_jalali">Exam Date</option>
-				<option value="s.patient_code">Patient Code</option>
-				<option value="s.patient_fullname">Full name</option>
-				<option value="s.patient_age">Patient Age</option>
-				<option value="s.modality_id">Modality</option>
+				{#each studySortOptions as option (option.value)}
+					<option value={option.value}>{option.label}</option>
+				{/each}
 			</select>
 		</label>
 
