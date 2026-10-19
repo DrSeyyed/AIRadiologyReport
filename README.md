@@ -73,7 +73,7 @@ Editing retains the entry's ID and updates its labels wherever referenced, inclu
 
 ### Study row colors
 
-Study rows use light backgrounds with dark text and visible borders. Colors follow this priority: **yellow** for Needs attention (overrides other states), **red** for no recordings, **pink** while any recording is missing a resident, attending or typist signature, and **green** only when every recording has all three signatures. A legend above the table explains the colors; existing attention and signature indicators remain available. Colors update after changes are saved and the study list refreshes.
+Study rows use light backgrounds with dark text and visible borders. Colors follow this priority: **yellow** for Needs attention (overrides other states), **red** for no recordings, **pink** while any recording is missing a resident, attending or typist signature, and **green** only when every recording has all three signatures. A legend above the table explains the colors; existing attention and signature indicators remain available. Colors update after changes are saved and the study list refreshes. Action buttons wrap within their table cell on narrow screens, keeping them inside the colored row and its border; the table scrolls horizontally when needed.
 
 ### Personal study favorites
 

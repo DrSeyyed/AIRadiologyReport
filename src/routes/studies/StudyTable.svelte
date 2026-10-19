@@ -111,9 +111,9 @@
 					<td>{study.resident_checked_count ?? 0} / {study.attending_checked_count ?? 0} / {study.typist_checked_count ?? 0}</td>
 					<td><StudyAttention {study} user={data.user} /></td>
 					<td><StudyFavorite {study} onCategories={(study) => (favoriteForStudy = study)} /></td>
-					<td><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} />{#if !readOnly}<div class="flex gap-2">
-						<button class="btn btn-outline btn-xs" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
-						<button class="btn btn-outline btn-xs btn-error" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
+					<td class="min-w-48 whitespace-normal"><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} />{#if !readOnly}<div class="flex flex-wrap gap-2">
+						<button class="btn btn-outline btn-xs shrink-0 whitespace-nowrap" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
+						<button class="btn btn-outline btn-xs btn-error shrink-0 whitespace-nowrap" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 					</div>{/if}</td>
 				</tr>
 			{:else}<tr><td colspan="13">No studies found.</td></tr>{/each}
