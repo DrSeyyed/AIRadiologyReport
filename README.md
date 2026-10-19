@@ -71,6 +71,10 @@ Administrators can open **Admin → Body parts** to add or edit the examination/
 
 Editing retains the entry's ID and updates its labels wherever referenced, including existing recordings and templates. It does not replace imported source descriptions, change examination details/order, modify saved report text, or clear signatures. Use a new entry for a different examination rather than repurposing one already in use. Only administrators can load this management page or submit changes; deletion is not provided. No database migration is needed for this page.
 
+### Study row colors
+
+Study rows use light backgrounds with dark text and visible borders. Colors follow this priority: **yellow** for Needs attention (overrides other states), **red** for no recordings, **pink** while any recording is missing a resident, attending or typist signature, and **green** only when every recording has all three signatures. A legend above the table explains the colors; existing attention and signature indicators remain available. Colors update after changes are saved and the study list refreshes.
+
 ### Personal study favorites
 
 Every signed-in user, including typists, has a private **Favorites** list. Use **☆ Favorite** on a study to save it, or **★ Saved** to remove it from Favorites and all its categories. This does not edit the study, reports or signatures.

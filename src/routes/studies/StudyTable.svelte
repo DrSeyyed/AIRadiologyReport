@@ -12,6 +12,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { studySortHref } from '$lib/study-sorting.js';
+	import { studyRowStatus, studyRowStatuses } from '$lib/study-row-status.js';
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
@@ -60,6 +61,11 @@
 </div>
 {#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
 {#if deleteForStudy}<DeleteStudyModal study={deleteForStudy} onClose={() => (deleteForStudy = null)} onDeleted={deleted} />{/if}
+<ul class="flex flex-wrap gap-2 text-xs" aria-label="Study row colors">
+	{#each studyRowStatuses as status (status.key)}
+		<li class="study-status rounded border px-2 py-1" data-study-status={status.key}>{status.label}</li>
+	{/each}
+</ul>
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
@@ -85,7 +91,7 @@
 		</thead>
 		<tbody>
 			{#each data.studies as study (study.id)}
-				<tr>
+				<tr class="study-status" data-study-status={studyRowStatus(study)}>
 					<td><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error">Disabled</div>{/if}</td>
 					<td>{patientName(study)}</td>
 					<td>{study.patient_age == null ? '-' : `${study.patient_age} ${study.patient_age_unit ?? 'Y'}`}</td>
@@ -116,6 +122,27 @@
 </div>
 
 <style>
+	.study-status {
+		color: #1f2937;
+		border-color: #cbd5e1;
+	}
+
+	.study-status[data-study-status='attention'] {
+		background-color: #fef9c3;
+	}
+
+	.study-status[data-study-status='no-recording'] {
+		background-color: #fee2e2;
+	}
+
+	.study-status[data-study-status='unsigned'] {
+		background-color: #fce7f3;
+	}
+
+	.study-status[data-study-status='signed'] {
+		background-color: #dcfce7;
+	}
+
 	.sort-link {
 		display: inline-flex;
 		align-items: center;
