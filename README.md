@@ -65,6 +65,12 @@ Patient demographics now belong to each study. There is no separate patient tabl
 
 Administrators, attendings and residents can open **Studies → Import studies** and upload an XLS/XLSX PACS export (first worksheet, up to 10 MB and 5,000 source rows). Required columns are `ID`, `NAME` or `SRC NAME`, `MODALITY`, `DESCRIPTION`, `STUDY DATE`, and `STUDY INST UID`. `STUDY KEY`, `SEX` and `AGE` are optional. `STUDY KEY` is shown in the import preview and stored per study as text, preserving formatted leading zeros; missing headers or blank cells are allowed. It does not replace `ID` or `STUDY INST UID` for patient codes or duplicate detection. Reimporting an existing UID still skips that study without overwriting its metadata; edit its Study key manually if needed. Both name columns contain complete names: each row uses nonblank `NAME`, falling back to `SRC NAME` only when `NAME` is blank; the two columns are never concatenated. A row with neither name is invalid. DICOM caret-separated names retain their prior display order (`FAMILY^GIVEN` becomes `GIVEN FAMILY`). DICOM ages such as `089Y` and formatted IDs with leading zeros are preserved.
 
+### Managing body parts
+
+Administrators can open **Admin → Body parts** to add or edit the examination/body-part list. Enter a unique, case-sensitive code (up to 64 characters) and a name (up to 200 characters), including contrast type when relevant. Entries become available in examination selectors immediately after their page is loaded or refreshed. Add a report template for each modality used with a new entry via **Templates**.
+
+Editing retains the entry's ID and updates its labels wherever referenced, including existing recordings and templates. It does not replace imported source descriptions, change examination details/order, modify saved report text, or clear signatures. Use a new entry for a different examination rather than repurposing one already in use. Only administrators can load this management page or submit changes; deletion is not provided. No database migration is needed for this page.
+
 ### Personal study favorites
 
 Every signed-in user, including typists, has a private **Favorites** list. Use **☆ Favorite** on a study to save it, or **★ Saved** to remove it from Favorites and all its categories. This does not edit the study, reports or signatures.

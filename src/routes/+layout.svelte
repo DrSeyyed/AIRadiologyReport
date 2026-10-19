@@ -54,6 +54,7 @@
 			{#if data.user?.role === 'admin'}
 				<li class="menu-title">Admin</li>
 				<li><a href={resolve('/admin/users')} class="link link-primary p-3">Users</a></li>
+				<li><a href={resolve('/admin/body-parts')} class="link link-primary p-3">Body parts</a></li>
 				<li><a href={resolve('/admin/pacs')} class="link link-primary p-3">PACS viewer settings</a></li>
 				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
 			{/if}
