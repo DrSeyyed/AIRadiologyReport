@@ -73,7 +73,7 @@ Editing retains the entry's ID and updates its labels wherever referenced, inclu
 
 ### Searching modality and examination lists
 
-The study filters and recording configuration include search boxes above their Modality and Exam type / Body part dropdowns. Type any part of a code or name (case-insensitive), such as `mrc` for `MRCP`, then choose from the shortened list. Clear the search to show all options. Searching alone does not change a saved selection or apply filters; a current selection stays available even if it does not match the search. Only selected IDs are submitted. In recordings, the examination search stays in place after adding an entry so the same body part can be added again with different details. Signed, processing, disabled-study and typist configuration protections remain unchanged.
+The study filters and recording configuration use single-field searchable dropdowns for Modality and Exam type / Body part. Click the field or its arrow, then type any part of a code or name (case-insensitive), such as `mrc` for `MRCP`, and choose from the shortened list. Clear the text to show all options. Arrow keys navigate options; Enter selects, and Escape cancels the search without closing the recording dialog. Searching alone does not change a saved selection or apply filters; leaving the field without choosing restores its previous selection. Only selected IDs are submitted. In recordings, choosing an examination adds it and resets the field so the same body part can be added again with different details. Signed, processing, disabled-study and typist configuration protections remain unchanged.
 
 ### Study row colors
 
