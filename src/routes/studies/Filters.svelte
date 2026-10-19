@@ -2,6 +2,7 @@
 	import { patientName } from '$lib/patient-name.js';
 	import { examinationDateRange, studyDatePresets } from '$lib/study-date-ranges.js';
 	import { studySortOptions } from '$lib/study-sorting.js';
+	import SearchableSelect from '$lib/components/SearchableSelect.svelte';
 
 	let { data } = $props();
 	let dateRange = $state('');
@@ -74,35 +75,13 @@
 			/>
 		</label>
 
-		<!-- Modality -->
-		<label class="form-control w-16">
-			<span class="label-text mb-1 text-sm">Modality</span>
-			<select
-				name="modality_id"
-				class="select select-sm leading-normal h-9"
-				value={data.filters.modality_id ? Number(data.filters.modality_id) : ''}
-			>
-				<option value="">All</option>
-				{#each data.modalities as m}
-					<option value={m.id}>{m.code}</option>
-				{/each}
-			</select>
-		</label>
+		<div class="w-48 max-w-full">
+			<SearchableSelect label="Modality" name="modality_id" options={data.modalities} value={String(data.filters.modality_id || '')} compact />
+		</div>
 
-		<!-- Exam Type -->
-		<label class="form-control w-48">
-			<span class="label-text mb-1 text-sm">Exam Type</span>
-			<select
-				name="exam_type_id"
-				class="select select-sm leading-normal h-9"
-				value={data.filters.exam_type_id ? Number(data.filters.exam_type_id) : ''}
-			>
-				<option value="">All</option>
-				{#each data.exam_types as e}
-					<option value={e.id}>{e.code}</option>
-				{/each}
-			</select>
-		</label>
+		<div class="w-48 max-w-full">
+			<SearchableSelect label="Exam Type" name="exam_type_id" options={data.exam_types} value={String(data.filters.exam_type_id || '')} compact />
+		</div>
 
 		<label class="form-control w-56">
 			<span class="label-text mb-1 text-sm">Examination date</span>

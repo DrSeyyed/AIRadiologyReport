@@ -71,6 +71,10 @@ Administrators can open **Admin → Body parts** to add or edit the examination/
 
 Editing retains the entry's ID and updates its labels wherever referenced, including existing recordings and templates. It does not replace imported source descriptions, change examination details/order, modify saved report text, or clear signatures. Use a new entry for a different examination rather than repurposing one already in use. Only administrators can load this management page or submit changes; deletion is not provided. No database migration is needed for this page.
 
+### Searching modality and examination lists
+
+The study filters and recording configuration include search boxes above their Modality and Exam type / Body part dropdowns. Type any part of a code or name (case-insensitive), such as `mrc` for `MRCP`, then choose from the shortened list. Clear the search to show all options. Searching alone does not change a saved selection or apply filters; a current selection stays available even if it does not match the search. Only selected IDs are submitted. In recordings, the examination search stays in place after adding an entry so the same body part can be added again with different details. Signed, processing, disabled-study and typist configuration protections remain unchanged.
+
 ### Study row colors
 
 Study rows use light backgrounds with dark text and visible borders. Colors follow this priority: **yellow** for Needs attention (overrides other states), **red** for no recordings, **pink** while any recording is missing a resident, attending or typist signature, and **green** only when every recording has all three signatures. A legend above the table explains the colors; existing attention and signature indicators remain available. Colors update after changes are saved and the study list refreshes. Action buttons wrap within their table cell on narrow screens, keeping them inside the colored row and its border; the table scrolls horizontally when needed.

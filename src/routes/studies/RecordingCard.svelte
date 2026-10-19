@@ -3,6 +3,7 @@
 	import { canManageTemplates } from '$lib/template-permissions.js';
 	import { isResidentAttendingDelegate } from '$lib/signature-permissions.js';
 	import { recordingExaminations } from '$lib/recording-examinations.js';
+	import SearchableSelect from '$lib/components/SearchableSelect.svelte';
 	let { study, recording, modalities, examTypes, residents, user, onChanged, onReport, onEditStudy, onTemplate } = $props();
 	let modality = $state('');
 	let examinations = $state([]);
@@ -198,24 +199,10 @@
 				{#each residents as option (option.id)}<option value={String(option.id)}>{option.full_name}</option>{/each}
 			</select>
 		</label>
-		<label class="form-control min-w-0">
-			<span class="label-text">Modality (required)</span>
-			<select class="select select-bordered" bind:value={modality}>
-				<option value="">Select modality</option>
-				{#each modalities as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
-			</select>
-		</label>
-		<label class="form-control min-w-0">
-			<span class="label-text">Add examination / body part</span>
-			<select class="select select-bordered" value="" onchange={(event) => {
-				const id = event.currentTarget.value;
-				if (id) examinations = [...examinations, { id, details: '', key: nextExaminationKey++ }];
-				event.currentTarget.value = '';
-			}}>
-				<option value="">Select examination including contrast</option>
-				{#each examTypes as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
-			</select>
-		</label>
+		<SearchableSelect label="Modality (required)" options={modalities} bind:value={modality} emptyLabel="Select modality" />
+		<SearchableSelect label="Add examination / body part" options={examTypes} emptyLabel="Select examination including contrast" resetOnSelect onSelect={(id) => {
+			if (id) examinations = [...examinations, { id, details: '', key: nextExaminationKey++ }];
+		}} />
 		<div class="md:col-span-3 space-y-2">
 			<ol class="space-y-2" aria-label="Selected examinations in report order">
 				{#each examinations as exam, index (exam.key)}
