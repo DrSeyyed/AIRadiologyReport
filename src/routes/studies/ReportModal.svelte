@@ -6,6 +6,7 @@
   import DOMPurify from 'dompurify';
   import { studyLabel } from '$lib/study-label.js';
   import TypistSignature from './TypistSignature.svelte';
+  import { reportFonts, reportTypography, validReportSize, formattedReport, copyFormattedReport } from '$lib/report-copy.js';
 
   let { study, recording, user, onClose, onSaved, initialText = '' } = $props();
 
@@ -30,8 +31,33 @@
   const typistSignature = $derived(recording.typist_checked
     ? `Typist / printed confirmation: ${recording.typist_signer_fullname || 'Unknown signer'}${recording.typist_signed_at ? ` · ${recording.typist_signed_at}` : ''}`
     : 'Typist / printed confirmation: not signed');
+  let font = $state('Times New Roman');
+  let fontSize = $state('12.0');
+  let copying = $state(false);
+  let copyMessage = $state('');
+  let copyError = $state('');
+  const canExport = $derived(!state.loading && !state.error && Boolean(state.text.trim()) && validReportSize(fontSize));
   let printFrame;
   onDestroy(() => printFrame?.remove());
+
+  function clearCopyStatus() {
+    copyMessage = '';
+    copyError = '';
+  }
+
+  async function copyReport() {
+    if (!canExport || copying) return;
+    copying = true;
+    clearCopyStatus();
+    try {
+      await copyFormattedReport(formatted);
+      copyMessage = 'Copied with formatting. Paste into a rich-text editor to keep the font and size.';
+    } catch (caught) {
+      copyError = caught.message || 'Unable to copy report.';
+    } finally {
+      copying = false;
+    }
+  }
 
   $effect(() => {
     if (!editable) state.tab = 'preview';
@@ -42,7 +68,7 @@
   }
 
   function printReport() {
-    if (state.loading || state.error || !state.text.trim()) return;
+    if (!canExport) return;
     printFrame?.remove();
     const frame = document.createElement('iframe');
     frame.title = 'Report print preview';
@@ -52,9 +78,13 @@
       frame.contentWindow?.focus();
       frame.contentWindow?.print();
     };
-    const heading = DOMPurify.sanitize(`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(studyLabel(study))} — Recording #${recording.id}</p>`);
-    const signatures = `<p style="margin-top:1.5em">Resident: ${escapeHtml(recording.resident_fullname || 'Unassigned')}<br>Attending: ${escapeHtml(study.attending_fullname || 'Not assigned')}</p><p>${escapeHtml(residentSignature)}<br>${escapeHtml(attendingSignature)}<br>${escapeHtml(typistSignature)}</p>`;
-    frame.srcdoc = `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>body{font:12pt sans-serif;line-height:1.5;margin:2cm}h1{font-size:16pt}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:4px}@page{margin:1.5cm}</style></head><body>${heading}${previewHtml}${signatures}</body></html>`;
+    const content = document.createElement('div');
+    content.innerHTML = formatted.html;
+    const studyInfo = document.createElement('p');
+    studyInfo.textContent = `${studyLabel(study)} — Recording #${recording.id}`;
+    Object.assign(studyInfo.style, reportTypography(font, fontSize));
+    content.querySelector('h1').after(studyInfo);
+    frame.srcdoc = `<!doctype html><html><head><title>${escapeHtml(title)}</title><style>body{line-height:1.5;margin:2cm}@page{margin:1.5cm}</style></head><body>${content.innerHTML}</body></html>`;
     printFrame = frame;
     document.body.appendChild(frame);
   }
@@ -81,6 +111,15 @@
   const previewHtml = $derived(
     DOMPurify.sanitize(renderReportMarkdown(state.text))
   );
+  const formatted = $derived(!state.loading && typeof document !== 'undefined' ? formattedReport({
+    title,
+    sanitizedBodyHtml: previewHtml,
+    resident: recording.resident_fullname || 'Unassigned',
+    attending: study.attending_fullname || 'Not assigned',
+    signatures: [residentSignature, attendingSignature, typistSignature],
+    font,
+    size: fontSize
+  }) : { html: '', text: '' });
 
   async function save() {
     if (!editable || state.saving || state.loading || state.error || !state.text.trim()) return;
@@ -134,6 +173,22 @@
       <p>{attendingSignature}</p>
       <TypistSignature {study} {recording} {user} onChanged={onSaved ?? invalidateAll} disabled={state.loading || state.saving || !!state.error} />
     </div>
+    <div class="flex flex-wrap items-end gap-3 mb-3">
+      <label class="form-control w-56 max-w-full">
+        <span class="label-text mb-1">Report font</span>
+        <select class="select select-bordered select-sm" bind:value={font} onchange={clearCopyStatus}>
+          {#each reportFonts as option (option.name)}<option value={option.name}>{option.name}</option>{/each}
+        </select>
+      </label>
+      <label class="form-control w-28">
+        <span class="label-text mb-1">Font size (pt)</span>
+        <input class="input input-bordered input-sm w-full" type="number" min="6" max="72" step="0.1" value={fontSize}
+          oninput={(event) => { fontSize = event.currentTarget.value; clearCopyStatus(); }} />
+      </label>
+    </div>
+    {#if !validReportSize(fontSize)}<p class="text-error text-sm mb-3" role="alert">Choose a font size between 6 and 72 pt.</p>{/if}
+    {#if copyMessage}<p class="text-sm mb-3" role="status">{copyMessage}</p>{/if}
+    {#if copyError}<p class="text-error text-sm mb-3" role="alert">{copyError}</p>{/if}
     {#if state.error}<div class="alert alert-error" role="alert">{state.error}</div>{/if}
     {#if !editable}<p class="text-sm mb-3">{user?.role === 'typist' ? 'Typist access: read-only.' : 'Read-only: editing requires an unsigned report, completed processing, saved resident and examination configuration, and a study attending.'}</p>{/if}
 
@@ -173,6 +228,7 @@
         <textarea
           class="textarea textarea-bordered w-full h-[40vh] font-mono"
           bind:value={state.text}
+          oninput={clearCopyStatus}
           disabled={!editable || state.saving}
           placeholder="Enter report in Markdown…"
           spellcheck="false"
@@ -180,14 +236,9 @@
       {:else}
         <div class="rounded-box border border-base-content/10 p-3 h-[40vh] overflow-y-auto">
           {#if state.text?.trim()}
-            <div class="prose dark:prose-invert max-w-none">
-              <h2 class="mt-0">{title}</h2>
-              <!-- eslint-disable-next-line svelte/no-at-html-tags -- Markdown is sanitized with DOMPurify before rendering. -->
-              {@html previewHtml}
-              <p class="text-sm" style="margin-top:1.5em">
-                Resident: {recording.resident_fullname || 'Unassigned'}<br />
-                Attending: {study.attending_fullname || 'Not assigned'}
-              </p>
+            <div aria-label="Formatted report preview">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -- Report Markdown is sanitized and metadata uses text nodes. -->
+              {@html formatted.html}
             </div>
           {:else}
             <div class="opacity-60 italic">Nothing to preview.</div>
@@ -196,8 +247,9 @@
       {/if}
     {/if}
 
-    <div class="modal-action">
-      <button class="btn btn-outline" type="button" disabled={state.loading || !!state.error || !state.text.trim()} onclick={printReport}>Print / Save PDF</button>
+    <div class="modal-action flex-wrap gap-y-2">
+      <button class="btn btn-outline" type="button" disabled={!canExport || copying} onclick={copyReport}>{copying ? 'Copying…' : 'Copy report'}</button>
+      <button class="btn btn-outline" type="button" disabled={!canExport} onclick={printReport}>Print / Save PDF</button>
       <button class="btn btn-ghost" type="button" disabled={state.saving} onclick={() => onClose?.()}>
         Close (Esc)
       </button>

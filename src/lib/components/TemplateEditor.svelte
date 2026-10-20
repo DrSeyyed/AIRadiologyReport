@@ -1,5 +1,6 @@
 <script>
 	import { onDestroy, untrack } from 'svelte';
+	import SearchableSelect from './SearchableSelect.svelte';
 	let { modalities, examTypes, initialModalityId = '', initialExamTypeId = '', onSaved, onCancel, onBusyChange } = $props();
 	const initial = untrack(() => ({ modality: String(initialModalityId), examination: String(initialExamTypeId) }));
 	let modality = $state(initial.modality);
@@ -46,17 +47,16 @@
 	});
 	onDestroy(() => { disposed = true; actionController?.abort(); });
 
-	function choose(field, event) {
+	function choose(field, value) {
 		const previous = field === 'modality' ? modality : examination;
-		if (text !== original && !confirm('Discard the unsaved template draft?')) {
-			event.currentTarget.value = previous;
-			return;
-		}
-		if (field === 'modality') modality = event.currentTarget.value;
-		else examination = event.currentTarget.value;
+		if (value === previous) return true;
+		if (text !== original && !confirm('Discard the unsaved template draft?')) return false;
+		if (field === 'modality') modality = value;
+		else examination = value;
 		id = null;
 		text = '';
 		original = '';
+		return true;
 	}
 
 	async function submit(generate) {
@@ -98,18 +98,13 @@
 	<fieldset disabled={busy} class="grid gap-3 md:grid-cols-2">
 		<label class="form-control min-w-0">
 			<span class="label-text">Modality</span>
-			<select class="select select-bordered w-full" value={modality} onchange={(event) => choose('modality', event)}>
+			<select class="select select-bordered w-full" value={modality} onchange={(event) => { if (!choose('modality', event.currentTarget.value)) event.currentTarget.value = modality; }}>
 				<option value="">Select modality</option>
 				{#each modalities as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
 			</select>
 		</label>
-		<label class="form-control min-w-0">
-			<span class="label-text">Examination / body part</span>
-			<select class="select select-bordered w-full" value={examination} onchange={(event) => choose('examination', event)}>
-				<option value="">Select examination</option>
-				{#each examTypes as option (option.id)}<option value={String(option.id)}>{option.code} — {option.name}</option>{/each}
-			</select>
-		</label>
+		<SearchableSelect label="Examination / body part" options={examTypes} emptyLabel="Select examination"
+			bind:value={() => examination, (value) => choose('examination', value)} />
 	</fieldset>
 	{#if loading}<p role="status">Loading template…</p>{/if}
 	<div class="flex flex-wrap gap-2">
