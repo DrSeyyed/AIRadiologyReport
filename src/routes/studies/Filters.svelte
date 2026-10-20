@@ -53,6 +53,7 @@
 				{/each}
 			</select>
 		</label>
+		<input type="hidden" name="status" value={data.filters.status || ''} />
 		<!-- Patient Code -->
 		<label class="form-control w-48">
 			<span class="label-text mb-1 text-sm">Patient Code</span>

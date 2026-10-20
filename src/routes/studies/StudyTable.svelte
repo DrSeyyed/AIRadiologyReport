@@ -12,7 +12,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { studySortHref } from '$lib/study-sorting.js';
-	import { studyRowStatus, studyRowStatuses } from '$lib/study-row-status.js';
+	import { studyRowStatus, studyRowStatuses, studyStatusHref } from '$lib/study-row-status.js';
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
@@ -61,11 +61,18 @@
 </div>
 {#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
 {#if deleteForStudy}<DeleteStudyModal study={deleteForStudy} onClose={() => (deleteForStudy = null)} onDeleted={deleted} />{/if}
-<ul class="flex flex-wrap gap-2 text-xs" aria-label="Study row colors">
-	{#each studyRowStatuses as status (status.key)}
-		<li class="study-status rounded border px-2 py-1" data-study-status={status.key}>{status.label}</li>
-	{/each}
-</ul>
+<nav aria-label="Study status filters">
+	<ul class="flex flex-wrap gap-2 text-xs">
+		{#each [{ key: '', label: 'All' }, ...studyRowStatuses] as status (status.key)}
+			<li>
+				<a class="study-status status-filter rounded border px-3 py-2"
+					data-study-status={status.key}
+					aria-current={(data.filters.status || '') === status.key ? 'true' : undefined}
+					href={resolve(studyStatusHref(page.url.search, status.key))}>{status.label}</a>
+			</li>
+		{/each}
+	</ul>
+</nav>
 <div class="overflow-x-auto rounded-box border">
 	<table class="table table-sm">
 		<thead class="bg-base-200">
@@ -92,7 +99,7 @@
 		<tbody>
 			{#each data.studies as study (study.id)}
 				<tr class="study-status" data-study-status={studyRowStatus(study)}>
-					<td><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error">Disabled</div>{/if}</td>
+					<td><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error disabled-badge">Disabled</div>{/if}</td>
 					<td>{patientName(study)}</td>
 					<td>{study.patient_age == null ? '-' : `${study.patient_age} ${study.patient_age_unit ?? 'Y'}`}</td>
 					<td>{study.source_modality || study.modality_code || '-'}</td>
@@ -141,6 +148,37 @@
 
 	.study-status[data-study-status='signed'] {
 		background-color: #dcfce7;
+	}
+
+	.study-status[data-study-status='disabled'] {
+		background-color: #e5e7eb;
+	}
+
+	.status-filter {
+		display: inline-flex;
+		align-items: center;
+		min-height: 2.25rem;
+	}
+
+	.status-filter[aria-current='true'] {
+		box-shadow: inset 0 0 0 2px currentColor;
+		font-weight: 700;
+	}
+
+	.status-filter:hover {
+		text-decoration: underline;
+	}
+
+	.status-filter:focus-visible {
+		outline: 2px solid currentColor;
+		outline-offset: 3px;
+	}
+
+	.disabled-badge {
+		width: max-content;
+		white-space: nowrap;
+		overflow-wrap: normal;
+		flex-shrink: 0;
 	}
 
 	.sort-link {

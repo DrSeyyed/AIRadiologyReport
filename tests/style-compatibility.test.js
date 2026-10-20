@@ -87,6 +87,14 @@ test('study favorite buttons keep complete labels on one line inside the scrolli
 	assert.equal(styles.get('width'), 'max-content');
 });
 
+test('disabled study badges stay intact instead of wrapping into mobile table columns', () => {
+	const styles = componentDeclarations('StudyTable.svelte', '.disabled-badge');
+	assert.equal(styles.get('white-space'), 'nowrap');
+	assert.equal(styles.get('overflow-wrap'), 'normal');
+	assert.equal(styles.get('width'), 'max-content');
+	assert.equal(styles.get('flex-shrink'), '0');
+});
+
 test('favorite category containers and fields can shrink within narrow mobile boxes', () => {
 	for (const element of ['details', 'form', 'label', 'input']) {
 		const styles = componentDeclarations('FavoriteCategories.svelte', element);

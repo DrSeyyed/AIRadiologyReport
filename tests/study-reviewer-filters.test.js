@@ -8,6 +8,7 @@ import { insertStudy } from '../src/lib/server/studies.js';
 import { appendRecording } from '../src/lib/server/recordings.js';
 import { examinationDateRange, studyDatePresets } from '../src/lib/study-date-ranges.js';
 import { saveStudyFavorite } from '../src/lib/server/study-favorites.js';
+import { studyRowStatus, studyRowStatuses } from '../src/lib/study-row-status.js';
 
 async function loadModule(relativePath, dbKey) {
 	const url = new URL(relativePath, import.meta.url);
@@ -237,4 +238,65 @@ test('page load retains date presets, effective Jalali bounds and header sort se
 	assert.equal(data.paging.orderedby, 'report_count');
 	assert.equal(data.paging.orderdir, 'ASC');
 	assert.equal(data.paging.total, 5);
+});
+
+test('status filters match row colors with disabled and attention taking precedence', async (t) => {
+	const { db, request, multi, other, empty, unassigned } = await fixture(t);
+	for (const disabled of [0, 1]) {
+		for (const attention of [0, 1]) {
+			db.prepare('UPDATE studies SET disabled = ?, needs_attention = ? WHERE id IN (?, ?, ?, ?)')
+				.run(disabled, attention, multi, other, empty, unassigned);
+			const all = await request();
+			assert.equal(all.total, 5);
+			for (const { key } of studyRowStatuses) {
+				const filtered = await request({ status: key });
+				const expected = all.rows.filter((row) => studyRowStatus(row) === key);
+				assert.equal(filtered.status, 200);
+				assert.equal(filtered.total, expected.length, `${key}: disabled=${disabled}, attention=${attention}`);
+				assert.deepEqual(filtered.rows.map((row) => row.id), expected.map((row) => row.id));
+			}
+		}
+	}
+	for (const role of ['resident', 'attending', 'typist']) {
+		db.prepare('UPDATE studies SET disabled = 0, needs_attention = 0').run();
+		db.prepare('UPDATE study_recordings SET resident_checked = 1, attending_checked = 1, typist_checked = 1').run();
+		db.prepare(`UPDATE study_recordings SET ${role}_checked = 0 WHERE study_id = ?`).run(multi);
+		assert.deepEqual((await request({ status: 'unsigned' })).rows.map((row) => row.id), [multi]);
+	}
+});
+
+test('status filtering combines with existing filters before totals and pagination', async (t) => {
+	const { db, request, multi, beta, empty } = await fixture(t);
+	const first = await request({ status: 'unsigned', rowcount: '1' });
+	const second = await request({ status: 'unsigned', rowcount: '1', page: '2' });
+	assert.equal(first.total, 3);
+	assert.equal(first.rows.length, 1);
+	assert.equal(second.total, 3);
+	assert.notEqual(first.rows[0].id, second.rows[0].id);
+	assert.deepEqual((await request({ status: 'unsigned', corresponding_resident_id: '4' })).rows.map((row) => row.id), [beta, multi]);
+	assert.equal((await request({ status: 'signed', resident_checked: '0' })).total, 0);
+	saveStudyFavorite(db, 1, multi, []);
+	assert.deepEqual((await request({ status: 'unsigned', favorites: 'all' })).rows.map((row) => row.id), [multi]);
+	assert.equal((await request({ status: 'unsigned', patient_code: 'EMPTY' })).total, 0);
+	assert.deepEqual((await request({ status: 'no-recording', patient_code: 'EMPTY' })).rows.map((row) => row.id), [empty]);
+	assert.equal((await request({ status: 'signed', date_from: '1499-01-01' })).total, 0);
+	assert.equal((await request({ status: 'not-a-status' })).status, 400);
+});
+
+test('page load forwards selected status and returns the filtered count', async (t) => {
+	const { key, GET, other } = await fixture(t);
+	const { load } = await loadModule('../src/routes/studies/+page.server.js', key);
+	const locals = { user: { id: 1, role: 'admin' } };
+	const url = new URL('http://localhost/studies?status=signed&rowcount=1');
+	let query;
+	const data = await load({ locals, url, fetch: async (path) => {
+		if (!path.startsWith('/api/studies?')) return Response.json([]);
+		query = new URL(path, url);
+		return GET({ locals, url: query });
+	} });
+	assert.equal(query.searchParams.get('status'), 'signed');
+	assert.equal(data.filters.status, 'signed');
+	assert.equal(data.paging.total, 1);
+	assert.equal(data.paging.totalPages, 1);
+	assert.deepEqual(data.studies.map((row) => row.id), [other]);
 });

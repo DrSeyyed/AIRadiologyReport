@@ -6,6 +6,7 @@ import { patientName } from '$lib/patient-name.js';
 import { attachStudyFavorites, favoriteStudyFilter } from '$lib/server/study-favorites.js';
 import { examinationDateRange } from '$lib/study-date-ranges.js';
 import { normalizeStudySort } from '$lib/study-sorting.js';
+import { studyStatusFilter } from '$lib/server/study-status-filter.js';
 
 const fullNameColumn = "COALESCE(NULLIF(trim(s.patient_fullname), ''), trim(s.patient_firstname || ' ' || s.patient_lastname))";
 
@@ -84,6 +85,7 @@ export async function GET({ url, locals }) {
 	}
 
 	try {
+		baseSql += studyStatusFilter(url.searchParams.get('status')?.trim() || '');
 		const favorites = favoriteStudyFilter(db, locals.user.id, url.searchParams.get('favorites')?.trim() || '');
 		baseSql += favorites.sql;
 		params.push(...favorites.params);

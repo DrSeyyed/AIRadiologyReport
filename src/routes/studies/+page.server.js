@@ -20,6 +20,7 @@ export async function load({ locals, fetch, url }) {
   const corresponding_attending_id = url.searchParams.get('corresponding_attending_id')?.trim() ?? '';
   const date_from         = url.searchParams.get('date_from')?.trim() ?? '';
   const date_to           = url.searchParams.get('date_to')?.trim() ?? '';
+  const status            = url.searchParams.get('status')?.trim() ?? '';
   const favorites         = url.searchParams.get('favorites')?.trim() ?? '';
   const date_range        = url.searchParams.get('date_range')?.trim() ?? '';
 
@@ -45,6 +46,7 @@ export async function load({ locals, fetch, url }) {
   if (date_to)           qs.set('date_to', date_to);
   if (date_range)        qs.set('date_range', date_range);
   if (favorites)         qs.set('favorites', favorites);
+  if (status)            qs.set('status', status);
   for (const [key, value] of Object.entries(signatureFilters)) {
     if (value) qs.set(key, value);
   }
@@ -90,6 +92,7 @@ export async function load({ locals, fetch, url }) {
       date_to: studiesPayload.date_bounds?.date_to ?? date_to,
       date_range,
       favorites,
+      status,
       ...signatureFilters
     },
     // expose paging/sort so the UI can render controls
