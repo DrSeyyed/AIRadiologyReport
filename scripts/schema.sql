@@ -188,10 +188,28 @@ CREATE TABLE IF NOT EXISTS study_telegram_voices (
   study_id INTEGER NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
   chat_id TEXT NOT NULL,
   message_id INTEGER NOT NULL,
+  parent_message_id INTEGER,
+  sender_name TEXT NOT NULL DEFAULT '',
+  message_kind TEXT NOT NULL DEFAULT 'voice' CHECK (message_kind IN ('voice', 'audio')),
+  chat_username TEXT NOT NULL DEFAULT '',
   deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
   PRIMARY KEY (chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_study_telegram_voices ON study_telegram_voices(study_id);
+
+CREATE TABLE IF NOT EXISTS telegram_study_refresh (
+  study_id INTEGER PRIMARY KEY REFERENCES studies(id) ON DELETE CASCADE,
+  chat_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'refreshed', 'failed', 'skipped')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_study_refresh_pending
+  ON telegram_study_refresh(retry_at, study_id) WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS pending_telegram (
   study_id INTEGER PRIMARY KEY REFERENCES studies (id) ON DELETE CASCADE,

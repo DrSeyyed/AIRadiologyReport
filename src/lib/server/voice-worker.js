@@ -3,6 +3,7 @@ import { assertStudyActive } from './study-state.js';
 import { appendRecording, appendRecordingAudio, getRecording, assertCanAppendRecordingAudio, recordingError } from './recordings.js';
 import { downloadFile, syncStudyMessage, sendReply } from './telegram.js';
 import { getApprovedTelegramUser } from './telegram-registration.js';
+import { trackStudyReply } from './telegram-replies.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -49,6 +50,7 @@ export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)
 		db.prepare(
 			'INSERT INTO pending_voice(study_id, chat_id, reply_message_id, file_id, process_at, sender_user_id, sender_role, parent_voice_job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
 		).run(study?.id || parent.study_id, chatId, message.message_id, fileId, now, sender.id, sender.role, parent?.id || null);
+		trackStudyReply(db, message);
 		db.prepare('INSERT OR IGNORE INTO study_telegram_voices(study_id,chat_id,message_id) VALUES(?,?,?)')
 			.run(study?.id || parent.study_id, chatId, message.message_id);
 		return true;

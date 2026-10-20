@@ -192,6 +192,14 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				);
 			addColumn('pending_voice', 'parent_voice_job_id', 'INTEGER REFERENCES pending_voice(id) ON DELETE CASCADE');
 			addColumn('pending_voice', 'recording_id', 'INTEGER REFERENCES study_recordings(id) ON DELETE CASCADE');
+			addColumn('study_telegram_voices', 'parent_message_id', 'INTEGER');
+			addColumn('study_telegram_voices', 'sender_name', "TEXT NOT NULL DEFAULT ''");
+			addColumn('study_telegram_voices', 'message_kind', "TEXT NOT NULL DEFAULT 'voice' CHECK (message_kind IN ('voice', 'audio'))");
+			addColumn('study_telegram_voices', 'chat_username', "TEXT NOT NULL DEFAULT ''");
+			db.exec(`UPDATE study_telegram_voices AS v SET parent_message_id = (
+				SELECT parent.reply_message_id FROM pending_voice child JOIN pending_voice parent ON parent.id = child.parent_voice_job_id
+				WHERE child.chat_id = v.chat_id AND child.reply_message_id = v.message_id
+			) WHERE parent_message_id IS NULL`);
 			addColumn(
 				'pending_voice',
 				'sender_user_id',

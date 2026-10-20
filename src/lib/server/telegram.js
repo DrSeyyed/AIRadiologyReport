@@ -6,6 +6,7 @@ import path from 'node:path';
 import { studyLabel } from '../study-label.js';
 import { patientName } from '../patient-name.js';
 import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
+import { formatStudyReplyLinks } from './telegram-replies.js';
 
 function getToken() {
 	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -120,10 +121,23 @@ export function buildStudyMessage(study) {
 
 	if (study.dicom_url) lines.push(`<a href="${esc(study.dicom_url)}">Open DICOM</a>`);
 
-	const text = lines.join('\n');
-	return study.disabled
-		? `<b>❌ DISABLED — replies are not processed</b>\n<s>${text}</s>`
-		: text;
+	const prefix = study.disabled ? '<b>❌ DISABLED — replies are not processed</b>\n<s>' : '';
+	const suffix = study.disabled ? '</s>' : '';
+	const limit = 4096 - prefix.length - suffix.length;
+	let text = lines.join('\n');
+	const replies = formatStudyReplyLinks(study.telegram_replies, Math.max(1000, limit - text.length - 2));
+	const bodyBudget = limit - (replies ? replies.length + 2 : 0);
+	if (text.length > bodyBudget) {
+		const shortened = [];
+		const note = '… More study details on site';
+		for (const line of lines) {
+			if ([...shortened, line, note].join('\n').length > bodyBudget) break;
+			shortened.push(line);
+		}
+		text = [...shortened, note].join('\n');
+	}
+	if (replies) text += `\n\n${replies}`;
+	return `${prefix}${text}${suffix}`;
 }
 
 // ---------- message send/edit/delete ----------

@@ -1,12 +1,10 @@
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
-import { queueVoiceReply } from '$lib/server/voice-worker.js';
 import {
 	validateTelegramWebhook,
-	handleTelegramRegistration,
-	getApprovedTelegramUser
+	handleTelegramRegistration
 } from '$lib/server/telegram-registration.js';
-import { sendBotMessage } from '$lib/server/telegram.js';
+import { handleTelegramGroupMessage } from '$lib/server/telegram-group.js';
 
 export const POST = async ({ request }) => {
 	try {
@@ -14,43 +12,14 @@ export const POST = async ({ request }) => {
 		if (!process.env.TELEGRAM_BOT_TOKEN)
 			return json({ error: 'Configure TELEGRAM_BOT_TOKEN.' }, { status: 503 });
 		const update = await request.json().catch(() => ({}));
-		const msg = update?.message;
+		const msg = update?.message || update?.edited_message;
 		if (!msg) return json({ ok: true });
 		const db = getDb();
 		if (msg.chat?.type === 'private') {
-			await handleTelegramRegistration(db, msg);
+			if (update.message) await handleTelegramRegistration(db, msg);
 			return json({ ok: true });
 		}
-		if (
-			!process.env.TELEGRAM_CHAT_ID ||
-			String(msg.chat?.id) !== process.env.TELEGRAM_CHAT_ID ||
-			!msg.reply_to_message?.message_id ||
-			!(msg.voice || msg.audio)
-		)
-			return json({ ok: true });
-		const sender = getApprovedTelegramUser(db, msg.from?.id);
-		if (msg.from?.is_bot || !sender) {
-			await sendBotMessage(
-				msg.chat.id,
-				'Audio not attached: account not approved. Register privately with /register.',
-				msg.message_id
-			).catch(() => {});
-			return json({ ok: true });
-		}
-		if (sender.role === 'typist') {
-			await sendBotMessage(
-				msg.chat.id,
-				'Typists cannot attach Telegram audio.',
-				msg.message_id
-			).catch(() => {});
-			return json({ ok: true });
-		}
-		try {
-			queueVoiceReply(db, msg);
-		} catch (error) {
-			if (![400, 403, 404, 409].includes(error.status)) throw error;
-			await sendBotMessage(msg.chat.id, `Audio not attached: ${error.message}`, msg.message_id).catch(() => {});
-		}
+		await handleTelegramGroupMessage(db, msg);
 		return json({ ok: true });
 	} catch (error) {
 		return json(

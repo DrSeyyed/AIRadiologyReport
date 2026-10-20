@@ -43,6 +43,7 @@ export function getStudyDetail(db, id) {
 	if (!study) return undefined;
 	study.patient_fullname = patientName(study);
 	study.telegram_voice_count = telegramVoiceCount(db, id);
+	study.telegram_replies = db.prepare('SELECT * FROM study_telegram_voices WHERE study_id = ? AND deleted = 0 ORDER BY message_id').all(id);
 	study.recordings = listRecordings(db, id);
 	study.recording_count = study.recordings.length;
 	study.report_count = study.recordings.filter((r) => r.text_report_path).length;
