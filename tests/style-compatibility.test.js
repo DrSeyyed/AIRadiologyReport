@@ -35,6 +35,9 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 	assert.ok(declarations('.min-w-0', 'min-width').includes('0px'));
 	assert.ok(declarations('.overflow-x-auto', 'overflow-x').includes('auto'));
 	assert.ok(declarations('main', 'overflow-wrap').includes('anywhere'));
+	assert.deepEqual(declarations('select.select', 'line-height'), ['1.5']);
+	assert.deepEqual(declarations('select.select', 'padding-top'), ['0']);
+	assert.deepEqual(declarations('select.select', 'padding-bottom'), ['0']);
 	assert.ok(
 		declarations('.btn-primary', '--btn-color').some((value) => value.includes('--fallback-p'))
 	);

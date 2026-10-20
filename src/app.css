@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+	/* Compact DaisyUI selects otherwise inherit a line height as tall as the control. */
+	select.select {
+		line-height: 1.5;
+		padding-top: 0;
+		padding-bottom: 0;
+	}
+}
+
 @layer base {
 	html,
 	html[data-theme='light'] {

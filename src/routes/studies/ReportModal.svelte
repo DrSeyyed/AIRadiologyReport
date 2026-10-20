@@ -50,7 +50,7 @@
     copying = true;
     clearCopyStatus();
     try {
-      await copyFormattedReport(formatted);
+      await copyFormattedReport(formattedReport({ ...reportContent, signatures: [] }));
       copyMessage = 'Copied with formatting. Paste into a rich-text editor to keep the font and size.';
     } catch (caught) {
       copyError = caught.message || 'Unable to copy report.';
@@ -111,7 +111,7 @@
   const previewHtml = $derived(
     DOMPurify.sanitize(renderReportMarkdown(state.text))
   );
-  const formatted = $derived(!state.loading && typeof document !== 'undefined' ? formattedReport({
+  const reportContent = $derived({
     title,
     sanitizedBodyHtml: previewHtml,
     resident: recording.resident_fullname || 'Unassigned',
@@ -119,7 +119,8 @@
     signatures: [residentSignature, attendingSignature, typistSignature],
     font,
     size: fontSize
-  }) : { html: '', text: '' });
+  });
+  const formatted = $derived(!state.loading && typeof document !== 'undefined' ? formattedReport(reportContent) : { html: '', text: '' });
 
   async function save() {
     if (!editable || state.saving || state.loading || state.error || !state.text.trim()) return;

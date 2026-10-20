@@ -28,12 +28,14 @@ export function formattedReport({ title, sanitizedBodyHtml, resident, attending,
 	const names = document.createElement('p');
 	names.append(`Resident: ${resident}`, document.createElement('br'), `Attending: ${attending}`);
 	root.append(names);
-	const signing = document.createElement('p');
-	for (const [index, signature] of signatures.entries()) {
-		if (index) signing.append(document.createElement('br'));
-		signing.append(signature);
+	if (signatures.length) {
+		const signing = document.createElement('p');
+		for (const [index, signature] of signatures.entries()) {
+			if (index) signing.append(document.createElement('br'));
+			signing.append(signature);
+		}
+		root.append(signing);
 	}
-	root.append(signing);
 	const typography = reportTypography(font, size);
 	for (const node of [root, ...root.querySelectorAll('*')]) {
 		node.style.fontFamily = typography.fontFamily;

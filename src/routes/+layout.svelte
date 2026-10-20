@@ -66,7 +66,6 @@
 					<span aria-hidden="true">✕</span>
 				</button>
 			</li>
-			<li><a href={resolve('/')} class="link link-primary p-3">Home</a></li>
 			<li><a href={resolve('/studies')} class="link link-primary p-3">Studies</a></li>
 			{#if data.user}
 				<li><a href={resolve('/account')} class="link link-primary p-3">Account</a></li>
