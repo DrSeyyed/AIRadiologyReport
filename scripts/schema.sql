@@ -197,6 +197,69 @@ CREATE TABLE IF NOT EXISTS study_telegram_voices (
 );
 CREATE INDEX IF NOT EXISTS idx_study_telegram_voices ON study_telegram_voices(study_id);
 
+CREATE TABLE IF NOT EXISTS telegram_index_revision (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL DEFAULT 1
+);
+INSERT OR IGNORE INTO telegram_index_revision(id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS telegram_index_state (
+  chat_id TEXT PRIMARY KEY,
+  planned_version INTEGER NOT NULL DEFAULT 0,
+  next_at INTEGER NOT NULL DEFAULT 0,
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT,
+  paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+  skipped INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telegram_index_topics (
+  chat_id TEXT NOT NULL,
+  clinical_day TEXT NOT NULL,
+  message_thread_id INTEGER,
+  PRIMARY KEY (chat_id, clinical_day)
+);
+
+CREATE TABLE IF NOT EXISTS telegram_index_pages (
+  chat_id TEXT NOT NULL,
+  clinical_day TEXT NOT NULL,
+  attending_id INTEGER NOT NULL,
+  page_number INTEGER NOT NULL,
+  message_id INTEGER,
+  desired_text TEXT NOT NULL,
+  sent_text TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'synced', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  PRIMARY KEY (chat_id, clinical_day, attending_id, page_number),
+  FOREIGN KEY (chat_id, clinical_day) REFERENCES telegram_index_topics(chat_id, clinical_day) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_index_pending
+  ON telegram_index_pages(chat_id, retry_at, clinical_day) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_telegram_index_messages
+  ON telegram_index_pages(chat_id, message_id) WHERE message_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS telegram_index_studies_insert AFTER INSERT ON studies BEGIN
+  UPDATE telegram_index_revision SET version = version + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS telegram_index_studies_delete AFTER DELETE ON studies BEGIN
+  UPDATE telegram_index_revision SET version = version + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS telegram_index_studies_update
+  AFTER UPDATE OF telegram_message_id, exam_date_jalali, exam_time, corresponding_attending_id,
+    patient_code, patient_fullname, patient_firstname, patient_lastname, source_modality, modality_id,
+    source_description, description, disabled ON studies BEGIN
+  UPDATE telegram_index_revision SET version = version + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS telegram_index_attending_name AFTER UPDATE OF full_name ON users BEGIN
+  UPDATE telegram_index_revision SET version = version + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS telegram_index_modality AFTER UPDATE OF code ON modalities BEGIN
+  UPDATE telegram_index_revision SET version = version + 1 WHERE id = 1;
+END;
+
 CREATE TABLE IF NOT EXISTS telegram_study_refresh (
   study_id INTEGER PRIMARY KEY REFERENCES studies(id) ON DELETE CASCADE,
   chat_id TEXT NOT NULL,
