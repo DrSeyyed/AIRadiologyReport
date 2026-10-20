@@ -75,7 +75,6 @@
 	}
 </script>
 
-<svelte:head><title>Import studies from Excel</title></svelte:head>
 
 <div class="space-y-4 p-4">
 	<div class="flex flex-wrap items-center gap-4">

@@ -3,7 +3,6 @@
 	let { data, form } = $props();
 </script>
 
-<svelte:head><title>PACS viewer settings</title></svelte:head>
 
 <section class="max-w-3xl space-y-4">
 	<h1 class="text-2xl font-semibold">PACS viewer settings</h1>

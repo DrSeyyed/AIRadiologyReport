@@ -6,7 +6,6 @@
 	const selected = $derived(form?.values?.id !== undefined ? form.values : data.selected);
 </script>
 
-<svelte:head><title>Manage body parts</title></svelte:head>
 
 <section class="mx-auto min-w-0 max-w-4xl space-y-4">
 	<h1 class="text-2xl font-semibold">Manage body parts</h1>

@@ -47,7 +47,6 @@
 	}
 </script>
 
-<svelte:head><title>Account</title></svelte:head>
 
 <section class="max-w-xl space-y-4">
 	<h1 class="text-2xl font-semibold">Account</h1>

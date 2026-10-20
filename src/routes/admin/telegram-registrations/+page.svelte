@@ -45,7 +45,6 @@
 	}
 </script>
 
-<svelte:head><title>Telegram registrations</title></svelte:head>
 
 <section class="space-y-4">
 	<div class="flex flex-wrap items-center gap-4">
