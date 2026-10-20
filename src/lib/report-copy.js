@@ -1,6 +1,6 @@
 export const reportFonts = [
-	{ name: 'Times New Roman', family: '"Times New Roman", Times, serif' },
 	{ name: 'Arial', family: 'Arial, sans-serif' },
+	{ name: 'Times New Roman', family: '"Times New Roman", Times, serif' },
 	{ name: 'Calibri', family: 'Calibri, Arial, sans-serif' },
 	{ name: 'Cambria', family: 'Cambria, Georgia, serif' },
 	{ name: 'Georgia', family: 'Georgia, serif' },
@@ -12,7 +12,7 @@ export function validReportSize(size) {
 	return String(size).trim() !== '' && Number.isFinite(Number(size)) && Number(size) >= 6 && Number(size) <= 72;
 }
 
-export function reportTypography(font = 'Times New Roman', size = 12) {
+export function reportTypography(font = 'Arial', size = 12) {
 	return {
 		fontFamily: (reportFonts.find((option) => option.name === font) || reportFonts[0]).family,
 		fontSize: `${validReportSize(size) ? Number(size) : 12}pt`

@@ -37,10 +37,10 @@ function legacyEnvironment({ commandResult = true, dispatch = true } = {}) {
 	} };
 }
 
-test('report typography defaults to Times New Roman 12.0 pt and uses selected values', () => {
-	assert.deepEqual(reportTypography(), { fontFamily: '"Times New Roman", Times, serif', fontSize: '12pt' });
+test('report typography defaults to Arial 12.0 pt and uses selected values', () => {
+	assert.deepEqual(reportTypography(), { fontFamily: 'Arial, sans-serif', fontSize: '12pt' });
 	assert.deepEqual(reportTypography('Arial', '14.5'), { fontFamily: 'Arial, sans-serif', fontSize: '14.5pt' });
-	assert.equal(reportTypography('Times New Roman', '12.0').fontSize, '12pt');
+	assert.deepEqual(reportTypography('Times New Roman', '12.0'), { fontFamily: '"Times New Roman", Times, serif', fontSize: '12pt' });
 	assert.equal(new Set(reportFonts.map(({ name }) => name)).size, reportFonts.length);
 });
 

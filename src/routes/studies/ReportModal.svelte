@@ -31,7 +31,7 @@
   const typistSignature = $derived(recording.typist_checked
     ? `Typist / printed confirmation: ${recording.typist_signer_fullname || 'Unknown signer'}${recording.typist_signed_at ? ` · ${recording.typist_signed_at}` : ''}`
     : 'Typist / printed confirmation: not signed');
-  let font = $state('Times New Roman');
+  let font = $state('Arial');
   let fontSize = $state('12.0');
   let copying = $state(false);
   let copyMessage = $state('');
@@ -176,7 +176,7 @@
     <div class="flex flex-wrap items-end gap-3 mb-3">
       <label class="form-control w-56 max-w-full">
         <span class="label-text mb-1">Report font</span>
-        <select class="select select-bordered select-sm" bind:value={font} onchange={clearCopyStatus}>
+        <select class="select select-bordered select-sm leading-normal py-0" bind:value={font} onchange={clearCopyStatus}>
           {#each reportFonts as option (option.name)}<option value={option.name}>{option.name}</option>{/each}
         </select>
       </label>
