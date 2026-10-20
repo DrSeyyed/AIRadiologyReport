@@ -63,21 +63,28 @@ function fixture(t) {
 	return { db, directory, studyId, recordingId: recording.id, sign, approve };
 }
 
-test('shared attending signature eligibility requires a granted resident and matching assignment', () => {
+test('shared attending signature eligibility requires that attending grant and matching assignment', () => {
 	const recording = { corresponding_resident_id: users.resident.id };
-	for (const permission of [true, 1])
-		assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: permission }, recording), true);
-	for (const permission of [false, 0, undefined, 'false', 'true', '0', '1'])
-		assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: permission }, recording), false);
+	const study = { corresponding_attending_id: users.attending.id };
+	const permitted = { ...users.resident, attending_delegate_ids: [users.attending.id] };
+	assert.equal(isResidentAttendingDelegate(permitted, recording, study), true);
+	for (const permission of [[], undefined, true, '3', [users.otherAttending.id]])
+		assert.equal(isResidentAttendingDelegate({ ...users.resident, attending_delegate_ids: permission }, recording, study), false);
 	for (const user of [null, users.admin, users.typist, users.attending, users.otherResident])
-		assert.equal(isResidentAttendingDelegate({ ...user, can_sign_as_attending: true }, recording), false);
-	assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: true }, {}), false);
+		assert.equal(isResidentAttendingDelegate({ ...user, attending_delegate_ids: [users.attending.id] }, recording, study), false);
+	assert.equal(isResidentAttendingDelegate(permitted, {}, study), false);
+	assert.equal(isResidentAttendingDelegate(permitted, recording, {}), false);
+	assert.equal(isResidentAttendingDelegate({ ...users.resident, can_sign_as_attending: true }, recording, study), false);
 });
 
-test('delegated residents sign only their assigned recordings with current administrator permission', (t) => {
+test('delegated residents sign only their assigned recordings with current attending-specific permission', (t) => {
 	const { db, studyId, recordingId, sign } = fixture(t);
 	assert.throws(() => sign({ ...users.resident, can_sign_as_attending: true }, 'attending'), { status: 403 });
 	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE role=?').run('resident');
+	assert.throws(() => sign(users.resident, 'attending'), { status: 403 });
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(users.otherAttending.id, users.resident.id);
+	assert.throws(() => sign(users.resident, 'attending'), { status: 403 });
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(users.attending.id, users.resident.id);
 	assert.throws(() => sign(users.resident, 'attending'), /Resident must sign first/);
 	for (const checked of [true, false])
 		assert.throws(() => sign(users.otherResident, 'attending', checked), { status: 403 });
@@ -103,7 +110,7 @@ test('delegated residents sign only their assigned recordings with current admin
 	assert.equal(withdrawn.typist_signed_by_user_id, null);
 	assert.equal(withdrawn.typist_signed_at, null);
 	sign(users.resident, 'attending');
-	db.prepare('UPDATE users SET can_sign_as_attending=0 WHERE id=?').run(users.resident.id);
+	db.prepare('DELETE FROM attending_signing_delegates WHERE attending_id=? AND resident_id=?').run(users.attending.id, users.resident.id);
 	for (const checked of [true, false])
 		assert.throws(() => sign({ ...users.resident, can_sign_as_attending: true }, 'attending', checked), { status: 403 });
 	assert.equal(getRecording(db, studyId, recordingId).attending_signed_by_user_id, users.resident.id);
@@ -113,9 +120,21 @@ test('delegated residents sign only their assigned recordings with current admin
 	assert.deepEqual(getRecording(db, studyId, second.id), originalSecond);
 });
 
+test('delegation follows the study attending, not a supplied or former permission list', (t) => {
+	const { db, studyId, sign } = fixture(t);
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(users.attending.id, users.resident.id);
+	db.prepare('UPDATE studies SET corresponding_attending_id=? WHERE id=?').run(users.otherAttending.id, studyId);
+	sign(users.resident, 'resident');
+	const spoofed = { ...users.resident, attending_delegate_ids: [users.otherAttending.id], can_sign_as_attending: true };
+	for (const checked of [true, false])
+		assert.throws(() => sign(spoofed, 'attending', checked), { status: 403 });
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(users.otherAttending.id, users.resident.id);
+	assert.equal(sign(users.resident, 'attending').attending_signed_by_user_id, users.resident.id);
+});
+
 test('delegated attending signatures retain report, reviewer and processing checks', (t) => {
 	const { db, studyId, recordingId, sign } = fixture(t);
-	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE id=?').run(users.resident.id);
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(users.attending.id, users.resident.id);
 	sign(users.resident, 'resident');
 	db.prepare('UPDATE study_recordings SET processing=1,processing_started_at=? WHERE id=?').run(Math.floor(Date.now() / 1000), recordingId);
 	assert.throws(() => sign(users.resident, 'attending'), { status: 409 });

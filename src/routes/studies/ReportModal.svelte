@@ -28,9 +28,6 @@
   const attendingSignature = $derived(recording.attending_checked
     ? `Attending signature: ${recording.attending_signer_fullname || 'Unknown signer'}${recording.attending_signed_at ? ` · ${recording.attending_signed_at}` : ''}`
     : 'Attending signature: not signed');
-  const typistSignature = $derived(recording.typist_checked
-    ? `Typist / printed confirmation: ${recording.typist_signer_fullname || 'Unknown signer'}${recording.typist_signed_at ? ` · ${recording.typist_signed_at}` : ''}`
-    : 'Typist / printed confirmation: not signed');
   let font = $state('Arial');
   let fontSize = $state('12.0');
   let copying = $state(false);
@@ -50,7 +47,7 @@
     copying = true;
     clearCopyStatus();
     try {
-      await copyFormattedReport(formattedReport({ ...reportContent, signatures: [] }));
+      await copyFormattedReport(formatted);
       copyMessage = 'Copied with formatting. Paste into a rich-text editor to keep the font and size.';
     } catch (caught) {
       copyError = caught.message || 'Unable to copy report.';
@@ -116,7 +113,6 @@
     sanitizedBodyHtml: previewHtml,
     resident: recording.resident_fullname || 'Unassigned',
     attending: study.attending_fullname || 'Not assigned',
-    signatures: [residentSignature, attendingSignature, typistSignature],
     font,
     size: fontSize
   });

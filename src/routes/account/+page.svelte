@@ -7,6 +7,38 @@
 	let busy = $state(false);
 	let error = $state('');
 	let success = $state('');
+	let delegateIds = $derived(data.signingDelegates?.resident_ids ?? []);
+	let residentSearch = $state('');
+	let delegatesBusy = $state(false);
+	let delegatesError = $state('');
+	let delegatesSuccess = $state('');
+	const visibleResidents = $derived((data.signingDelegates?.residents ?? []).filter(resident =>
+		resident.full_name.toLocaleLowerCase().includes(residentSearch.trim().toLocaleLowerCase())
+	));
+
+	async function saveDelegates(event) {
+		event.preventDefault();
+		if (delegatesBusy) return;
+		delegatesBusy = true;
+		delegatesError = '';
+		delegatesSuccess = '';
+		try {
+			const response = await fetch('/api/account/signing-delegates', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ resident_ids: delegateIds })
+			});
+			const result = await response.json().catch(() => ({}));
+			if (!response.ok) throw new Error(result.error || 'Unable to save signing delegates.');
+			await invalidateAll();
+			delegateIds = result.resident_ids;
+			delegatesSuccess = 'Signing delegates updated.';
+		} catch (caught) {
+			delegatesError = caught.message || 'Unable to save signing delegates.';
+		} finally {
+			delegatesBusy = false;
+		}
+	}
 
 	async function save(event) {
 		event.preventDefault();
@@ -70,4 +102,36 @@
 		<p class="text-sm">Blank password keeps the current one. Use 8+ characters, at most 72 UTF-8 bytes. Changing it signs out other sessions. To enable login, provide both username and password.</p>
 		<button class="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
 	</form>
+	{#if data.account.role === 'attending' && data.signingDelegates}
+		<section class="space-y-3 border-t pt-4" aria-labelledby="signing-delegates-heading">
+			<h2 id="signing-delegates-heading" class="text-xl font-semibold">Residents who may sign for me</h2>
+			<p class="text-sm">Selected residents may add or withdraw your attending approval only on studies assigned to you and recordings assigned to themselves. Resident approval is still required first. Removing permission does not remove existing signatures.</p>
+			{#if delegatesError}<div class="alert alert-error" role="alert">{delegatesError}</div>{/if}
+			{#if delegatesSuccess}<div class="alert alert-success" role="status">{delegatesSuccess}</div>{/if}
+			<form onsubmit={saveDelegates}>
+				<fieldset class="min-w-0 space-y-3" disabled={delegatesBusy}>
+					<legend class="sr-only">Allowed residents</legend>
+					<label class="form-control block">
+						<span class="label-text">Find resident</span>
+						<input class="input input-bordered w-full" type="search" bind:value={residentSearch} />
+					</label>
+					<p class="text-sm">{delegateIds.length} selected</p>
+					<div class="max-h-64 space-y-2 overflow-y-auto rounded border p-3">
+						{#each visibleResidents as resident (resident.id)}
+							<label class="flex items-center gap-3">
+								<input class="checkbox checkbox-sm shrink-0" type="checkbox" checked={delegateIds.includes(resident.id)} onchange={(event) => {
+									delegateIds = event.currentTarget.checked ? [...delegateIds, resident.id] : delegateIds.filter(id => id !== resident.id);
+									delegatesSuccess = '';
+								}} />
+								<span class="min-w-0 break-words">{resident.full_name}</span>
+							</label>
+						{:else}
+							<p class="text-sm">{data.signingDelegates.residents.length ? 'No matching residents.' : 'No resident accounts available.'}</p>
+						{/each}
+					</div>
+					<button class="btn btn-primary" type="submit">{delegatesBusy ? 'Saving…' : 'Save signing delegates'}</button>
+				</fieldset>
+			</form>
+		</section>
+	{/if}
 </section>

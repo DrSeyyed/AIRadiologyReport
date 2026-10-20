@@ -15,6 +15,15 @@ CREATE TABLE
   );
 
 
+CREATE TABLE IF NOT EXISTS attending_signing_delegates (
+  attending_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  resident_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (attending_id, resident_id),
+  CHECK (attending_id != resident_id)
+);
+CREATE INDEX IF NOT EXISTS idx_attending_signing_delegates_resident
+  ON attending_signing_delegates(resident_id);
+
 CREATE TABLE
   IF NOT EXISTS auth_credentials (
     user_id INTEGER NOT NULL UNIQUE REFERENCES users (id) ON DELETE CASCADE,

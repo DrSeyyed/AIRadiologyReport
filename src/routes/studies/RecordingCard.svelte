@@ -38,7 +38,7 @@
 	const matchingAttending = $derived(user?.role === 'attending' && hasAttending && Number(user.id) === Number(study.corresponding_attending_id));
 	const assignedResident = $derived(user?.role === 'resident' && assigned && Number(user.id) === Number(recording.corresponding_resident_id));
 	const canResident = $derived(!study.disabled && (admin || matchingAttending || assignedResident) && (admin || !attendingSigned));
-	const canAttending = $derived(!study.disabled && (admin || matchingAttending || isResidentAttendingDelegate(user, recording)) && (attendingSigned || residentSigned));
+	const canAttending = $derived(!study.disabled && (admin || matchingAttending || isResidentAttendingDelegate(user, recording, study)) && (attendingSigned || residentSigned));
 	const residentOverride = $derived(recording.resident_signed_by_user_id != null && Number(recording.resident_signed_by_user_id) !== Number(recording.corresponding_resident_id));
 	const endpoint = $derived(`/api/studies/${study.id}/recordings/${recording.id}`);
 	let templateStatus = $state('');

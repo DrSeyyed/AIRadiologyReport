@@ -36,41 +36,33 @@ function fixture(t) {
 		typist = add('Synthetic Typist', 'typist', 'typist_test');
 	return { db, add, admin, resident, typist };
 }
-test('only administrators can grant and revoke resident attending signing permission', async (t) => {
+test('global resident signing grants are no longer accepted, even from administrators', async (t) => {
 	const { db, admin, resident, typist } = fixture(t);
-	assert.equal(getAccount(db, resident.id).can_sign_as_attending, 0);
-	for (const actor of [resident, typist]) {
-		await assert.rejects(updateAccount(db, actor, actor.id, { can_sign_as_attending: true }), { status: 403 });
+	assert.equal(getAccount(db, resident.id).can_sign_as_attending, undefined);
+	for (const actor of [admin, resident, typist]) {
+		for (const value of [true, false, 1, 0, 'true', null])
+			await assert.rejects(updateAccount(db, actor, actor.id, { can_sign_as_attending: value }), { status: 403 });
 		await assert.rejects(updateAccount(db, actor, actor.id, { can_sign_as_attending: false }, { selfOnly: true }), { status: 403 });
 	}
-	await assert.rejects(updateAccount(db, admin, admin.id, { can_sign_as_attending: true }, { selfOnly: true }), { status: 403 });
-	for (const value of [1, 0, 'true', 'false', null])
-		await assert.rejects(updateAccount(db, admin, resident.id, { can_sign_as_attending: value }), { status: 400 });
-	await assert.rejects(updateAccount(db, admin, typist.id, { can_sign_as_attending: true }), { status: 400 });
-	db.prepare("INSERT INTO sessions(id,user_id,expires_at) VALUES('resident-session',?,'2099-01-01')").run(resident.id);
-	assert.equal((await updateAccount(db, admin, resident.id, { can_sign_as_attending: true })).can_sign_as_attending, 1);
-	assert.equal(db.prepare('SELECT count(*) AS n FROM sessions').get().n, 1);
-	assert.equal((await updateAccount(db, resident, resident.id, { full_name: 'Updated resident' }, { selfOnly: true })).can_sign_as_attending, 1);
-	assert.equal((await updateAccount(db, admin, resident.id, { can_sign_as_attending: false })).can_sign_as_attending, 0);
-	await updateAccount(db, admin, resident.id, { can_sign_as_attending: true });
-	assert.equal((await updateAccount(db, admin, resident.id, { role: 'typist' })).can_sign_as_attending, 0);
-	assert.equal((await updateAccount(db, admin, resident.id, { role: 'resident' })).can_sign_as_attending, 0);
+	await assert.rejects(updateAccount(db, admin, resident.id, { can_sign_as_attending: true }), { status: 403 });
 });
 
-test('existing sessions reflect resident signing permission grants and revocations immediately', async (t) => {
-	const { db, admin, resident } = fixture(t);
+test('existing sessions reflect attending-specific grants and revocations immediately', async (t) => {
+	const { db, add, resident } = fixture(t);
+	const attending = add('Attending One', 'attending');
 	globalThis.__residentPermissionSessionDb = db;
 	t.after(() => { delete globalThis.__residentPermissionSessionDb; });
 	const source = readFileSync(new URL('../src/lib/server/auth.js', import.meta.url), 'utf8')
-		.replace("import { getDb } from './db.js';", 'const getDb = () => globalThis.__residentPermissionSessionDb;');
+		.replace("import { getDb } from './db.js';", 'const getDb = () => globalThis.__residentPermissionSessionDb;')
+		.replace("'./attending-delegates.js'", JSON.stringify(new URL('../src/lib/server/attending-delegates.js', import.meta.url).href));
 	const { createSession, getSession } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 	const session = createSession(resident.id);
-	assert.equal(session.user.can_sign_as_attending, 0);
-	await updateAccount(db, admin, resident.id, { can_sign_as_attending: true });
-	assert.equal(getSession(session.id).user.can_sign_as_attending, 1);
-	assert.equal(createSession(resident.id).user.can_sign_as_attending, 1);
-	await updateAccount(db, admin, resident.id, { can_sign_as_attending: false });
-	assert.equal(getSession(session.id).user.can_sign_as_attending, 0);
+	assert.deepEqual(session.user.attending_delegate_ids, []);
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(?,?)').run(attending.id, resident.id);
+	assert.deepEqual(getSession(session.id).user.attending_delegate_ids, [attending.id]);
+	assert.deepEqual(createSession(resident.id).user.attending_delegate_ids, [attending.id]);
+	db.prepare('DELETE FROM attending_signing_delegates').run();
+	assert.deepEqual(getSession(session.id).user.attending_delegate_ids, []);
 });
 
 test('users can edit only their name, username and password and safe responses exclude credentials/contact data', async (t) => {

@@ -129,6 +129,7 @@ test('contact removal user rebuild preserves all signature and account reference
 	);
 	db.exec(`
 		UPDATE users SET can_sign_as_attending=1 WHERE id=1;
+		INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(2,1);
 		UPDATE study_recordings SET typist_checked=1,typist_signed_by_user_id=3,typist_signed_at='2026-10-11T12:00:00Z';
 		INSERT INTO auth_credentials VALUES(3,'synthetic_typist','synthetic-hash');
 		INSERT INTO sessions(id,user_id,expires_at) VALUES('synthetic-session',3,'2099-01-01');
@@ -143,7 +144,8 @@ test('contact removal user rebuild preserves all signature and account reference
 		'auth_credentials',
 		'sessions',
 		'telegram_registrations',
-		'pending_voice'
+		'pending_voice',
+		'attending_signing_delegates'
 	];
 	const saved = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
 	initializeSchema(db, schema);

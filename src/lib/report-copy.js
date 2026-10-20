@@ -19,7 +19,7 @@ export function reportTypography(font = 'Arial', size = 12) {
 	};
 }
 
-export function formattedReport({ title, sanitizedBodyHtml, resident, attending, signatures, font, size }, document = globalThis.document) {
+export function formattedReport({ title, sanitizedBodyHtml, resident, attending, font, size }, document = globalThis.document) {
 	const root = document.createElement('div');
 	root.innerHTML = sanitizedBodyHtml;
 	const heading = document.createElement('h1');
@@ -28,14 +28,6 @@ export function formattedReport({ title, sanitizedBodyHtml, resident, attending,
 	const names = document.createElement('p');
 	names.append(`Resident: ${resident}`, document.createElement('br'), `Attending: ${attending}`);
 	root.append(names);
-	if (signatures.length) {
-		const signing = document.createElement('p');
-		for (const [index, signature] of signatures.entries()) {
-			if (index) signing.append(document.createElement('br'));
-			signing.append(signature);
-		}
-		root.append(signing);
-	}
 	const typography = reportTypography(font, size);
 	for (const node of [root, ...root.querySelectorAll('*')]) {
 		node.style.fontFamily = typography.fontFamily;

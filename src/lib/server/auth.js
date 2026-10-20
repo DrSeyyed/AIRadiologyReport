@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { getDb } from './db.js';
+import { getAttendingDelegateIds } from './attending-delegates.js';
 
 /** Session lifetime in days */
 const SESSION_DAYS = 7;
@@ -23,7 +24,8 @@ export function createSession(userId) {
 		expires_at
 	);
 
-	const user = db.prepare(`SELECT id, full_name, role, can_sign_as_attending FROM users WHERE id = ?`).get(userId);
+	const user = db.prepare(`SELECT id, full_name, role FROM users WHERE id = ?`).get(userId);
+	user.attending_delegate_ids = getAttendingDelegateIds(db, userId);
 
 	return { id, user, expires_at };
 }
@@ -35,7 +37,7 @@ export function getSession(sessionId) {
 
 	const session = db
 		.prepare(
-			`SELECT s.id, s.user_id, s.expires_at, u.full_name, u.role, u.can_sign_as_attending
+			`SELECT s.id, s.user_id, s.expires_at, u.full_name, u.role
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.id = ?`
@@ -58,7 +60,7 @@ export function getSession(sessionId) {
 
 	return {
 		session: { id: session.id, user_id: session.user_id, expires_at: session.expires_at },
-		user: { id: session.user_id, full_name: session.full_name, role: session.role, can_sign_as_attending: session.can_sign_as_attending }
+		user: { id: session.user_id, full_name: session.full_name, role: session.role, attending_delegate_ids: getAttendingDelegateIds(db, session.user_id) }
 	};
 }
 

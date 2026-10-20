@@ -99,7 +99,7 @@ test('all signatures and attending re-signs edit the original Telegram study mes
 
 test('delegated resident clinical and printing signatures edit the original Telegram message', async (t) => {
 	const { db, change, requests } = await fixture(t);
-	db.prepare('UPDATE users SET can_sign_as_attending=1 WHERE id=2').run();
+	db.prepare('INSERT INTO attending_signing_delegates(attending_id,resident_id) VALUES(3,2)').run();
 	const resident = { id: 2, role: 'resident' };
 	await change('resident');
 	const approved = await change('attending', true, resident);

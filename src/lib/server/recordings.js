@@ -1,4 +1,5 @@
 import { isResidentAttendingDelegate } from '../signature-permissions.js';
+import { getAttendingDelegateIds } from './attending-delegates.js';
 import { recordingExaminations } from '../recording-examinations.js';
 import { assertStudyActive } from './study-state.js';
 
@@ -250,8 +251,9 @@ export function signRecording(db, studyId, recordingId, user, role, checked) {
 	const attending = user.role === 'attending' && user.id === study.corresponding_attending_id;
 	const resident = user.role === 'resident' && user.id === recording.corresponding_resident_id;
 	const delegatedAttending = role === 'attending' && resident && isResidentAttendingDelegate(
-		db.prepare('SELECT id, role, can_sign_as_attending FROM users WHERE id = ?').get(user.id),
-		recording
+		{ ...db.prepare('SELECT id, role FROM users WHERE id = ?').get(user.id), attending_delegate_ids: getAttendingDelegateIds(db, user.id) },
+		recording,
+		study
 	);
 	const authorized =
 		role === 'typist'
