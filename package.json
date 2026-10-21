@@ -12,6 +12,7 @@
 		"lint": "prettier --check . && eslint .",
 		"db:init": "node scripts/init-db.mjs",
 		"db:seed": "node scripts/seed.mjs",
+		"telegram:remove-topics": "node scripts/remove-telegram-topics.mjs",
 		"test": "node --test"
 	},
 	"devDependencies": {

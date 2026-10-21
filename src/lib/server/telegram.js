@@ -181,26 +181,9 @@ export async function sendStudyMessage(study, chat_id) {
 	return { chat_id, message_id: res.message_id };
 }
 
-export async function createStudyTopic(chat_id, name) {
-	const result = await tgRequest('createForumTopic', { chat_id, name });
-	return result.message_thread_id;
-}
-
-export async function sendStudyIndex(chat_id, message_thread_id, text) {
-	const result = await tgRequest('sendMessage', {
-		chat_id, message_thread_id, text, parse_mode: 'HTML', disable_web_page_preview: true
-	});
-	return result.message_id;
-}
-
-export async function editStudyIndex(chat_id, message_id, text) {
-	try {
-		await tgRequest('editMessageText', {
-			chat_id, message_id, text, parse_mode: 'HTML', disable_web_page_preview: true
-		});
-	} catch (error) {
-		if (error.telegram_error_code !== 400 || !/message is not modified/i.test(error.message)) throw error;
-	}
+export async function deleteGeneratedStudyTopic(chat_id, message_thread_id) {
+	assert(Number.isSafeInteger(message_thread_id) && message_thread_id > 1, 'Refusing to delete General or an invalid topic');
+	return tgRequest('deleteForumTopic', { chat_id, message_thread_id });
 }
 
 export async function editStudyMessage(study, chat_id) {

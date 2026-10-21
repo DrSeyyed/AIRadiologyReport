@@ -13,9 +13,6 @@ export async function handleTelegramGroupMessage(db, message, {
 		return false;
 	if (['forum_topic_created', 'forum_topic_edited', 'forum_topic_closed', 'forum_topic_reopened',
 		'general_forum_topic_hidden', 'general_forum_topic_unhidden'].some((key) => message[key])) return false;
-	const indexPost = db.prepare('SELECT 1 FROM telegram_index_pages WHERE chat_id = ? AND message_id = ?')
-		.get(String(message.chat.id), message.message_id);
-	if (indexPost) return false;
 	const studyPost = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)')
 		.get(String(message.message_id), `${message.message_id}.0`);
 	if (studyPost) return false;

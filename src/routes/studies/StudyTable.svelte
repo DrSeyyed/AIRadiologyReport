@@ -1,7 +1,6 @@
 <script>
 	import Filters from './Filters.svelte';
 	import TelegramStudyRefresh from './TelegramStudyRefresh.svelte';
-	import TelegramStudyIndexes from './TelegramStudyIndexes.svelte';
 	import { patientName } from '$lib/patient-name.js';
 	import StudyAttention from './StudyAttention.svelte';
 	import PacsViewer from './PacsViewer.svelte';
@@ -60,7 +59,6 @@
 	<div class="flex-1"></div>
 	{#if isAdmin}
 		<TelegramStudyRefresh />
-		<TelegramStudyIndexes />
 	{/if}
 	{#if canImportStudies(data.user)}<a class="btn btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
 	{#if !readOnly}<button class="btn btn-secondary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}

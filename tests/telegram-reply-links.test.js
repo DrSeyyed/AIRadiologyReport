@@ -135,6 +135,14 @@ test('all voice replies are linked without granting unapproved or typist account
 	assert.equal(removed.length, 0);
 });
 
+test('forum service messages are ignored even without any topic-index tables', async (t) => {
+	const { db, handle, removed } = fixture(t);
+	assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'telegram_index_pages'").get(), undefined);
+	for (const key of ['forum_topic_created', 'forum_topic_edited', 'forum_topic_closed', 'forum_topic_reopened', 'general_forum_topic_hidden', 'general_forum_topic_unhidden'])
+		await handle(message(90, null, { voice: undefined, [key]: {} }));
+	assert.deepEqual(removed, []);
+});
+
 test('non-audio messages are deleted everywhere in the configured group, including admin posts and unrelated messages', async (t) => {
 	const { handle, removed } = fixture(t);
 	for (const extra of [{ text: 'text' }, { photo: [{ file_id: 'photo' }] }, { document: { file_id: 'document' } }, { sticker: { file_id: 'sticker' } }, { video: { file_id: 'video' } }]) {

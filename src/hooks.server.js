@@ -4,7 +4,6 @@ import { getDb } from '$lib/server/db';
 import { startStudyNotificationWorker } from '$lib/server/study-notifications.js';
 import { startGroupInvitationWorker } from '$lib/server/telegram-invitations.js';
 import { startTelegramStudyRefreshWorker } from '$lib/server/telegram-study-refresh.js';
-import { startTelegramTopicIndexWorker } from '$lib/server/telegram-study-index.js';
 
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 
@@ -23,7 +22,6 @@ startVoiceWorker(getDb);
 startStudyNotificationWorker(getDb);
 startGroupInvitationWorker(getDb);
 startTelegramStudyRefreshWorker(getDb);
-startTelegramTopicIndexWorker(getDb);
 
 export const handle = async ({ event, resolve }) => {
   // Read cookie
