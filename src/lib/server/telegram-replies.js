@@ -1,7 +1,17 @@
+export function telegramReplyMessageId(message) {
+	// Cross-topic replies use external_reply; reply_to_message may only identify the topic starter.
+	const external = message?.external_reply;
+	const target = external || message?.reply_to_message;
+	if (!target || !Number.isSafeInteger(target.message_id) || target.message_id <= 0) return null;
+	if (external && !external.chat?.id) return null;
+	if (target.chat?.id !== undefined && String(target.chat.id) !== String(message.chat?.id)) return null;
+	return target.message_id;
+}
+
 export function trackStudyReply(db, message) {
-	if (!(message.voice || message.audio) || !message.reply_to_message?.message_id) return null;
+	const parentId = telegramReplyMessageId(message);
+	if (!(message.voice || message.audio) || !parentId) return null;
 	const chatId = String(message.chat.id);
-	const parentId = message.reply_to_message.message_id;
 	const study = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)')
 		.get(String(parentId), `${parentId}.0`);
 	const parent = study ? null : db.prepare('SELECT study_id FROM study_telegram_voices WHERE chat_id = ? AND message_id = ? AND deleted = 0')

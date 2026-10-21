@@ -3,7 +3,7 @@ import { assertStudyActive } from './study-state.js';
 import { appendRecording, appendRecordingAudio, getRecording, assertCanAppendRecordingAudio, recordingError } from './recordings.js';
 import { downloadFile, syncStudyMessage, sendReply } from './telegram.js';
 import { getApprovedTelegramUser } from './telegram-registration.js';
-import { trackStudyReply } from './telegram-replies.js';
+import { trackStudyReply, telegramReplyMessageId } from './telegram-replies.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -24,7 +24,8 @@ function voiceTarget(db, parent) {
 
 export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)) {
 	const fileId = message?.voice?.file_id || message?.audio?.file_id;
-	if (!fileId || !message.reply_to_message?.message_id || !message.chat?.id || !message.message_id)
+	const replyId = telegramReplyMessageId(message);
+	if (!fileId || !replyId || !message.chat?.id || !message.message_id)
 		return false;
 	const sender =
 		message.from?.is_bot || message.sender_chat
@@ -34,7 +35,6 @@ export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)
 	return db.transaction(() => {
 		const chatId = String(message.chat.id);
 		if (db.prepare('SELECT id FROM pending_voice WHERE chat_id = ? AND reply_message_id = ?').get(chatId, message.message_id)) return true;
-		const replyId = message.reply_to_message.message_id;
 		const study = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)').get(String(replyId), `${replyId}.0`);
 		const parent = study ? null : db.prepare('SELECT * FROM pending_voice WHERE chat_id = ? AND reply_message_id = ?').get(chatId, replyId);
 		if (!study && !parent) return false;

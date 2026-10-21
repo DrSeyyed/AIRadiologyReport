@@ -57,6 +57,53 @@ test('direct replies have separate lines and nested and sibling replies share th
 	assert.deepEqual(updated.split('\n').filter((line) => line.includes('https://t.me/c/')), lines);
 });
 
+test('cross-topic voice and audio replies resolve the original study instead of the topic starter', async (t) => {
+	const { db, handle, removed, refreshed } = fixture(t);
+	const crossTopic = (id, parent, extra = {}) => message(id, 900, {
+		message_thread_id: 900, is_topic_message: true,
+		external_reply: { origin: { type: 'user', date: 1, sender_user: { id: 1 } }, chat: { id: chatId }, message_id: parent },
+		...extra
+	});
+	await handle(crossTopic(43, 42, { reply_to_message: undefined }));
+	await handle(crossTopic(44, 43));
+	await handle(crossTopic(45, 42, { voice: undefined, audio: { file_id: 'audio-45' } }));
+	await handle(crossTopic(43, 42));
+	const jobs = db.prepare('SELECT study_id, reply_message_id, parent_voice_job_id FROM pending_voice ORDER BY id').all();
+	assert.equal(jobs.length, 3);
+	assert.ok(jobs.every((job) => job.study_id === 1));
+	assert.ok(jobs[1].parent_voice_job_id);
+	const replies = getStudyDetail(db, 1).telegram_replies;
+	assert.equal(replies.length, 3);
+	assert.equal(replies.find((reply) => reply.message_id === 44).parent_message_id, 43);
+	assert.equal(buildStudyMessage(refreshed.at(-1)).split('\n').filter((line) => line.includes('https://t.me/')).length, 2);
+	assert.deepEqual(removed, []);
+});
+
+test('cross-chat or unidentified external replies cannot attach to matching local message IDs', async (t) => {
+	const { db, handle, removed } = fixture(t);
+	for (const external_reply of [
+		{ chat: { id: -100999 }, message_id: 42 },
+		{ message_id: 42 },
+		{ chat: { id: chatId } },
+		{ chat: { id: chatId }, message_id: -1 }
+	]) await handle(message(43, 42, { external_reply }));
+	assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pending_voice').get().n, 0);
+	assert.equal(getStudyDetail(db, 1).telegram_replies.length, 0);
+	assert.deepEqual(removed, []);
+});
+
+test('cross-topic replies retain account approval and disabled-study restrictions without deleting audio', async (t) => {
+	const { db, handle, removed, notices } = fixture(t);
+	const external_reply = { chat: { id: chatId }, message_id: 42 };
+	await handle(message(43, null, { reply_to_message: undefined, external_reply, from: { id: 999 } }));
+	await handle(message(44, null, { reply_to_message: undefined, external_reply, from: { id: 300 } }));
+	db.exec('UPDATE studies SET disabled=1');
+	await handle(message(45, null, { reply_to_message: undefined, external_reply }));
+	assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pending_voice').get().n, 0);
+	assert.equal(notices.length, 3);
+	assert.deepEqual(removed, []);
+});
+
 test('voice and audio hyperlinks work for public and private supergroups without unsafe URLs', () => {
 	assert.equal(telegramMessageLink({ chat_id: chatId, message_id: 51 }), 'https://t.me/c/1234567890/51');
 	assert.equal(telegramMessageLink({ chat_id: chatId, chat_username: 'Public_group', message_id: 51 }), 'https://t.me/Public_group/51');

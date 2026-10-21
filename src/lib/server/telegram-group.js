@@ -2,7 +2,7 @@ import { deleteMessage, editStudyMessage, sendBotMessage } from './telegram.js';
 import { getStudyDetail } from './studies.js';
 import { queueVoiceReply } from './voice-worker.js';
 import { getApprovedTelegramUser } from './telegram-registration.js';
-import { trackStudyReply } from './telegram-replies.js';
+import { trackStudyReply, telegramReplyMessageId } from './telegram-replies.js';
 
 export async function handleTelegramGroupMessage(db, message, {
 	remove = deleteMessage,
@@ -23,7 +23,7 @@ export async function handleTelegramGroupMessage(db, message, {
 		await remove(message.message_id, message.chat.id);
 		return true;
 	}
-	if (!message.reply_to_message?.message_id) return false;
+	if (!telegramReplyMessageId(message)) return false;
 	const studyId = trackStudyReply(db, message);
 	const sender = getApprovedTelegramUser(db, message.from?.id);
 	let rejection = '';

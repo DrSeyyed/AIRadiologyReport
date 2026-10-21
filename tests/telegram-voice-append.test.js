@@ -57,6 +57,24 @@ test('voice-to-voice replies and reply chains append in order; direct study repl
 	assert.equal(queueVoiceReply(c.db, { ...message(99, 43), chat: { id: -999 } }, 0), false);
 });
 
+test('cross-topic study and nested voice replies download and attach to the correct recording', async t => {
+	const c = fixture(t);
+	const crossTopic = (id, parent, sender = 200) => ({
+		...message(id, 900, sender), message_thread_id: 900, is_topic_message: true,
+		external_reply: { chat: { id: -100 }, message_id: parent }
+	});
+	assert.equal(queueVoiceReply(c.db, crossTopic(43, 42), 0), true);
+	await c.work();
+	assert.throws(() => queueVoiceReply(c.db, crossTopic(44, 43, 400), 0), { status: 403 });
+	assert.equal(queueVoiceReply(c.db, crossTopic(44, 43), 0), true);
+	await c.work();
+	const recording = getRecording(c.db, 1, c.db.prepare('SELECT id FROM study_recordings').get().id);
+	assert.deepEqual(recording.audio_parts.map(part => readFileSync(part.audio_report_path, 'utf8')), ['file-43', 'file-44']);
+	assert.equal(c.db.prepare('SELECT COUNT(*) AS n FROM study_recordings').get().n, 1);
+	assert.equal(c.rejections.length, 0);
+	assert.equal(c.notices.length, 2);
+});
+
 test('appending preserves the existing report and only manual generation transcribes all parts into one report', async t => {
 	const c = fixture(t); const id = await rootVoice(c);
 	configureRecording(c.db, 1, id, { modality_id: 1, exam_type_id: 1 });
