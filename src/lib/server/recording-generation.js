@@ -1,41 +1,47 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
+import { DEFAULT_TRANSCRIPTION_SETTINGS, normalizeTranscriptionSettings } from '../transcription-models.js';
 
 const transcriptionPrompt = `دیکتهٔ رادیولوژی ممکن است فارسی، انگلیسی یا ترکیبی از هر دو باشد. متن را به همان زبان گفتار پیاده کن و اصطلاحات انگلیسی رادیولوژی را با حروف لاتین بنویس. ترجمه یا گزارش‌نویسی نکن.
 Transcribe only what is audible. Preserve Persian speech and English medical terms in mixed-language dictation, including English terms spoken with a Persian accent. Use standard English spellings for clearly recognised radiology terms and keep sequence names in Latin characters.
 Radiology vocabulary (spelling hints only, not findings to insert): high, low, T1, T2, T1-weighted, T2-weighted, low T1, high T1, low T2, high T2, hypodense, hyperdense, isodense, hypointense, hyperintense, isointense, FLAIR, STIR, DWI, ADC, diffusion restriction, enhancement, with contrast, without contrast.
 Preserve negation, uncertainty, laterality, numbers, decimal points and measurement units exactly as dictated. Do not swap high with low, hypo with hyper, T1 with T2, or right with left. Do not infer a signal or density from the expected diagnosis. Do not add glossary terms, findings, normal statements or recommendations that were not spoken. Do not guess unclear words or complete missing speech.`;
 
-async function openaiTranscribe(filePath, fileName) {
+export async function transcribeAudio(filePath, fileName, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
+	const settings = normalizeTranscriptionSettings(value);
+	const elevenlabs = settings.provider === 'elevenlabs';
+	const label = elevenlabs ? 'ElevenLabs' : 'OpenAI';
 	const form = new FormData();
-
-	form.append('model', 'gpt-transcribe');
-	form.append('prompt', transcriptionPrompt);
+	form.append(elevenlabs ? 'model_id' : 'model', settings.model);
+	if (elevenlabs) {
+		form.append('tag_audio_events', 'false');
+		form.append('diarize', 'false');
+	} else {
+		form.append('prompt', transcriptionPrompt);
+	}
 	form.append('file', new Blob([readFileSync(filePath)]), fileName);
-
-	const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-		method: 'POST',
-		signal: AbortSignal.timeout(120000),
-		headers: {
-			Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-		},
-		body: form
-	});
-
-	if (!res.ok) {
-		const err = await res.text().catch(() => '');
-
-		throw new Error(`OpenAI transcription failed (HTTP ${res.status}): ${err}`);
+	let res;
+	try {
+		res = await fetch(elevenlabs ? 'https://api.elevenlabs.io/v1/speech-to-text' : 'https://api.openai.com/v1/audio/transcriptions', {
+			method: 'POST',
+			signal: AbortSignal.timeout(120000),
+			headers: elevenlabs ? { 'xi-api-key': process.env.ELEVENLABS_API_KEY }
+				: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+			body: form
+		});
+	} catch {
+		throw new Error(`${label} transcription request failed. Check provider configuration and try again.`);
 	}
-
-	const data = await res.json();
-	const text = typeof data.text === 'string' ? data.text.trim() : '';
-
-	if (!text) {
-		throw new Error('OpenAI transcription returned no text.');
+	if (!res.ok) throw new Error(`${label} transcription failed (HTTP ${res.status}).`);
+	let data;
+	try {
+		data = await res.json();
+	} catch {
+		throw new Error(`${label} transcription returned an invalid response.`);
 	}
-
+	const text = typeof data?.text === 'string' ? data.text.trim() : '';
+	if (!text) throw new Error(`${label} transcription returned no text.`);
 	return text;
 }
 
@@ -103,7 +109,8 @@ export async function openaiGenerateReport(prompt) {
 	return text;
 }
 
-export async function generateRecordingReport(s, template) {
+export async function generateRecordingReport(s, template, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
+	const settings = normalizeTranscriptionSettings(value);
 	const modalityLabel = s.modality_name || s.modality_code;
 	const examinations = recordingExaminations(s);
 	const combined = examinations.length > 1;
@@ -114,7 +121,7 @@ export async function generateRecordingReport(s, template) {
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	const transcriptions = [];
 	for (const part of audioParts)
-		transcriptions.push(await openaiTranscribe(part.audio_report_path, basename(part.audio_report_path)));
+		transcriptions.push(await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings));
 	const transcription = transcriptions.join('\n');
 	const prompt = `You are a radiology report generator.
 Translate the doctor's dictation into English and produce a professional radiology report.

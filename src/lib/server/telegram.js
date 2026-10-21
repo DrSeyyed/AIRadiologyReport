@@ -181,11 +181,6 @@ export async function sendStudyMessage(study, chat_id) {
 	return { chat_id, message_id: res.message_id };
 }
 
-export async function deleteGeneratedStudyTopic(chat_id, message_thread_id) {
-	assert(Number.isSafeInteger(message_thread_id) && message_thread_id > 1, 'Refusing to delete General or an invalid topic');
-	return tgRequest('deleteForumTopic', { chat_id, message_thread_id });
-}
-
 export async function editStudyMessage(study, chat_id) {
 	chat_id = chat_id ?? getChatID();
 	let message_id = study.telegram_message_id;

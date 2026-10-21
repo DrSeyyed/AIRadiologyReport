@@ -11,6 +11,7 @@ import { getStudyDetail } from './studies.js';
 import { assertStudyActive } from './study-state.js';
 import { generateRecordingReport } from './recording-generation.js';
 import { recordingTemplate } from './recording-templates.js';
+import { getTranscriptionSettings } from './transcription-settings.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -53,8 +54,14 @@ export async function processRecording(
 	if (!recording.audio_parts.length || recording.audio_parts.some((part) => !existsSync(part.audio_report_path)))
 		throw recordingError('Audio file not found on server', 404);
 	const template = recordingTemplate(db, recording);
-	if (generate === generateRecordingReport && !process.env.OPENAI_API_KEY)
-		throw recordingError('Set OPENAI_API_KEY to enable transcription and report generation.', 501);
+	let transcriptionSettings;
+	if (generate === generateRecordingReport) {
+		transcriptionSettings = getTranscriptionSettings(db);
+		if (!process.env.OPENAI_API_KEY)
+			throw recordingError('Set OPENAI_API_KEY to enable report generation (and OpenAI transcription).', 501);
+		if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
+			throw recordingError('Set ELEVENLABS_API_KEY to use ElevenLabs transcription.', 501);
+	}
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db
 		.prepare(
@@ -63,7 +70,7 @@ export async function processRecording(
 		.run(started, recordingId);
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
 	try {
-		const text = await generate({ ...getStudyDetail(db, studyId), ...recording }, template);
+		const text = await generate({ ...getStudyDetail(db, studyId), ...recording }, template, transcriptionSettings);
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
 		const path = saveRecordingReport(db, recordingId, text, directory);

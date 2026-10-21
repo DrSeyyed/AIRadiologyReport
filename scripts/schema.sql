@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS study_telegram_voices (
 );
 CREATE INDEX IF NOT EXISTS idx_study_telegram_voices ON study_telegram_voices(study_id);
 
--- Retain legacy topic IDs for explicit Telegram cleanup, but stop index change tracking.
+-- Stop legacy topic index change tracking without deleting existing metadata.
 DROP TRIGGER IF EXISTS telegram_index_studies_insert;
 DROP TRIGGER IF EXISTS telegram_index_studies_delete;
 DROP TRIGGER IF EXISTS telegram_index_studies_update;
