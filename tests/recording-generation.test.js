@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateRecordingReport } from '../src/lib/server/recording-generation.js';
 
-test('report generation sends the exact requested UK English prompt with recording-specific values', async (t) => {
+test('report generation defaults to UK English and complete sentences with recording-specific values', async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), 'recording-prompt-'));
 	const audio = join(directory, 'synthetic.webm');
 	writeFileSync(audio, 'Synthetic test audio');
@@ -49,12 +49,15 @@ test('report generation sends the exact requested UK English prompt with recordi
 		assert.equal(prompts.at(-1), `You are a radiology report generator.
 Translate the doctor's dictation into English and produce a professional radiology report.
 Use British radiology terminology and UK English spelling and phrasing.
-Follow the template structure, section order, and formatting as closely as possible.
+Follow the template structure, section order, and formatting as closely as possible. The selected English variant and complete-sentence rules take precedence over template spelling and telegraphic wording.
 Preserve all clinically relevant information from the dictation. Do not omit any finding.
 Add relevant dictated findings that do not fit an existing section.
 Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
 Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
 Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
+Write every finding, recommendation, and Conclusion item as a complete grammatical sentence, including a subject and finite verb; do not use standalone keywords, noun phrases, or telegraphic fragments. Section headings, the study title, and measurement/table labels may remain labels rather than sentences.
+Expand dictated shorthand only into the minimum complete sentence that preserves its meaning: for example, "joint effusion" becomes "A joint effusion is present." Do not add an undictated location, side, severity, cause, certainty, comparison, measurement, diagnosis, or recommendation. Preserve negation and uncertainty: "no joint effusion" becomes "No joint effusion is present," and "possible joint effusion" becomes "A joint effusion may be present."
+Before returning the report, check that every narrative finding and Conclusion item is a complete sentence and that completing sentences has not changed or added clinical information.
 Use concise professional language. Use only single line breaks between sections, except for one blank line before the Conclusion.
 Include a Conclusion that summarises important abnormal findings and relevant recommendations without repeating normals.
 If no significant abnormality, give a concise normal conclusion.

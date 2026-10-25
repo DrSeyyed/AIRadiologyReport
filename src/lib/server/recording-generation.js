@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
 import { DEFAULT_TRANSCRIPTION_SETTINGS, normalizeTranscriptionSettings } from '../transcription-models.js';
+import { reportEnglishInstruction } from './report-preferences.js';
 
 const transcriptionPrompt = `دیکتهٔ رادیولوژی ممکن است فارسی، انگلیسی یا ترکیبی از هر دو باشد. متن را به همان زبان گفتار پیاده کن و اصطلاحات انگلیسی رادیولوژی را با حروف لاتین بنویس. ترجمه یا گزارش‌نویسی نکن.
 Transcribe only what is audible. Preserve Persian speech and English medical terms in mixed-language dictation, including English terms spoken with a Persian accent. Use standard English spellings for clearly recognised radiology terms and keep sequence names in Latin characters.
@@ -111,6 +112,7 @@ export async function openaiGenerateReport(prompt) {
 
 export async function generateRecordingReport(s, template, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
 	const settings = normalizeTranscriptionSettings(value);
+	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const modalityLabel = s.modality_name || s.modality_code;
 	const examinations = recordingExaminations(s);
 	const combined = examinations.length > 1;
@@ -125,13 +127,16 @@ export async function generateRecordingReport(s, template, value = DEFAULT_TRANS
 	const transcription = transcriptions.join('\n');
 	const prompt = `You are a radiology report generator.
 Translate the doctor's dictation into English and produce a professional radiology report.
-Use British radiology terminology and UK English spelling and phrasing.
-Follow the template structure, section order, and formatting as closely as possible.
+${englishInstruction}
+Follow the template structure, section order, and formatting as closely as possible. The selected English variant and complete-sentence rules take precedence over template spelling and telegraphic wording.
 Preserve all clinically relevant information from the dictation. Do not omit any finding.
 Add relevant dictated findings that do not fit an existing section.
 Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
 Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
 Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
+Write every finding, recommendation, and Conclusion item as a complete grammatical sentence, including a subject and finite verb; do not use standalone keywords, noun phrases, or telegraphic fragments. Section headings, the study title, and measurement/table labels may remain labels rather than sentences.
+Expand dictated shorthand only into the minimum complete sentence that preserves its meaning: for example, "joint effusion" becomes "A joint effusion is present." Do not add an undictated location, side, severity, cause, certainty, comparison, measurement, diagnosis, or recommendation. Preserve negation and uncertainty: "no joint effusion" becomes "No joint effusion is present," and "possible joint effusion" becomes "A joint effusion may be present."
+Before returning the report, check that every narrative finding and Conclusion item is a complete sentence and that completing sentences has not changed or added clinical information.
 Use concise professional language. Use only single line breaks between sections, except for one blank line before the Conclusion.
 Include a Conclusion that summarises important abnormal findings and relevant recommendations without repeating normals.
 If no significant abnormality, give a concise normal conclusion.

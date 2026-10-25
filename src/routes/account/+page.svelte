@@ -12,6 +12,35 @@
 	let delegatesBusy = $state(false);
 	let delegatesError = $state('');
 	let delegatesSuccess = $state('');
+	let englishVariant = $derived(data.reportPreferences?.english_variant ?? 'british');
+	let preferencesBusy = $state(false);
+	let preferencesError = $state('');
+	let preferencesSuccess = $state('');
+
+	async function saveReportPreferences(event) {
+		event.preventDefault();
+		if (preferencesBusy) return;
+		preferencesBusy = true;
+		preferencesError = '';
+		preferencesSuccess = '';
+		try {
+			const response = await fetch('/api/account/report-preferences', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ english_variant: englishVariant })
+			});
+			const result = await response.json().catch(() => ({}));
+			if (!response.ok) throw new Error(result.error || 'Unable to save report preferences.');
+			await invalidateAll();
+			englishVariant = result.english_variant;
+			preferencesSuccess = 'Report English updated.';
+		} catch (caught) {
+			preferencesError = caught.message || 'Unable to save report preferences.';
+		} finally {
+			preferencesBusy = false;
+		}
+	}
+
 	const visibleResidents = $derived((data.signingDelegates?.residents ?? []).filter(resident =>
 		resident.full_name.toLocaleLowerCase().includes(residentSearch.trim().toLocaleLowerCase())
 	));
@@ -102,6 +131,28 @@
 		<p class="text-sm">Blank password keeps the current one. Use 8+ characters, at most 72 UTF-8 bytes. Changing it signs out other sessions. To enable login, provide both username and password.</p>
 		<button class="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
 	</form>
+	{#if data.account.role === 'attending'}
+		<section class="space-y-3 border-t pt-4" aria-labelledby="report-english-heading">
+			<h2 id="report-english-heading" class="text-xl font-semibold">Report English</h2>
+			<p id="report-english-description" class="text-sm">Applies to future generated reports for studies assigned to you as the attending. Existing reports are unchanged.</p>
+			{#if preferencesError}<div class="alert alert-error" role="alert">{preferencesError}</div>{/if}
+			<p role="status" class="text-sm">{preferencesBusy ? 'Saving report English…' : preferencesSuccess}</p>
+			<form onsubmit={saveReportPreferences} aria-busy={preferencesBusy}>
+				<fieldset class="space-y-3" disabled={preferencesBusy} aria-describedby="report-english-description">
+					<legend class="sr-only">Report English</legend>
+					<label class="flex items-center gap-3">
+						<input class="radio radio-sm" type="radio" name="english_variant" value="british" bind:group={englishVariant} onchange={() => { preferencesSuccess = ''; }} />
+						<span>British English</span>
+					</label>
+					<label class="flex items-center gap-3">
+						<input class="radio radio-sm" type="radio" name="english_variant" value="american" bind:group={englishVariant} onchange={() => { preferencesSuccess = ''; }} />
+						<span>American English</span>
+					</label>
+					<button class="btn btn-primary" type="submit">{preferencesBusy ? 'Saving…' : 'Save report English'}</button>
+				</fieldset>
+			</form>
+		</section>
+	{/if}
 	{#if data.account.role === 'attending' && data.signingDelegates}
 		<section class="space-y-3 border-t pt-4" aria-labelledby="signing-delegates-heading">
 			<h2 id="signing-delegates-heading" class="text-xl font-semibold">Residents who may sign for me</h2>

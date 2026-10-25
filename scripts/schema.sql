@@ -15,6 +15,11 @@ CREATE TABLE
   );
 
 
+CREATE TABLE IF NOT EXISTS attending_report_preferences (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  english_variant TEXT NOT NULL DEFAULT 'british' CHECK (english_variant IN ('british', 'american'))
+);
+
 CREATE TABLE IF NOT EXISTS attending_signing_delegates (
   attending_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   resident_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -105,10 +105,11 @@ test('account page loads signing settings only for attendings', async () => {
 		const requests = [];
 		const data = await loadAccount({ locals: { user: actor }, fetch: async url => {
 			requests.push(url);
-			return new Response(JSON.stringify(url === '/api/account' ? actor : { residents: [], resident_ids: [] }));
+			return new Response(JSON.stringify(url === '/api/account' ? actor : url === '/api/account/report-preferences' ? { english_variant: 'british' } : { residents: [], resident_ids: [] }));
 		} });
-		assert.deepEqual(requests, actor.role === 'attending' ? ['/api/account', '/api/account/signing-delegates'] : ['/api/account']);
+		assert.deepEqual(requests, actor.role === 'attending' ? ['/api/account', '/api/account/signing-delegates', '/api/account/report-preferences'] : ['/api/account']);
 		assert.equal(data.signingDelegates !== null, actor.role === 'attending');
+		assert.equal(data.reportPreferences !== null, actor.role === 'attending');
 	}
 });
 

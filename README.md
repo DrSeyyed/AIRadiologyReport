@@ -61,6 +61,14 @@ volumes:
 
 This change applies to new recordings only. Existing files and database paths are not migrated automatically. Before removing an old container, back up recordings stored at `/uploads/voices`; recovering them into the new directory also requires updating their `audio_report_path` values in the database.
 
+## Attending report English and complete sentences
+
+Each attending can choose **British English** or **American English** under **Account → Report English**. British English remains the default. The preference belongs to the attending, not the user clicking **Transcribe & Generate**: reports use the study's assigned attending's saved preference, including spelling, terminology and phrasing. A generation request captures the preference before transcription starts, so changing it mid-request applies only to later requests. Only attendings can edit their own report-English preference.
+
+Generated findings, recommendations and Conclusion items are instructed to use complete grammatical sentences instead of telegraphic keywords. For example, dictated “joint effusion” becomes “A joint effusion is present.” Sentence completion must preserve negation and uncertainty without inventing laterality, severity, measurements, diagnoses or other clinical details. Section headings and measurement/table labels may remain labels. These rules and the attending's English preference take precedence over shorthand or different English spelling in source templates. AI output still needs clinical review; manually edited text is not automatically rewritten.
+
+Changing a preference does not rewrite saved reports or affect signatures. Existing unsigned reports can be regenerated explicitly; signed reports retain their existing editing/generation protections. Before starting an upgraded non-Docker deployment, run `npm run db:init` to add the preference table; the normal Docker startup already does this. No database reset is required.
+
 ## Transcription provider and model
 
 Administrators can open **Admin → Transcription settings** to choose the speech-to-text provider and model. The selection is stored in the existing database and survives restarts. The default stays **OpenAI / `gpt-transcribe`**; upgrading does not send audio to a new provider automatically. Changes apply to the next **Transcribe & Generate** request, not existing reports. Every part of one recording uses the settings captured when that request starts, even if an administrator changes them during processing.
