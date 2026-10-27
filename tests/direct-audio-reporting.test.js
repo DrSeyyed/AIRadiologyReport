@@ -238,6 +238,8 @@ test('combined CT templates accompany audio in order and raw-newline JSON report
 		assert.ok(prompt.indexOf('## Pelvis') < prompt.indexOf('## Chest'));
 		assert.ok(prompt.indexOf('## Chest') < prompt.indexOf('## Abdomen'));
 		assert.match(prompt, /exactly one shared Conclusion/);
+		assert.match(prompt, /Preserve every supplied heading's wording and case/);
+		assert.match(prompt, /Never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
 		assert.equal(content[1].type, 'input_audio');
 		const wrapped = '{"final_report":"' + text + '",\n}';
 		assert.throws(() => JSON.parse(wrapped));
@@ -395,6 +397,49 @@ test('direct mode does not bypass signed recording guards or mutate saved signat
 	);
 	await assert.rejects(processRecording(db, studyId, id, undefined, directory), { status: 409 });
 	assert.equal(readFileSync(path, 'utf8'), 'Signed report.');
+});
+
+test('direct audio sends mandatory template and calendar rules for UK/US English and saves provider dates unchanged', async (t) => {
+	for (const variant of ['british', 'american']) {
+		for (const date of ['۱۴۰۴/۰۷/۱۲ (Jalali)', '12 Mehr 1404 (Shamsi)', '2025-02-03 (Gregorian)']) {
+			await t.test(`${variant}: ${date}`, async (t) => {
+				const { db, directory, studyId, id } = fixture(t);
+				setReportGenerationSettings(db, { mode: 'direct_audio' });
+				setAttendingReportPreferences(db, 2, { english_variant: variant });
+				const template = 'TECHNIQUE:\nSynthetic technique.\nOBSERVATIONS:\nSynthetic findings.\nIMPRESSION:\nSynthetic summary.';
+				db.prepare('UPDATE report_templates SET text=? WHERE modality_id=1 AND exam_type_id=1').run(template);
+				const report = template.replace('Synthetic findings.', `The synthetic comparison date is ${date}.`);
+				let calls = 0;
+				t.mock.method(globalThis, 'fetch', async (url, options) => {
+					calls++;
+					assert.equal(url, 'https://api.openai.com/v1/chat/completions');
+					const payload = JSON.parse(options.body);
+					const system = payload.messages[0].content;
+					assert.match(system, /template headings and section order are mandatory/);
+					assert.match(system, /never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
+					assert.match(system, /An English report does not require Gregorian dates/);
+					const prompt = payload.messages[1].content[0].text;
+					assert.match(prompt, /Preserve every supplied heading's wording and case/);
+					assert.match(prompt, /keep sections in exactly the supplied order/);
+					assert.match(prompt, /retain the template's existing conclusion, impression or summary heading exactly as supplied/);
+					assert.match(prompt, /without inventing new sections/);
+					assert.match(prompt, /Preserve dictated dates in their original calendar, year, month, day, order and precision/);
+					assert.match(prompt, /Keep Jalali month names as Jalali month names/);
+					assert.match(prompt, /Do not infer an unspecified calendar, expand a shortened year, or add missing date components/);
+					assert.match(prompt, /Check every dictated date/);
+					assert.match(prompt, variant === 'american' ? /Use American/ : /Use British/);
+					assert.ok(prompt.includes(`Template:\n"${template}"`));
+					assert.equal(payload.messages[1].content[1].type, 'input_audio');
+					return completed(report);
+				});
+				const result = await processRecording(db, studyId, id, undefined, directory);
+				assert.equal(calls, 1);
+				assert.equal(result.text, report);
+				assert.equal(readFileSync(result.path, 'utf8'), report);
+				assert.equal(getRecording(db, studyId, id).processing, 0);
+			});
+		}
+	}
 });
 
 async function loadRecordingHttp(db, t) {
