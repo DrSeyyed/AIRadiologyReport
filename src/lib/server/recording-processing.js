@@ -9,10 +9,11 @@ import {
 } from './recordings.js';
 import { getStudyDetail } from './studies.js';
 import { assertStudyActive } from './study-state.js';
-import { generateRecordingReport } from './recording-generation.js';
+import { generateRecordingReport, generateDirectAudioReport } from './recording-generation.js';
 import { recordingTemplate } from './recording-templates.js';
 import { getTranscriptionSettings } from './transcription-settings.js';
 import { getAttendingReportPreferences } from './report-preferences.js';
+import { getReportGenerationSettings } from './report-generation-settings.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -58,13 +59,19 @@ export async function processRecording(
 	const study = getStudyDetail(db, studyId);
 	let transcriptionSettings;
 	let reportEnglishVariant;
+	let runGeneration = generate;
 	if (generate === generateRecordingReport) {
-		transcriptionSettings = getTranscriptionSettings(db);
+		const reporting = getReportGenerationSettings(db);
 		reportEnglishVariant = getAttendingReportPreferences(db, study.corresponding_attending_id).english_variant;
 		if (!process.env.OPENAI_API_KEY)
-			throw recordingError('Set OPENAI_API_KEY to enable report generation (and OpenAI transcription).', 501);
-		if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
-			throw recordingError('Set ELEVENLABS_API_KEY to use ElevenLabs transcription.', 501);
+			throw recordingError('Set OPENAI_API_KEY to enable report generation.', 501);
+		if (reporting.mode === 'direct_audio') {
+			runGeneration = generateDirectAudioReport;
+		} else {
+			transcriptionSettings = getTranscriptionSettings(db);
+			if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
+				throw recordingError('Set ELEVENLABS_API_KEY to use ElevenLabs transcription.', 501);
+		}
 	}
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db
@@ -74,7 +81,7 @@ export async function processRecording(
 		.run(started, recordingId);
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
 	try {
-		const text = await generate({ ...study, ...recording, report_english_variant: reportEnglishVariant }, template, transcriptionSettings);
+		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant }, template, transcriptionSettings);
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
 		const path = saveRecordingReport(db, recordingId, text, directory);

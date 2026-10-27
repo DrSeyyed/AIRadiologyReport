@@ -61,6 +61,21 @@ volumes:
 
 This change applies to new recordings only. Existing files and database paths are not migrated automatically. Before removing an old container, back up recordings stored at `/uploads/voices`; recovering them into the new directory also requires updating their `audio_report_path` values in the database.
 
+## Reporting mode: transcription pipeline or direct audio
+
+Administrators can open **Admin → Reporting settings** and choose:
+
+- **Transcribe, then generate** (unchanged default): use **Admin → Transcription settings** to select OpenAI or ElevenLabs, then generate the final report with the existing `gpt-6.1-sol` model.
+- **Direct audio → report (GPT Audio 1.5)**: send all of the recording's audio parts, joined in their original order, together with the selected examination templates, clinical context and assigned attending's English preference to OpenAI `gpt-audio-1.5` through Chat Completions. Request written report text only. This skips separate transcription and the `gpt-6.1-sol` generation step entirely; ElevenLabs credentials and transcription settings are not used in this mode.
+
+Both modes require the server's `OPENAI_API_KEY`. The mode is saved in the existing settings table and captured at the start of each generation request. Saving a mode does not regenerate existing reports, and changing it during processing affects only later requests. There is no automatic fallback between modes. Existing reviewer, disabled-study, processing-lock and signature protections still apply; failures or incomplete/refused/empty API responses preserve any previous report.
+
+Direct mode requires **FFmpeg** for local audio conversion. Docker installs it automatically when the updated image is built; rebuild the image rather than only restarting an old container. For non-Docker deployments, install `ffmpeg` on PATH or set `FFMPEG_PATH` to its executable. Browser WebM and Telegram OGG/Opus recordings are decoded locally to mono 16 kHz PCM and joined into one WAV without dropping recording parts or making a separate transcription request. Temporary decoded files are removed on success and failure. Direct mode supports **up to 10 minutes of total audio per recording**; longer recordings produce an explicit error without silently truncating or switching modes. Use the transcription pipeline for those recordings. Audio decoding is limited to local audio/container formats; network-backed playlists are not accepted.
+
+This is an experimental alternative, not a guarantee of better accuracy. The original audio and report context go to OpenAI, so confirm patient-data processing/retention requirements before enabling it. Compare consented/de-identified Persian/English dictation using both modes, checking omissions, additions, negation, laterality and measurements. Both modes retain the complete-sentence and attending-specific British/American English instructions and require clinical review. No real provider call is needed for the automated tests; the direct-audio tests use synthetic audio and require local FFmpeg (`FFMPEG_PATH` is supported).
+
+References: [GPT Audio 1.5](https://developers.openai.com/api/docs/models/gpt-audio-1.5), [audio in Chat Completions](https://developers.openai.com/api/docs/guides/audio-chat-completions).
+
 ## Attending report English and complete sentences
 
 Each attending can choose **British English** or **American English** under **Account → Report English**. British English remains the default. The preference belongs to the attending, not the user clicking **Transcribe & Generate**: reports use the study's assigned attending's saved preference, including spelling, terminology and phrasing. A generation request captures the preference before transcription starts, so changing it mid-request applies only to later requests. Only attendings can edit their own report-English preference.
@@ -71,7 +86,7 @@ Changing a preference does not rewrite saved reports or affect signatures. Exist
 
 ## Transcription provider and model
 
-Administrators can open **Admin → Transcription settings** to choose the speech-to-text provider and model. The selection is stored in the existing database and survives restarts. The default stays **OpenAI / `gpt-transcribe`**; upgrading does not send audio to a new provider automatically. Changes apply to the next **Transcribe & Generate** request, not existing reports. Every part of one recording uses the settings captured when that request starts, even if an administrator changes them during processing.
+Administrators can open **Admin → Transcription settings** to choose the speech-to-text provider and model for **Transcribe, then generate** mode. These settings are ignored while direct-audio reporting is selected. The selection is stored in the existing database and survives restarts. The default stays **OpenAI / `gpt-transcribe`**; upgrading does not send audio to a new provider automatically. Changes apply to the next **Transcribe & Generate** request, not existing reports. Every part of one recording uses the settings captured when that request starts, even if an administrator changes them during processing.
 
 - **OpenAI:** `gpt-transcribe` (current default), plus legacy `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` and `whisper-1`. OpenAI documents the legacy models' shutdown for **26 February 2027**; use the current model for ongoing deployments.
 - **ElevenLabs:** `scribe_v2_medical` (Scribe v2 Medical) and `scribe_v2` (Scribe v2). Configure **`ELEVENLABS_API_KEY`** in the server/container environment before using them. Model access depends on the provider account. Language is detected automatically for Persian/English dictation; audio-event tags and speaker diarization are disabled. No transcript rewriting or paid keyterm-prompting options are requested.

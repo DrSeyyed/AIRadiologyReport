@@ -3,6 +3,7 @@ const titles = new Map([
 	['/studies/import', 'Import studies from Excel'],
 	['/admin/pacs', 'PACS viewer settings'],
 	['/admin/transcription', 'Transcription settings'],
+	['/admin/reporting', 'Reporting settings'],
 	['/admin/body-parts', 'Manage body parts'],
 	['/admin/telegram-registrations', 'Telegram registrations']
 ]);
