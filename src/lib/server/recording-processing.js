@@ -9,7 +9,7 @@ import {
 } from './recordings.js';
 import { getStudyDetail } from './studies.js';
 import { assertStudyActive } from './study-state.js';
-import { generateRecordingReport, generateDirectAudioReport } from './recording-generation.js';
+import { generateRecordingReport, generateDirectAudioReport, requestDirectAudioReport } from './recording-generation.js';
 import { recordingTemplate } from './recording-templates.js';
 import { getTranscriptionSettings } from './transcription-settings.js';
 import { getAttendingReportPreferences } from './report-preferences.js';
@@ -44,7 +44,8 @@ export async function processRecording(
 	studyId,
 	recordingId,
 	generate = generateRecordingReport,
-	directory = 'uploads/reports'
+	directory = 'uploads/reports',
+	{ inspectDirectAudio = false } = {}
 ) {
 	const recording = getRecording(db, studyId, recordingId);
 	assertRecordingMutable(recording);
@@ -62,11 +63,13 @@ export async function processRecording(
 	let runGeneration = generate;
 	if (generate === generateRecordingReport) {
 		const reporting = getReportGenerationSettings(db);
+		if (inspectDirectAudio && reporting.mode !== 'direct_audio')
+			throw recordingError('Select direct audio in Admin → Reporting before inspecting its response.');
 		reportEnglishVariant = getAttendingReportPreferences(db, study.corresponding_attending_id).english_variant;
 		if (!process.env.OPENAI_API_KEY)
 			throw recordingError('Set OPENAI_API_KEY to enable report generation.', 501);
 		if (reporting.mode === 'direct_audio') {
-			runGeneration = generateDirectAudioReport;
+			runGeneration = inspectDirectAudio ? requestDirectAudioReport : generateDirectAudioReport;
 		} else {
 			transcriptionSettings = getTranscriptionSettings(db);
 			if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
@@ -82,6 +85,7 @@ export async function processRecording(
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
 	try {
 		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant }, template, transcriptionSettings);
+		if (inspectDirectAudio) return { ok: true, diagnostic: true, raw_response: text };
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
 		const path = saveRecordingReport(db, recordingId, text, directory);

@@ -156,7 +156,7 @@ export async function generateRecordingReport(s, template, value = DEFAULT_TRANS
 	return openaiGenerateReport(reportPrompt(s, template, transcriptions.join('\n'), englishInstruction));
 }
 
-export async function generateDirectAudioReport(s, template) {
+export async function requestDirectAudioReport(s, template) {
 	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const prompt = reportPrompt(s, template, undefined, englishInstruction);
 	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
@@ -187,6 +187,11 @@ export async function generateDirectAudioReport(s, template) {
 	try { result = await response.json(); } catch {
 		throw new Error('Direct audio reporting returned an invalid response.');
 	}
+	return result;
+}
+
+export async function generateDirectAudioReport(s, template) {
+	const result = await requestDirectAudioReport(s, template);
 	const choice = result?.choices?.[0];
 	if (choice?.message?.refusal) throw new Error('OpenAI declined direct audio report generation. Review the recording and try again.');
 	if (choice?.finish_reason !== 'stop') throw new Error('Direct audio report was not completed. The previous report has been preserved.');

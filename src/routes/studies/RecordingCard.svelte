@@ -11,6 +11,9 @@
 	let resident = $state('');
 	let busy = $state(false);
 	let generating = $state(false);
+	let inspecting = $state(false);
+	let diagnosticsOpen = $state(false);
+	let rawResponse = $state('');
 	let error = $state('');
 
 	function savedExaminations(value) {
@@ -114,6 +117,7 @@
 
 	async function act(action) {
 		if (working) return;
+		rawResponse = '';
 		error = '';
 		busy = true;
 		try {
@@ -148,6 +152,16 @@
 			onReport({ ...recording, __initialText: result.text });
 		});
 		generating = false;
+	}
+
+	async function inspectAudioResponse() {
+		if (!admin || readOnly || dirty || !ready || !recording.audio_report_path || signed || working) return;
+		inspecting = true;
+		await act(async () => {
+			const result = await request('/inspect-audio', 'POST');
+			if (diagnosticsOpen) rawResponse = JSON.stringify(result.raw_response, null, 2);
+		});
+		inspecting = false;
 	}
 
 	function remove() {
@@ -258,6 +272,22 @@
 			<input type="checkbox" class="checkbox checkbox-sm" checked={attendingSigned} disabled={working || (!attendingSigned && (dirty || !ready || !recording.text_report_path || !residentSigned)) || !canAttending} onchange={(event) => sign('attending', event.currentTarget.checked, event.currentTarget)} />Attending signed
 		</label>
 	</div>
+	{#if admin && !readOnly}
+		<details class="rounded-box border border-base-content/20 p-3 min-w-0" bind:open={diagnosticsOpen} ontoggle={(event) => { if (!event.currentTarget.open) rawResponse = ''; }}>
+			<summary class="cursor-pointer text-sm font-semibold">Direct audio diagnostics (temporary)</summary>
+			<div class="space-y-3 pt-3 min-w-0">
+				<p class="text-sm">Direct-audio mode must be selected in Admin → Reporting. Sends a new OpenAI request (API charges apply). Shows the response without parsing its report content or saving a report. The existing report and signatures stay unchanged.</p>
+				<button class="btn btn-sm btn-outline" disabled={working || signed || dirty || !ready || !recording.audio_report_path} onclick={inspectAudioResponse}>{inspecting ? 'Inspecting audio response…' : 'Inspect raw audio response'}</button>
+				{#if rawResponse}
+					<section aria-label="Raw direct-audio response" class="space-y-2 min-w-0">
+						<p class="text-sm text-warning">Diagnostic only — not a saved report. May contain patient information. Redact identifying details before sharing.</p>
+						<pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs bg-base-200 p-3 rounded-box" style="overflow-wrap: anywhere">{rawResponse}</pre>
+						<button class="btn btn-sm btn-outline" onclick={() => rawResponse = ''}>Close raw response</button>
+					</section>
+				{/if}
+			</div>
+		</details>
+	{/if}
 	<TypistSignature {study} {recording} {user} {onChanged} disabled={working} />
 	{#if residentSigned}<p class="text-sm">Resident signature by {recording.resident_signer_fullname || 'Unknown signer'}{#if residentOverride} (on behalf of {recording.resident_fullname || 'assigned resident'}){/if}{#if recording.resident_signed_at} · {recording.resident_signed_at}{/if}</p>{/if}
 	{#if attendingSigned}<p class="text-sm">Attending signature by {recording.attending_signer_fullname || 'Unknown signer'}{#if recording.attending_signed_at} · {recording.attending_signed_at}{/if}</p>{/if}
