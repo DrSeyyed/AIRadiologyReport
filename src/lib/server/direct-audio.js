@@ -9,8 +9,10 @@ const SAMPLE_RATE = 16000;
 export const MAX_DIRECT_AUDIO_SECONDS = 600;
 const MAX_PCM_BYTES = MAX_DIRECT_AUDIO_SECONDS * SAMPLE_RATE * 2;
 
-export async function prepareDirectAudio(parts) {
-	if (!parts?.length) throw new Error('No audio parts were provided for direct reporting.');
+export async function prepareDirectAudio(parts, { transcription = false } = {}) {
+	if (!parts?.length) throw new Error(transcription
+		? 'No audio parts were provided for audio-model transcription.'
+		: 'No audio parts were provided for direct reporting.');
 	const directory = await mkdtemp(join(tmpdir(), 'radiology-audio-'));
 	try {
 		let bytes = 0;
@@ -52,7 +54,9 @@ export async function prepareDirectAudio(parts) {
 			} catch (error) {
 				if (error.code === 'ENOENT')
 					throw new Error(
-						'Direct audio reporting requires ffmpeg on the server. Install it or set FFMPEG_PATH, then try again.'
+						transcription
+							? 'Audio-model transcription requires ffmpeg on the server. Install it or set FFMPEG_PATH, then try again.'
+							: 'Direct audio reporting requires ffmpeg on the server. Install it or set FFMPEG_PATH, then try again.'
 					);
 				throw new Error(
 					'Audio conversion failed. Check the recording and server ffmpeg configuration, then try again.'
@@ -60,11 +64,15 @@ export async function prepareDirectAudio(parts) {
 			}
 			const size = (await stat(output)).size;
 			if (!size || size % 2)
-				throw new Error('A recording part contains no usable audio for direct reporting.');
+				throw new Error(transcription
+					? 'A recording part contains no usable audio for audio-model transcription.'
+					: 'A recording part contains no usable audio for direct reporting.');
 			bytes += size;
 			if (bytes > MAX_PCM_BYTES)
 				throw new Error(
-					'Direct audio reporting supports at most 10 minutes of total audio. Use the transcription workflow for longer recordings.'
+					transcription
+						? 'Audio-model transcription supports at most 10 minutes per audio part. Select a dedicated transcription model for longer parts.'
+						: 'Direct audio reporting supports at most 10 minutes of total audio. Use the transcription workflow for longer recordings.'
 				);
 			buffers.push(await readFile(output));
 		}

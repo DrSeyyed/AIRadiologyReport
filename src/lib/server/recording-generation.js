@@ -6,6 +6,7 @@ import { reportEnglishInstruction } from './report-preferences.js';
 import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
 import { prepareDirectAudio } from './direct-audio.js';
 import { normalizeDirectReportOutput } from './direct-report-output.js';
+import { transcribeWithAudioModel } from './audio-model-transcription.js';
 
 const calendarInstruction = 'Preserve dictated dates in their original calendar, year, month, day and precision. Never convert Jalali/Shamsi/Solar Hijri dates to Gregorian or vice versa. Do not substitute Gregorian month names for Jalali months. Do not infer an unspecified calendar, expand a shortened year, or add missing date components. English translation and UK/US report preferences do not authorise calendar conversion.';
 
@@ -19,6 +20,8 @@ ${calendarInstruction} Preserve the original date notation and component order, 
 
 export async function transcribeAudio(filePath, fileName, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
 	const settings = normalizeTranscriptionSettings(value);
+	if (settings.provider === 'openai' && settings.model === DIRECT_AUDIO_MODEL)
+		return transcribeWithAudioModel(filePath, transcriptionPrompt);
 	const elevenlabs = settings.provider === 'elevenlabs';
 	const label = elevenlabs ? 'ElevenLabs' : 'OpenAI';
 	const form = new FormData();

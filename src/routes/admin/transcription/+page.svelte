@@ -1,6 +1,7 @@
 <script>
 	import { enhance } from '$app/forms';
 	import { TRANSCRIPTION_PROVIDERS } from '$lib/transcription-models.js';
+	import { DIRECT_AUDIO_MODEL } from '$lib/report-generation-models.js';
 
 	let { data, form } = $props();
 	let selection = $state(null);
@@ -43,7 +44,7 @@
 		</label>
 		<label class="form-control min-w-0">
 			<span class="label-text">Transcription model</span>
-			<select name="model" class="select select-bordered w-full min-w-0" value={model} onchange={(event) => selection = { provider, model: event.currentTarget.value }} aria-describedby="model-help legacy-help">
+			<select name="model" class="select select-bordered w-full min-w-0" value={model} onchange={(event) => selection = { provider, model: event.currentTarget.value }} aria-describedby="model-help legacy-help audio-model-help">
 				{#each models as entry (entry.id)}
 					<option value={entry.id}>{entry.label}</option>
 				{/each}
@@ -51,6 +52,10 @@
 		</label>
 		<p id="model-help" class="text-sm">The default remains OpenAI / GPT Transcribe. Providers are never switched automatically. ElevenLabs offers Scribe v2 Medical and Scribe v2.</p>
 		<p id="legacy-help" class="text-sm">OpenAI models labelled legacy are deprecated and scheduled to shut down on February 26, 2027. Prefer a current model.</p>
+		<p id="audio-model-help" class="text-sm">GPT Audio 1.5 can transcribe each audio part through Chat Completions, then pass the ordered transcripts to the existing gpt-6.1-sol report generator. Choose Transcribe, then generate in Reporting settings to use this selection; direct audio reporting remains a separate option.</p>
+		{#if model === DIRECT_AUDIO_MODEL}
+			<div class="alert alert-info" role="status">GPT Audio transcription requires FFmpeg on the server and supports up to 10 minutes per audio part. It makes one transcription request per part, followed by the usual report-generation request. Original date notation is preserved during transcription; the report generator applies numeric Jalali dates and the selected template.</div>
+		{/if}
 		<noscript><p>Enable JavaScript to change providers and update the available model options.</p></noscript>
 		<button class="btn btn-primary" type="submit">Save settings</button>
 	</form>

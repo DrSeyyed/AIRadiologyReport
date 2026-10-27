@@ -139,6 +139,11 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	assert.match(source, /February 26, 2027/);
 	assert.match(source, /mixed Persian\/English/);
 	assert.match(source, /no silent fallback/);
+	assert.match(source, /GPT Audio 1\.5 can transcribe each audio part through Chat Completions/);
+	assert.match(source, /existing gpt-6\.1-sol report generator/);
+	assert.match(source, /direct audio reporting remains a separate option/);
+	assert.match(source, /model === DIRECT_AUDIO_MODEL/);
+	assert.match(source, /up to 10 minutes per audio part/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/transcription'\)\}[^]*?\{\/if\}/);
 });

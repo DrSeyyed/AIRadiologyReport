@@ -1,7 +1,10 @@
+import { DIRECT_AUDIO_MODEL } from './report-generation-models.js';
+
 export const TRANSCRIPTION_PROVIDERS = [
 	{
 		id: 'openai', label: 'OpenAI', models: [
 			{ id: 'gpt-transcribe', label: 'GPT Transcribe (current default)' },
+			{ id: DIRECT_AUDIO_MODEL, label: 'GPT Audio 1.5 (transcription via Chat Completions)' },
 			{ id: 'gpt-4o-transcribe', label: 'GPT-4o Transcribe (legacy)' },
 			{ id: 'gpt-4o-mini-transcribe', label: 'GPT-4o Mini Transcribe (legacy)' },
 			{ id: 'whisper-1', label: 'Whisper-1 (legacy)' }
