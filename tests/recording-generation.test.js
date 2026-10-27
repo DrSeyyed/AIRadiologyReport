@@ -55,7 +55,7 @@ The supplied template is the required report structure, not an example. Preserve
 The selected English variant and complete-sentence rules take precedence over template spelling and telegraphic wording in narrative text, but must not rename headings or convert dates.
 Preserve all clinically relevant information from the dictation. Do not omit any finding.
 Adapt findings within the corresponding template sections. Replace all template statements that contradict the dictation, including contradictory normal statements elsewhere in the report. Keep other applicable template content. Place additional dictated findings in the most appropriate existing section without inventing new sections.
-Preserve dictated dates in their original calendar, year, month, day, order and precision. Never convert Jalali/Shamsi/Solar Hijri dates to Gregorian or vice versa. Keep Jalali month names as Jalali month names; do not substitute Gregorian month names. Do not infer an unspecified calendar, expand a shortened year, or add missing date components. English translation and UK/US report preferences do not authorise calendar conversion.
+Preserve dictated dates in their original calendar, year, month, day and precision. Never convert Jalali/Shamsi/Solar Hijri dates to Gregorian or vice versa. Do not substitute Gregorian month names for Jalali months. Do not infer an unspecified calendar, expand a shortened year, or add missing date components. English translation and UK/US report preferences do not authorise calendar conversion. Write dates using English (ASCII 0-9) digits, not Persian or Arabic digits. Format complete, unambiguous Jalali dates with a full year as YYYY/MM/DD, with two-digit month and day; replace Persian or transliterated Jalali month names with their month numbers, without changing the calendar or date values. Jalali month mapping: Farvardin/فروردین=01, Ordibehesht/اردیبهشت=02, Khordad/خرداد=03, Tir/تیر=04, Mordad/مرداد=05, Shahrivar/شهریور=06, Mehr/مهر=07, Aban/آبان=08, Azar/آذر=09, Dey/دی=10, Bahman/بهمن=11, Esfand/اسفند=12. For example, 22 اسفند 1405 becomes 1405/12/22, and ۱۲ مهر ۱۴۰۴ becomes 1404/07/12; these are numeric Jalali dates, not Gregorian conversions. For partial or ambiguous dates, preserve the supplied components, order and precision rather than inventing a complete YYYY/MM/DD date. Preserve the component order of non-Jalali dates. Do not leave Persian month names or digits in the final English report; transliterate a month name only if it cannot safely be represented numerically.
 Bold only pathologic or abnormal findings and recommendations with double asterisks. Do not bold normal or negative findings, headings, or routine text.
 Do not invent findings, diagnoses, measurements, comparisons, or recommendations.
 Correct obvious transcription, grammar, and terminology errors while preserving clinical meaning.
@@ -109,22 +109,32 @@ test('every audio part receives bilingual hints and mixed-language findings reac
 	assert.match(hints[0], /Persian accent/);
 });
 
-test('transcription workflow requests exact template headings and unchanged dates independently of English preference', async (t) => {
+test('transcription workflow requests template headings and numeric Jalali dates independently of English preference', async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), 'template-calendar-prompt-'));
 	const audio = join(directory, 'synthetic.ogg');
 	writeFileSync(audio, 'Synthetic audio; no patient data');
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const template = 'TECHNIQUE:\nSynthetic technique.\nOBSERVATIONS:\nSynthetic findings.\nIMPRESSION:\nSynthetic summary.';
 	for (const variant of ['british', 'american']) {
-		for (const date of ['۱۴۰۴/۰۷/۱۲ (Jalali)', '12 Mehr 1404 (Shamsi)', '2025-02-03 (Gregorian)', '04/07/12']) {
+		for (const [date, formatted] of [
+			['۱۴۰۴/۰۷/۱۲ (Jalali)', '1404/07/12'],
+			['12 Mehr 1404 (Shamsi)', '1404/07/12'],
+			['22 اسفند 1405', '1405/12/22'],
+			['2025-02-03 (Gregorian)', '2025-02-03'],
+			['04/07/12', '04/07/12'],
+			['۱۴۰۵ (Jalali year only)', '1405']
+		]) {
 			await t.test(`${variant}: ${date}`, async (t) => {
 				const dictation = `Synthetic comparison date: ${date}.`;
-				const report = template.replace('Synthetic findings.', `The synthetic comparison date is ${date}.`);
+				const report = template.replace('Synthetic findings.', `The synthetic comparison date is ${formatted}.`);
 				let calls = 0;
 				t.mock.method(globalThis, 'fetch', async (url, options) => {
 					calls++;
 					if (url.endsWith('/audio/transcriptions')) {
-						assert.match(options.body.get('prompt'), /Never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
+						const hint = options.body.get('prompt');
+						assert.match(hint, /Never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
+						assert.match(hint, /Preserve the original date notation and component order, including Jalali month names/);
+						assert.doesNotMatch(hint, /YYYY\/MM\/DD/);
 						return { ok: true, json: async () => ({ text: dictation }) };
 					}
 					assert.equal(url, 'https://api.openai.com/v1/responses');
@@ -136,6 +146,12 @@ test('transcription workflow requests exact template headings and unchanged date
 					assert.match(prompt, /Never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
 					assert.match(prompt, /Do not infer an unspecified calendar, expand a shortened year, or add missing date components/);
 					assert.match(prompt, /UK\/US report preferences do not authorise calendar conversion/);
+					assert.match(prompt, /English \(ASCII 0-9\) digits/);
+					assert.match(prompt, /Format complete, unambiguous Jalali dates with a full year as YYYY\/MM\/DD/);
+					assert.match(prompt, /22 اسفند 1405 becomes 1405\/12\/22/);
+					assert.match(prompt, /Esfand\/اسفند=12/);
+					assert.match(prompt, /For partial or ambiguous dates, preserve the supplied components, order and precision/);
+					assert.doesNotMatch(prompt, /Keep Jalali month names as Jalali month names/);
 					assert.match(prompt, variant === 'american' ? /Use American/ : /Use British/);
 					assert.ok(prompt.includes(`Template:\n"${template}"`));
 					assert.ok(prompt.includes(`Doctor's dictation:\n"${dictation}"`));

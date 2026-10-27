@@ -399,16 +399,23 @@ test('direct mode does not bypass signed recording guards or mutate saved signat
 	assert.equal(readFileSync(path, 'utf8'), 'Signed report.');
 });
 
-test('direct audio sends mandatory template and calendar rules for UK/US English and saves provider dates unchanged', async (t) => {
+test('direct audio requests numeric Jalali dates and template headings for UK/US English and saves provider output unchanged', async (t) => {
 	for (const variant of ['british', 'american']) {
-		for (const date of ['۱۴۰۴/۰۷/۱۲ (Jalali)', '12 Mehr 1404 (Shamsi)', '2025-02-03 (Gregorian)']) {
+		for (const [date, formatted] of [
+			['۱۴۰۴/۰۷/۱۲ (Jalali)', '1404/07/12'],
+			['12 Mehr 1404 (Shamsi)', '1404/07/12'],
+			['22 اسفند 1405', '1405/12/22'],
+			['2025-02-03 (Gregorian)', '2025-02-03'],
+			['04/07/12', '04/07/12'],
+			['۱۴۰۵ (Jalali year only)', '1405']
+		]) {
 			await t.test(`${variant}: ${date}`, async (t) => {
 				const { db, directory, studyId, id } = fixture(t);
 				setReportGenerationSettings(db, { mode: 'direct_audio' });
 				setAttendingReportPreferences(db, 2, { english_variant: variant });
 				const template = 'TECHNIQUE:\nSynthetic technique.\nOBSERVATIONS:\nSynthetic findings.\nIMPRESSION:\nSynthetic summary.';
 				db.prepare('UPDATE report_templates SET text=? WHERE modality_id=1 AND exam_type_id=1').run(template);
-				const report = template.replace('Synthetic findings.', `The synthetic comparison date is ${date}.`);
+				const report = template.replace('Synthetic findings.', `The synthetic comparison date is ${formatted}.`);
 				let calls = 0;
 				t.mock.method(globalThis, 'fetch', async (url, options) => {
 					calls++;
@@ -418,13 +425,22 @@ test('direct audio sends mandatory template and calendar rules for UK/US English
 					assert.match(system, /template headings and section order are mandatory/);
 					assert.match(system, /never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
 					assert.match(system, /An English report does not require Gregorian dates/);
+					assert.match(system, /English \(ASCII 0-9\) digits/);
+					assert.match(system, /YYYY\/MM\/DD using numeric Jalali months/);
+					assert.match(system, /22 اسفند 1405 becomes 1405\/12\/22/);
+					assert.match(system, /never invent missing components/);
 					const prompt = payload.messages[1].content[0].text;
 					assert.match(prompt, /Preserve every supplied heading's wording and case/);
 					assert.match(prompt, /keep sections in exactly the supplied order/);
 					assert.match(prompt, /retain the template's existing conclusion, impression or summary heading exactly as supplied/);
 					assert.match(prompt, /without inventing new sections/);
-					assert.match(prompt, /Preserve dictated dates in their original calendar, year, month, day, order and precision/);
-					assert.match(prompt, /Keep Jalali month names as Jalali month names/);
+					assert.match(prompt, /Preserve dictated dates in their original calendar, year, month, day and precision/);
+					assert.match(prompt, /English \(ASCII 0-9\) digits/);
+					assert.match(prompt, /Format complete, unambiguous Jalali dates with a full year as YYYY\/MM\/DD/);
+					assert.match(prompt, /22 اسفند 1405 becomes 1405\/12\/22/);
+					assert.match(prompt, /Esfand\/اسفند=12/);
+					assert.match(prompt, /For partial or ambiguous dates, preserve the supplied components, order and precision/);
+					assert.doesNotMatch(prompt, /Keep Jalali month names as Jalali month names/);
 					assert.match(prompt, /Do not infer an unspecified calendar, expand a shortened year, or add missing date components/);
 					assert.match(prompt, /Check every dictated date/);
 					assert.match(prompt, variant === 'american' ? /Use American/ : /Use British/);
