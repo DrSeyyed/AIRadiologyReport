@@ -83,10 +83,10 @@ function fixture(t) {
 	});
 	return { db, directory, audio, second, studyId, id: recording.id };
 }
-const completed = () => ({
+const completed = (text = 'A joint effusion is present.') => ({
 	ok: true,
 	json: async () => ({
-		choices: [{ finish_reason: 'stop', message: { content: 'A joint effusion is present.' } }]
+		choices: [{ finish_reason: 'stop', message: { content: text } }]
 	})
 });
 const conversionDirs = () =>
@@ -174,7 +174,13 @@ test('direct processing sends joined audio once with clinical instructions and b
 		assert.equal(payload.model, 'gpt-audio-1.5');
 		assert.deepEqual(payload.modalities, ['text']);
 		assert.equal(payload.messages[0].role, 'system');
-		const prompt = payload.messages[0].content;
+		assert.match(payload.messages[0].content, /Never return JSON/);
+		assert.match(payload.messages[0].content, /NO_USABLE_CLINICAL_DICTATION/);
+		assert.equal(payload.messages[1].role, 'user');
+		const content = payload.messages[1].content;
+		assert.equal(content.length, 2);
+		assert.equal(content[0].type, 'text');
+		const prompt = content[0].text;
 		assert.match(prompt, /US English spelling and phrasing/);
 		assert.match(prompt, /complete grammatical sentence/);
 		assert.match(prompt, /Do not invent findings/);
@@ -184,11 +190,11 @@ test('direct processing sends joined audio once with clinical instructions and b
 		);
 		assert.match(prompt, /all|every recording part/);
 		assert.match(prompt, /Synthetic template/);
-		const content = payload.messages[1].content;
-		assert.equal(content.length, 1);
-		assert.equal(content[0].type, 'input_audio');
-		assert.equal(content[0].input_audio.format, 'wav');
-		const samples = Buffer.from(content[0].input_audio.data, 'base64');
+		assert.match(prompt, /Keep its headings and section order/);
+		assert.match(prompt, /Replace template statements that conflict with the dictation/);
+		assert.equal(content[1].type, 'input_audio');
+		assert.equal(content[1].input_audio.format, 'wav');
+		const samples = Buffer.from(content[1].input_audio.data, 'base64');
 		assert.equal(samples.readUInt32LE(40), 4800);
 		assert.equal(samples.readInt16LE(44), 1000);
 		assert.equal(samples.readInt16LE(3244), -2000);
@@ -200,6 +206,44 @@ test('direct processing sends joined audio once with clinical instructions and b
 	const result = await pending;
 	assert.equal(calls, 1);
 	assert.equal(readFileSync(result.path, 'utf8'), 'A joint effusion is present.');
+	assert.equal(getRecording(db, studyId, id).processing, 0);
+});
+
+test('combined CT templates accompany the audio in selection order and JSON-wrapped reports are saved as report text', async (t) => {
+	const { db, directory, studyId, id } = fixture(t);
+	db.exec(`INSERT INTO modalities VALUES(2,'CT','Computed Tomography');
+		INSERT INTO exam_types VALUES(2,'CHEST','Chest'),(3,'ABDOMEN','Abdomen'),(4,'PELVIS','Pelvis');
+		INSERT INTO report_templates(modality_id,exam_type_id,text) VALUES
+		(2,2,'Chest template: Synthetic chest section.'),
+		(2,3,'Abdomen template: Synthetic abdomen section.'),
+		(2,4,'Pelvis template: Synthetic pelvis section.');`);
+	configureRecording(db, studyId, id, {
+		modality_id: 2,
+		exam_type_ids: [4, 2, 3],
+		corresponding_resident_id: 1
+	});
+	setReportGenerationSettings(db, { mode: 'direct_audio' });
+	const text =
+		'Study: Synthetic combined CT\nPelvis\nSynthetic pelvic report.\nChest\nSynthetic chest report.\nAbdomen\nSynthetic abdominal report.\n\nConclusion\nSynthetic combined conclusion.';
+	let calls = 0;
+	t.mock.method(globalThis, 'fetch', async (url, options) => {
+		calls++;
+		assert.equal(url, 'https://api.openai.com/v1/chat/completions');
+		const content = JSON.parse(options.body).messages[1].content;
+		const prompt = content[0].text;
+		assert.match(prompt, /Pelvis template: Synthetic pelvis section/);
+		assert.match(prompt, /Chest template: Synthetic chest section/);
+		assert.match(prompt, /Abdomen template: Synthetic abdomen section/);
+		assert.ok(prompt.indexOf('## Pelvis') < prompt.indexOf('## Chest'));
+		assert.ok(prompt.indexOf('## Chest') < prompt.indexOf('## Abdomen'));
+		assert.match(prompt, /exactly one shared Conclusion/);
+		assert.equal(content[1].type, 'input_audio');
+		return completed(JSON.stringify({ final_report: text }));
+	});
+	const result = await processRecording(db, studyId, id, undefined, directory);
+	assert.equal(calls, 1);
+	assert.equal(result.text, text);
+	assert.equal(readFileSync(result.path, 'utf8'), text);
 	assert.equal(getRecording(db, studyId, id).processing, 0);
 });
 
@@ -269,7 +313,12 @@ test('direct API errors, refusals and incomplete/empty responses never save part
 		'length',
 		'filter',
 		'empty',
-		'missing'
+		'missing',
+		'duration',
+		'duration-json',
+		'wrapped-duration',
+		'no-dictation',
+		'malformed-wrapper'
 	])
 		await t.test(scenario, async (t) => {
 			const { db, directory, studyId, id } = fixture(t);
@@ -282,6 +331,14 @@ test('direct API errors, refusals and incomplete/empty responses never save part
 				if (scenario === 'network') throw new Error('sensitive-provider-content');
 				if (scenario === 'http')
 					return { ok: false, status: 403, text: async () => 'sensitive-provider-content' };
+				const unusable = {
+					duration: 'Audio duration: 00:47',
+					'duration-json': '{"duration":47}',
+					'wrapped-duration': '{"final_report":"Audio duration: 00:47"}',
+					'no-dictation': 'NO_USABLE_CLINICAL_DICTATION',
+					'malformed-wrapper': '{"final_report":"truncated'
+				};
+				if (Object.hasOwn(unusable, scenario)) return completed(unusable[scenario]);
 				return {
 					ok: true,
 					json: async () => {
