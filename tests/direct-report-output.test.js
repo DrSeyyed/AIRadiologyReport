@@ -27,6 +27,60 @@ test('final_report JSON, quoted JSON and complete code fences are unwrapped with
 	}
 });
 
+test('literal line breaks and tabs inside a complete final_report JSON string are decoded losslessly', () => {
+	const sentence =
+		'A "synthetic" phrase, literal \\n marker and **5 × 3 mm** measurement are preserved.';
+	const text = `Findings\r\n\t${sentence}\r\nConclusion\r\nSynthetic conclusion.`;
+	const raw =
+		'{"final_report":"Findings\r\n\t' +
+		JSON.stringify(sentence).slice(1, -1) +
+		'\r\nConclusion\r\nSynthetic conclusion."}';
+	assert.equal(normalizeDirectReportOutput(raw), text);
+	assert.equal(normalizeDirectReportOutput('{"final_report":"' + report + '"}'), report);
+});
+
+test('only structural trailing commas are removed, without dropping commas or braces from report text', () => {
+	const text = report + '\nSynthetic punctuation: comma, } and comma, ] remain unchanged.';
+	const raw = JSON.stringify({ final_report: text }).slice(0, -1) + ',\n}';
+	assert.equal(normalizeDirectReportOutput(raw), text);
+	assert.equal(
+		normalizeDirectReportOutput('```json\n{"final_report":"' + report + '",\n}\n```'),
+		report
+	);
+	assert.throws(
+		() => normalizeDirectReportOutput('{"duration":47,}'),
+		/JSON object; fields=1; final_report=missing; duration=number/
+	);
+	assert.throws(
+		() => normalizeDirectReportOutput('{"final_report":"Audio duration: 00:47",}'),
+		/audio metadata or no usable clinical dictation/
+	);
+});
+
+test('limited transport repairs never invent missing clinical text or change invalid quotes and escapes', () => {
+	for (const output of [
+		'{"final_report":"PRIVATE_REPORT\n',
+		'{"final_report":"PRIVATE_REPORT"',
+		'{"final_report":"A "PRIVATE_REPORT" phrase."}',
+		'{"final_report":"PRIVATE_REPORT \\q"}',
+		"{'final_report': 'PRIVATE_REPORT'}",
+		'{"final_report":"PRIVATE_REPORT\n","PRIVATE_FIELD":"PRIVATE_VALUE",}'
+	]) {
+		assert.throws(
+			() => normalizeDirectReportOutput(output),
+			(error) => {
+				assert.match(error.message, /unusable report format/);
+				assert.doesNotMatch(error.message, /PRIVATE_/);
+				return true;
+			}
+		);
+	}
+	assert.throws(
+		() => normalizeDirectReportOutput('{"final_report":"PRIVATE_REPORT\n'),
+		/syntax=incomplete JSON string/
+	);
+});
+
 test('duration-only text and no-dictation responses are rejected instead of becoming reports', () => {
 	for (const output of [
 		'Audio duration: 00:47',

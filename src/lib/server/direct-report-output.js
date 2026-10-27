@@ -35,6 +35,55 @@ const durationOnly =
 const noDictation =
 	/^(?:NO_USABLE_CLINICAL_DICTATION|No (?:usable|intelligible|audible) (?:clinical )?(?:dictation|speech|audio)(?: (?:was |is )?(?:detected|found|provided|available))?)[.!]?$/i;
 
+function repairJsonTransport(text) {
+	// Repair transport syntax only; never add missing quotes, braces or clinical text.
+	let result = '';
+	let inString = false;
+	let escaped = false;
+	for (let index = 0; index < text.length; index++) {
+		const character = text[index];
+		if (inString) {
+			if (escaped) {
+				result += character;
+				escaped = false;
+				continue;
+			}
+			if (character === '\\') {
+				result += character;
+				escaped = true;
+				continue;
+			}
+			if (character === '"') inString = false;
+			if (character === '\n') result += '\\n';
+			else if (character === '\r') result += '\\r';
+			else if (character === '\t') result += '\\t';
+			else result += character;
+		} else {
+			if (character === '"') inString = true;
+			if (character === ',') {
+				let next = index + 1;
+				while (next < text.length && ' \t\r\n'.includes(text[next])) next++;
+				if (text[next] === '}' || text[next] === ']') continue;
+			}
+			result += character;
+		}
+	}
+	return result;
+}
+
+function jsonSyntaxDiagnostic(error) {
+	const message = typeof error?.message === 'string' ? error.message : '';
+	if (/unterminated string/i.test(message)) return 'incomplete JSON string';
+	if (/unexpected end/i.test(message)) return 'incomplete JSON container';
+	if (/bad control character/i.test(message))
+		return 'invalid control character inside a JSON string';
+	if (/bad (?:escaped character|unicode escape)/i.test(message)) return 'invalid JSON escape';
+	if (/expected.*property name/i.test(message)) return 'invalid JSON property syntax';
+	if (/after property value/i.test(message))
+		return 'invalid JSON separator or unescaped quotation mark';
+	return 'invalid JSON syntax';
+}
+
 export function normalizeDirectReportOutput(value) {
 	if (typeof value !== 'string' || !value.trim())
 		throw new Error('Direct audio reporting returned no report text.');
@@ -51,14 +100,23 @@ export function normalizeDirectReportOutput(value) {
 		let parsed;
 		try {
 			parsed = JSON.parse(text);
-		} catch {
-			const prefix =
-				text[0] === '"'
-					? 'quotation mark'
-					: text[0] === '['
-						? 'opening square bracket'
-						: 'opening brace';
-			throw invalidOutput(`unparseable JSON-like text beginning with ${prefix}`, wrappers);
+		} catch (error) {
+			try {
+				const repaired = repairJsonTransport(text);
+				if (repaired === text) throw error;
+				parsed = JSON.parse(repaired);
+			} catch (parseError) {
+				const prefix =
+					text[0] === '"'
+						? 'quotation mark'
+						: text[0] === '['
+							? 'opening square bracket'
+							: 'opening brace';
+				throw invalidOutput(
+					`unparseable JSON-like text beginning with ${prefix}; syntax=${jsonSyntaxDiagnostic(parseError)}`,
+					wrappers
+				);
+			}
 		}
 		if (typeof parsed === 'string') {
 			wrappers.push('JSON string');

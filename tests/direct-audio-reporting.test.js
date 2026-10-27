@@ -209,7 +209,7 @@ test('direct processing sends joined audio once with clinical instructions and b
 	assert.equal(getRecording(db, studyId, id).processing, 0);
 });
 
-test('combined CT templates accompany the audio in selection order and JSON-wrapped reports are saved as report text', async (t) => {
+test('combined CT templates accompany audio in order and raw-newline JSON reports are saved losslessly as report text', async (t) => {
 	const { db, directory, studyId, id } = fixture(t);
 	db.exec(`INSERT INTO modalities VALUES(2,'CT','Computed Tomography');
 		INSERT INTO exam_types VALUES(2,'CHEST','Chest'),(3,'ABDOMEN','Abdomen'),(4,'PELVIS','Pelvis');
@@ -238,7 +238,9 @@ test('combined CT templates accompany the audio in selection order and JSON-wrap
 		assert.ok(prompt.indexOf('## Chest') < prompt.indexOf('## Abdomen'));
 		assert.match(prompt, /exactly one shared Conclusion/);
 		assert.equal(content[1].type, 'input_audio');
-		return completed(JSON.stringify({ final_report: text }));
+		const wrapped = '{"final_report":"' + text + '",\n}';
+		assert.throws(() => JSON.parse(wrapped));
+		return completed(wrapped);
 	});
 	const result = await processRecording(db, studyId, id, undefined, directory);
 	assert.equal(calls, 1);
