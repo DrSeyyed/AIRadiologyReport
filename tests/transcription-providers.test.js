@@ -238,7 +238,7 @@ test('GPT Audio transcription sends ordered parts to Chat Completions then passe
 			assert.deepEqual(decoded.subarray(44), readFileSync(transcriptions ? second : audio).subarray(44));
 			setTranscriptionSettings(db, { provider: 'elevenlabs', model: 'scribe_v2' });
 			const dictation = dictations[transcriptions++];
-			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'tool_calls', message: {
+			return { ok: true, json: async () => ({ choices: [{ finish_reason: transcriptions === 1 ? 'stop' : 'tool_calls', message: {
 				content: null,
 				tool_calls: [{ id: `synthetic-${transcriptions}`, type: 'function', function: {
 					name: 'submit_transcript', arguments: JSON.stringify({ transcript: dictation })

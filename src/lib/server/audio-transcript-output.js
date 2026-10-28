@@ -62,7 +62,7 @@ export function audioTranscriptionChoice(choice) {
 	if (!['stop', 'tool_calls'].includes(choice?.finish_reason))
 		throw new Error('OpenAI audio-model transcription was not completed.');
 	const calls = choice.message?.tool_calls;
-	if (choice.finish_reason === 'tool_calls') {
+	if (choice.finish_reason === 'tool_calls' || calls?.length) {
 		if (!Array.isArray(calls) || calls.length !== 1 || calls[0]?.type !== 'function' ||
 			calls[0].function?.name !== AUDIO_TRANSCRIPT_TOOL_NAME)
 			throw invalidFormat('expected one transcript submission');
@@ -75,6 +75,5 @@ export function audioTranscriptionChoice(choice) {
 			throw invalidFormat('transcript submission is missing transcript text');
 		return normalizeAudioTranscriptOutput(args);
 	}
-	if (calls?.length) throw invalidFormat('transcript submission was not completed');
 	return normalizeAudioTranscriptOutput(choice.message?.content);
 }

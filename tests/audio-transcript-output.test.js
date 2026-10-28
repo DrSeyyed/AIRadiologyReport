@@ -89,11 +89,13 @@ test('audio-model request normalizes wrapped output before returning it to the e
 	assert.equal(calls, 1);
 });
 
-test('documented tool-call completion accepts null message content and tool_calls finish reason', () => {
-	assert.equal(audioTranscriptionChoice(toolChoice()), transcript);
-	assert.equal(audioTranscriptionChoice(toolChoice(JSON.stringify({ transcript, confidence: null }))), transcript);
-	for (const args of ['not JSON', '[]', 'null', '{}', '{"transcript":12}', '{"text":"synthetic text"}', null]) {
-		assert.throws(() => audioTranscriptionChoice(toolChoice(args)), AudioTranscriptFormatError);
+test('complete transcript tool calls accept both stop and tool_calls finish reasons with null content', () => {
+	for (const finish_reason of ['stop', 'tool_calls']) {
+		assert.equal(audioTranscriptionChoice({ ...toolChoice(), finish_reason }), transcript);
+		assert.equal(audioTranscriptionChoice({ ...toolChoice(JSON.stringify({ transcript, confidence: null })), finish_reason }), transcript);
+		for (const args of ['not JSON', '[]', 'null', '{}', '{"transcript":12}', '{"text":"synthetic text"}', '{"transcript":"unfinished', null]) {
+			assert.throws(() => audioTranscriptionChoice({ ...toolChoice(args), finish_reason }), AudioTranscriptFormatError);
+		}
 	}
 	const wrong = toolChoice();
 	wrong.message.tool_calls[0].function.name = 'generate_report';
@@ -108,8 +110,19 @@ test('tool-call payload validation rejects missing, duplicate and incomplete sub
 		{ finish_reason: 'tool_calls', message: { tool_calls: [] } },
 		{ finish_reason: 'tool_calls', message: { tool_calls: [null] } },
 		{ finish_reason: 'tool_calls', message: { tool_calls: [...toolChoice().message.tool_calls, ...toolChoice().message.tool_calls] } },
-		{ ...toolChoice(), finish_reason: 'stop' }
+		{ finish_reason: 'stop', message: { tool_calls: [null] } },
+		{ finish_reason: 'stop', message: { tool_calls: [...toolChoice().message.tool_calls, ...toolChoice().message.tool_calls] } }
 	]) assert.throws(() => audioTranscriptionChoice(choice), AudioTranscriptFormatError);
+});
+
+test('stop with a complete transcript tool call succeeds without retrying the audio', async (t) => {
+	let calls = 0;
+	t.mock.method(globalThis, 'fetch', async () => {
+		calls++;
+		return { ok: true, json: async () => ({ choices: [{ ...toolChoice(), finish_reason: 'stop' }] }) };
+	});
+	assert.equal(await transcribeWithAudioModel('unused.wav', 'Transcribe.', 'original-audio'), transcript);
+	assert.equal(calls, 1);
 });
 
 test('metadata-only, wrong-schema and malformed format results retry original audio once using the same model', async (t) => {
