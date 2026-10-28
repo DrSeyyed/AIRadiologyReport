@@ -14,6 +14,8 @@ import { recordingTemplate } from './recording-templates.js';
 import { getTranscriptionSettings } from './transcription-settings.js';
 import { getAttendingReportPreferences } from './report-preferences.js';
 import { getReportGenerationSettings } from './report-generation-settings.js';
+import { getGptAudioSettings } from './gpt-audio-settings.js';
+import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -58,6 +60,7 @@ export async function processRecording(
 	const template = recordingTemplate(db, recording);
 	const study = getStudyDetail(db, studyId);
 	let transcriptionSettings;
+	let gptAudioSettings;
 	let reportEnglishVariant;
 	let runGeneration = generate;
 	if (generate === generateRecordingReport) {
@@ -72,6 +75,8 @@ export async function processRecording(
 			if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
 				throw recordingError('Set ELEVENLABS_API_KEY to use ElevenLabs transcription.', 501);
 		}
+		if (reporting.mode === 'direct_audio' || transcriptionSettings?.model === DIRECT_AUDIO_MODEL)
+			gptAudioSettings = getGptAudioSettings(db);
 	}
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db
@@ -81,7 +86,7 @@ export async function processRecording(
 		.run(started, recordingId);
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
 	try {
-		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant }, template, transcriptionSettings);
+		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings }, template, transcriptionSettings);
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
 		const path = saveRecordingReport(db, recordingId, text, directory);

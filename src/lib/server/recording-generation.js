@@ -4,7 +4,8 @@ import { examinationLabel, recordingExaminations } from '../recording-examinatio
 import { DEFAULT_TRANSCRIPTION_SETTINGS, normalizeTranscriptionSettings } from '../transcription-models.js';
 import { reportEnglishInstruction } from './report-preferences.js';
 import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
-import { prepareDirectAudio } from './direct-audio.js';
+import { prepareDirectAudio, AudioDurationLimitError } from './direct-audio.js';
+import { DEFAULT_GPT_AUDIO_SETTINGS, normalizeGptAudioSettings } from '../gpt-audio-settings.js';
 import { normalizeDirectReportOutput } from './direct-report-output.js';
 import { transcribeWithAudioModel } from './audio-model-transcription.js';
 
@@ -157,21 +158,41 @@ ${transcription === undefined ? 'Listen to the attached audio. It contains every
 Patient gender: ${s.patient_gender}`;
 }
 
+async function prepareRecordingAudio(s, { transcription = false } = {}) {
+	const policy = normalizeGptAudioSettings(s.gpt_audio_settings ?? DEFAULT_GPT_AUDIO_SETTINGS);
+	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
+	try {
+		const audio = await prepareDirectAudio(parts, { transcription, limitSeconds: policy.limitSeconds, splitParts: transcription });
+		return { audio };
+	} catch (error) {
+		if (!(error instanceof AudioDurationLimitError) || !policy.substitute) throw error;
+		const key = policy.substitute.provider === 'elevenlabs' ? 'ELEVENLABS_API_KEY' : 'OPENAI_API_KEY';
+		if (!process.env[key]) throw new Error(`Set ${key} to use the GPT Audio substitute transcription model.`);
+		return { substitute: policy.substitute };
+	}
+}
+
 export async function generateRecordingReport(s, template, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
 	const settings = normalizeTranscriptionSettings(value);
 	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
+	let preparedAudio;
+	if (settings.provider === 'openai' && settings.model === DIRECT_AUDIO_MODEL) {
+		const prepared = await prepareRecordingAudio(s, { transcription: true });
+		if (prepared.substitute) return generateRecordingReport(s, template, prepared.substitute);
+		preparedAudio = prepared.audio;
+	}
 	const transcriptions = [];
-	for (const part of audioParts)
-		transcriptions.push(await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings));
+	for (const [index, part] of audioParts.entries())
+		transcriptions.push(preparedAudio
+			? await transcribeWithAudioModel(part.audio_report_path, transcriptionPrompt, preparedAudio[index])
+			: await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings));
 	return openaiGenerateReport(reportPrompt(s, template, transcriptions.join('\n'), englishInstruction));
 }
 
-async function requestDirectAudioReport(s, template) {
+async function requestDirectAudioReport(s, template, data) {
 	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const prompt = reportPrompt(s, template, undefined, englishInstruction);
-	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
-	const data = await prepareDirectAudio(parts);
 	let response;
 	try {
 		response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -202,7 +223,9 @@ async function requestDirectAudioReport(s, template) {
 }
 
 export async function generateDirectAudioReport(s, template) {
-	const result = await requestDirectAudioReport(s, template);
+	const prepared = await prepareRecordingAudio(s);
+	if (prepared.substitute) return generateRecordingReport(s, template, prepared.substitute);
+	const result = await requestDirectAudioReport(s, template, prepared.audio);
 	const choice = result?.choices?.[0];
 	if (choice?.message?.refusal) throw new Error('OpenAI declined direct audio report generation. Review the recording and try again.');
 	if (choice?.finish_reason !== 'stop') throw new Error('Direct audio report was not completed. The previous report has been preserved.');

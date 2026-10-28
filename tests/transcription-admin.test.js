@@ -129,8 +129,9 @@ test('persistence failures return a generic error without secrets', async (t) =>
 
 test('page compiles accessibly and uses enhanced forms, dependent model options and admin-only navigation', () => {
 	const source = readFileSync(new URL('../src/routes/admin/transcription/+page.svelte', import.meta.url), 'utf8');
-	const result = compile(source, { generate: 'server' });
-	assert.deepEqual(result.warnings, []);
+	for (const generate of ['server', 'client']) {
+		assert.deepEqual(compile(source, { generate }).warnings, []);
+	}
 	assert.match(source, /use:enhance/);
 	assert.match(source, /name="provider"/);
 	assert.match(source, /name="model"/);
@@ -143,7 +144,9 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	assert.match(source, /ELEVENLABS_API_KEY is missing/);
 	assert.match(source, /label\.includes\('\(legacy\)'\)/);
 	assert.match(source, /model === DIRECT_AUDIO_MODEL/);
-	assert.match(source, /Requires FFmpeg\. Maximum 10 minutes per audio part/);
+	assert.match(source, /total GPT Audio recording limit and substitute/);
+	assert.match(source, /href=\{resolve\('\/admin\/reporting'\)\}/);
+	assert.doesNotMatch(source, /10 minutes|per audio part/);
 	assert.doesNotMatch(source, /audio-model-help|Chat Completions|gpt-6\.1-sol|Compare transcription accuracy/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/transcription'\)\}[^]*?\{\/if\}/);

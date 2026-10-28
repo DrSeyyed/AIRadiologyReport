@@ -1,8 +1,8 @@
 import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
 import { prepareDirectAudio } from './direct-audio.js';
 
-export async function transcribeWithAudioModel(filePath, prompt) {
-	const data = await prepareDirectAudio([{ audio_report_path: filePath }], { transcription: true });
+export async function transcribeWithAudioModel(filePath, prompt, preparedAudio) {
+	const data = preparedAudio ?? await prepareDirectAudio([{ audio_report_path: filePath }], { transcription: true });
 	let response;
 	try {
 		response = await fetch('https://api.openai.com/v1/chat/completions', {

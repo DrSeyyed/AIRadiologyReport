@@ -1,5 +1,6 @@
 <script>
 	import { enhance } from '$app/forms';
+	import { resolve } from '$app/paths';
 	import { TRANSCRIPTION_PROVIDERS } from '$lib/transcription-models.js';
 	import { DIRECT_AUDIO_MODEL } from '$lib/report-generation-models.js';
 
@@ -52,7 +53,7 @@
 			<p class="text-sm text-warning">This model retires on February 26, 2027.</p>
 		{/if}
 		{#if model === DIRECT_AUDIO_MODEL}
-			<p class="text-sm">Requires FFmpeg. Maximum 10 minutes per audio part.</p>
+			<p class="text-sm">Requires FFmpeg. The total GPT Audio recording limit and substitute are configured in <a class="link" href={resolve('/admin/reporting')}>Reporting settings</a>.</p>
 		{/if}
 		<noscript><p>Enable JavaScript to change providers and update the available model options.</p></noscript>
 		<button class="btn btn-primary" type="submit">Save settings</button>

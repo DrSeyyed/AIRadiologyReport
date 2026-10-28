@@ -292,7 +292,7 @@ test('GPT Audio transcription rejects invalid or oversized audio before upload a
 		t.mock.method(globalThis, 'fetch', async () => assert.fail('Invalid audio must not be uploaded'));
 		await assert.rejects(processRecording(db, studyId, id, undefined, directory), failure === 'invalid'
 			? /Audio conversion failed/
-			: /Audio-model transcription supports at most 10 minutes per audio part/);
+			: /GPT Audio supports at most 10 minutes of total recording audio/);
 		assert.equal(getRecording(db, studyId, id).processing, 0);
 		assert.equal(getRecording(db, studyId, id).text_report_path, previous);
 		assert.equal(readFileSync(previous, 'utf8'), 'Previous report.');
