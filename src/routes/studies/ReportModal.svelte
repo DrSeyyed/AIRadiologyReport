@@ -1,12 +1,13 @@
 <script>
   import { invalidateAll } from '$app/navigation';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { renderReportMarkdown } from '$lib/report-markdown.js';
   import { reportTitle } from '$lib/report-title.js';
   import DOMPurify from 'dompurify';
   import { studyLabel } from '$lib/study-label.js';
   import TypistSignature from './TypistSignature.svelte';
-  import { reportFonts, reportTypography, validReportSize, formattedReport, copyFormattedReport } from '$lib/report-copy.js';
+  import { DEFAULT_REPORT_TYPOGRAPHY, reportFonts, reportTypography, validReportSize, formattedReport, copyFormattedReport } from '$lib/report-copy.js';
+  import { reportTypographyStorage } from '$lib/report-typography-client.js';
 
   let { study, recording, user, onClose, onSaved, initialText = '' } = $props();
 
@@ -28,14 +29,49 @@
   const attendingSignature = $derived(recording.attending_checked
     ? `Attending signature: ${recording.attending_signer_fullname || 'Unknown signer'}${recording.attending_signed_at ? ` · ${recording.attending_signed_at}` : ''}`
     : 'Attending signature: not signed');
-  let font = $state('Arial');
-  let fontSize = $state('12.0');
+  let font = $state(DEFAULT_REPORT_TYPOGRAPHY.font);
+  let fontSize = $state(DEFAULT_REPORT_TYPOGRAPHY.size.toFixed(1));
+  let typographyLoading = $state(true);
+  let typographySaving = $state(false);
+  let typographyError = $state('');
+  let typographyRevision = 0;
   let copying = $state(false);
   let copyMessage = $state('');
   let copyError = $state('');
-  const canExport = $derived(!state.loading && !state.error && Boolean(state.text.trim()) && validReportSize(fontSize));
+  const canExport = $derived(!state.loading && !typographyLoading && !state.error && Boolean(state.text.trim()) && validReportSize(fontSize));
   let printFrame;
   onDestroy(() => printFrame?.remove());
+
+  onMount(() => {
+    let active = true;
+    reportTypographyStorage.load(user.id)
+      .then((preferences) => {
+        if (!active) return;
+        font = preferences.font;
+        fontSize = Number.isInteger(preferences.size) ? preferences.size.toFixed(1) : String(preferences.size);
+      })
+      .catch(() => {
+        if (active) typographyError = 'Unable to load saved font settings. Defaults are shown.';
+      })
+      .finally(() => {
+        if (active) typographyLoading = false;
+      });
+    return () => { active = false; };
+  });
+
+  async function saveTypography() {
+    if (typographyLoading || !validReportSize(fontSize)) return;
+    const revision = ++typographyRevision;
+    typographySaving = true;
+    typographyError = '';
+    try {
+      await reportTypographyStorage.save(user.id, { font, size: Number(fontSize) });
+    } catch {
+      if (revision === typographyRevision) typographyError = 'Unable to save font settings. Change the font or size to try again.';
+    } finally {
+      if (revision === typographyRevision) typographySaving = false;
+    }
+  }
 
   function clearCopyStatus() {
     copyMessage = '';
@@ -173,16 +209,20 @@
     <div class="flex flex-wrap items-end gap-3 mb-3">
       <label class="form-control w-56 max-w-full">
         <span class="label-text mb-1">Report font</span>
-        <select class="select select-bordered select-sm leading-normal py-0" bind:value={font} onchange={clearCopyStatus}>
+        <select class="select select-bordered select-sm leading-normal py-0" value={font} disabled={typographyLoading}
+          onchange={(event) => { font = event.currentTarget.value; clearCopyStatus(); saveTypography(); }}>
           {#each reportFonts as option (option.name)}<option value={option.name}>{option.name}</option>{/each}
         </select>
       </label>
       <label class="form-control w-28">
         <span class="label-text mb-1">Font size (pt)</span>
-        <input class="input input-bordered input-sm w-full" type="number" min="6" max="72" step="0.1" value={fontSize}
-          oninput={(event) => { fontSize = event.currentTarget.value; clearCopyStatus(); }} />
+        <input class="input input-bordered input-sm w-full" type="number" min="6" max="72" step="0.1" value={fontSize} disabled={typographyLoading}
+          oninput={(event) => { fontSize = event.currentTarget.value; clearCopyStatus(); saveTypography(); }} />
       </label>
     </div>
+    {#if typographyLoading}<p class="text-sm mb-3" role="status">Loading font settings…</p>
+    {:else if typographySaving}<p class="text-sm mb-3" role="status">Saving font settings…</p>{/if}
+    {#if typographyError}<p class="text-error text-sm mb-3" role="alert">{typographyError}</p>{/if}
     {#if !validReportSize(fontSize)}<p class="text-error text-sm mb-3" role="alert">Choose a font size between 6 and 72 pt.</p>{/if}
     {#if copyMessage}<p class="text-sm mb-3" role="status">{copyMessage}</p>{/if}
     {#if copyError}<p class="text-error text-sm mb-3" role="alert">{copyError}</p>{/if}

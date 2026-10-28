@@ -258,7 +258,12 @@ test('enhanced forms reset only their own draft after success and keep all draft
 			const enhance = new Function('state', `with (state) { return (${callback}); }`)(state);
 			const completion = enhance();
 			assert.equal(state[index === 0 ? 'saving' : 'savingAudio'], true);
-			await completion({ result: { type }, update: async () => {} });
+			let updates = 0;
+			await completion({ result: { type }, update: async (options) => {
+				assert.deepEqual(options, { reset: false }, 'Native form resets must not replace the saved reactive selections');
+				updates++;
+			} });
+			assert.equal(updates, 1);
 			assert.equal(state.saving, false);
 			assert.equal(state.savingAudio, false);
 			assert.equal(state.selection, index === 0 && type === 'success' ? null : 'direct_audio');

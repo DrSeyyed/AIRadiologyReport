@@ -32,7 +32,7 @@
 		saving = true;
 		return async ({ result, update }) => {
 			try {
-				await update();
+				await update({ reset: false });
 				if (result.type === 'success') selection = null;
 			} finally {
 				saving = false;
@@ -62,7 +62,7 @@
 		savingAudio = true;
 		return async ({ result, update }) => {
 			try {
-				await update();
+				await update({ reset: false });
 				if (result.type === 'success') {
 					audioSelection = null;
 					limitSelection = null;

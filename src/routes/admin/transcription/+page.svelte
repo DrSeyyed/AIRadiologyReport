@@ -29,9 +29,9 @@
 	{/if}
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">Transcription settings saved.</div>{/if}
-	<form method="POST" use:enhance={() => async ({ update }) => {
-		await update();
-		selection = null;
+	<form method="POST" use:enhance={() => async ({ result, update }) => {
+		await update({ reset: false });
+		if (result.type === 'success') selection = null;
 	}} class="min-w-0 space-y-4">
 		<label class="form-control min-w-0">
 			<span class="label-text">Transcription provider</span>

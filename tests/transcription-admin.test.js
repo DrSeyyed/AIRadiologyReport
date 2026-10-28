@@ -151,3 +151,24 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/transcription'\)\}[^]*?\{\/if\}/);
 });
+
+test('enhanced save keeps the selected GPT Audio model visible and preserves drafts on failure', async () => {
+	const source = readFileSync(new URL('../src/routes/admin/transcription/+page.svelte', import.meta.url), 'utf8');
+	const callback = source.match(/use:enhance=\{\(\) => (async \(\{ result, update \}\) => \{[^]*?\n\t\})\}/)?.[1];
+	assert.ok(callback);
+	for (const type of ['success', 'failure', 'error']) {
+		const selected = { provider: 'openai', model: 'gpt-audio-1.5' };
+		const state = { selection: selected };
+		const completion = new Function('state', `with (state) { return (${callback}); }`)(state);
+		let visibleModel = selected.model;
+		let updates = 0;
+		await completion({ result: { type }, update: async (options) => {
+			if (type === 'success' && options?.reset !== false) visibleModel = 'gpt-transcribe';
+			assert.deepEqual(options, { reset: false });
+			updates++;
+		} });
+		assert.equal(updates, 1);
+		assert.equal(visibleModel, 'gpt-audio-1.5');
+		assert.deepEqual(state.selection, type === 'success' ? null : selected);
+	}
+});

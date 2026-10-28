@@ -8,14 +8,25 @@ export const reportFonts = [
 	{ name: 'Verdana', family: 'Verdana, sans-serif' }
 ];
 
+export const DEFAULT_REPORT_TYPOGRAPHY = { font: 'Times New Roman', size: 11 };
+
 export function validReportSize(size) {
 	return String(size).trim() !== '' && Number.isFinite(Number(size)) && Number(size) >= 6 && Number(size) <= 72;
 }
 
-export function reportTypography(font = 'Arial', size = 12) {
+export function normalizeReportTypography(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value) ||
+		Object.keys(value).length !== 2 || !Object.hasOwn(value, 'font') || !Object.hasOwn(value, 'size') ||
+		!reportFonts.some((option) => option.name === value.font) ||
+		typeof value.size !== 'number' || !validReportSize(value.size))
+		throw new Error('Choose a supported report font and a size between 6 and 72 pt.');
+	return { font: value.font, size: value.size };
+}
+
+export function reportTypography(font = DEFAULT_REPORT_TYPOGRAPHY.font, size = DEFAULT_REPORT_TYPOGRAPHY.size) {
 	return {
-		fontFamily: (reportFonts.find((option) => option.name === font) || reportFonts[0]).family,
-		fontSize: `${validReportSize(size) ? Number(size) : 12}pt`
+		fontFamily: (reportFonts.find((option) => option.name === font) || reportFonts.find((option) => option.name === DEFAULT_REPORT_TYPOGRAPHY.font)).family,
+		fontSize: `${validReportSize(size) ? Number(size) : DEFAULT_REPORT_TYPOGRAPHY.size}pt`
 	};
 }
 

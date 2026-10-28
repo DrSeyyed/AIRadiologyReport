@@ -15,6 +15,12 @@ CREATE TABLE
   );
 
 
+CREATE TABLE IF NOT EXISTS user_report_typography (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  font TEXT NOT NULL CHECK (font IN ('Arial', 'Times New Roman', 'Calibri', 'Cambria', 'Georgia', 'Tahoma', 'Verdana')),
+  font_size REAL NOT NULL CHECK (font_size BETWEEN 6 AND 72)
+);
+
 CREATE TABLE IF NOT EXISTS attending_report_preferences (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   english_variant TEXT NOT NULL DEFAULT 'british' CHECK (english_variant IN ('british', 'american'))

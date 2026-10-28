@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reportFonts, reportTypography, validReportSize, copyFormattedReport } from '../src/lib/report-copy.js';
+import { DEFAULT_REPORT_TYPOGRAPHY, normalizeReportTypography, reportFonts, reportTypography, validReportSize, copyFormattedReport } from '../src/lib/report-copy.js';
 
 const report = { html: '<div style="font-family:Times New Roman;font-size:12pt">Report</div>', text: 'Report' };
 
@@ -37,8 +37,9 @@ function legacyEnvironment({ commandResult = true, dispatch = true } = {}) {
 	} };
 }
 
-test('report typography defaults to Arial 12.0 pt and uses selected values', () => {
-	assert.deepEqual(reportTypography(), { fontFamily: 'Arial, sans-serif', fontSize: '12pt' });
+test('report typography defaults to Times New Roman 11.0 pt and uses selected values', () => {
+	assert.deepEqual(DEFAULT_REPORT_TYPOGRAPHY, { font: 'Times New Roman', size: 11 });
+	assert.deepEqual(reportTypography(), { fontFamily: '"Times New Roman", Times, serif', fontSize: '11pt' });
 	assert.deepEqual(reportTypography('Arial', '14.5'), { fontFamily: 'Arial, sans-serif', fontSize: '14.5pt' });
 	assert.deepEqual(reportTypography('Times New Roman', '12.0'), { fontFamily: '"Times New Roman", Times, serif', fontSize: '12pt' });
 	assert.equal(new Set(reportFonts.map(({ name }) => name)).size, reportFonts.length);
@@ -47,10 +48,25 @@ test('report typography defaults to Arial 12.0 pt and uses selected values', () 
 test('invalid font and size cannot inject CSS and fall back safely', () => {
 	for (const size of ['', ' ', 'abc', 'NaN', Infinity, -1, 0, 5.9, 72.1, '12;display:none']) {
 		assert.equal(validReportSize(size), false);
-		assert.equal(reportTypography('Arial', size).fontSize, '12pt');
+		assert.equal(reportTypography('Arial', size).fontSize, '11pt');
 	}
 	for (const size of [6, '12.0', 14.5, 72]) assert.equal(validReportSize(size), true);
-	assert.equal(reportTypography('Arial; background:url(example.invalid)').fontFamily, reportFonts[0].family);
+	assert.equal(reportTypography('Arial; background:url(example.invalid)').fontFamily, '"Times New Roman", Times, serif');
+});
+
+test('saved typography requires a supported font and finite numeric size without extra fields', () => {
+	for (const { name: font } of reportFonts) {
+		for (const size of [6, 11, 11.5, 72]) {
+			assert.deepEqual(normalizeReportTypography({ font, size }), { font, size });
+		}
+	}
+	for (const value of [null, [], {}, { font: 'Arial' }, { size: 11 },
+		{ font: 'Arial', size: '11' }, { font: 'Arial', size: Infinity },
+		{ font: 'Arial', size: NaN }, { font: 'Arial', size: 5.9 },
+		{ font: 'Arial', size: 72.1 }, { font: 'injected;font', size: 11 },
+		{ font: 'Arial', size: 11, user_id: 2 }]) {
+		assert.throws(() => normalizeReportTypography(value), /supported report font/);
+	}
 });
 
 test('modern clipboard receives HTML formatting and plain text in the same item', async () => {
