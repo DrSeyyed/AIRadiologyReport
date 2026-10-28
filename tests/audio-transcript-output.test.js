@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAudioTranscriptOutput } from '../src/lib/server/audio-transcript-output.js';
+import { AUDIO_TRANSCRIPT_TOOL_NAME, AudioTranscriptFormatError, audioTranscriptionChoice, normalizeAudioTranscriptOutput } from '../src/lib/server/audio-transcript-output.js';
 import { transcribeWithAudioModel } from '../src/lib/server/audio-model-transcription.js';
 
 const transcript = 'سمت چپ low T1، high T2؛ 1.5 mm.\nتاریخ ۲۲ اسفند ۱۴۰۵؛ no right-sided restriction.';
+const toolChoice = (args = JSON.stringify({ transcript })) => ({
+	finish_reason: 'tool_calls', message: { content: null, tool_calls: [{
+		id: 'synthetic-call', type: 'function', function: { name: AUDIO_TRANSCRIPT_TOOL_NAME, arguments: args }
+	}] }
+});
 
 test('audio transcripts retain original words, line breaks, numbers and calendar notation', () => {
 	assert.equal(normalizeAudioTranscriptOutput(`  ${transcript}  `), transcript);
@@ -16,12 +21,14 @@ test('explicit transcript envelopes and code fences are unwrapped without rewrit
 	for (const field of ['text', 'transcript', 'transcription']) {
 		values.push(JSON.stringify({ [field]: transcript }));
 		values.push(JSON.stringify({ [field]: transcript, language: 'fa', duration: 12, duration_seconds: 12.5 }));
+		values.push(JSON.stringify({ [field]: transcript, language: null, confidence: 0.95, metadata: { duration: 60 }, segments: [] }));
 	}
 	for (const language of ['', 'text', 'json', 'markdown', 'md', 'transcript', 'transcription']) {
 		values.push(`\`\`\`${language}\n${transcript}\n\`\`\``);
 		values.push(`\`\`\`${language}\r\n${JSON.stringify({ transcript })}\r\n\`\`\``);
 	}
 	values.push(JSON.stringify(`\`\`\`json\n${JSON.stringify({ text: JSON.stringify(transcript) })}\n\`\`\``));
+	values.push(JSON.stringify({ transcript, text: `  ${transcript}  `, language: null }));
 	for (const value of values) assert.equal(normalizeAudioTranscriptOutput(value), transcript);
 });
 
@@ -44,9 +51,8 @@ test('malformed, ambiguous, report and unsupported wrappers remain rejected with
 		`{"transcript":"${privateText}"`, `{transcript: "${privateText}"}`,
 		JSON.stringify({ final_report: privateText }), JSON.stringify({ report: privateText }),
 		JSON.stringify({ duration: 12 }), JSON.stringify({ transcript: 12 }),
-		JSON.stringify({ text: privateText, transcript: privateText }),
+		JSON.stringify({ text: 'Different dictation', transcript: privateText }),
 		JSON.stringify({ transcript: privateText, report: privateText }),
-		JSON.stringify({ transcript: privateText, language: {} }),
 		JSON.stringify([privateText]), `\`\`\`javascript\n${privateText}\n\`\`\``,
 		`\`\`\`text\n${privateText}`]) {
 		assert.throws(() => normalizeAudioTranscriptOutput(value), (error) => {
@@ -67,12 +73,92 @@ test('audio-model request normalizes wrapped output before returning it to the e
 		assert.equal(url, 'https://api.openai.com/v1/chat/completions');
 		const payload = JSON.parse(options.body);
 		assert.deepEqual(payload.modalities, ['text']);
-		assert.match(payload.messages[0].content, /verbatim transcript, not a report/);
+		assert.match(payload.messages[0].content, /verbatim, not a report/);
+		assert.equal(payload.tool_choice.function.name, AUDIO_TRANSCRIPT_TOOL_NAME);
+		assert.equal(payload.parallel_tool_calls, false);
+		assert.deepEqual(payload.tools[0].function.parameters.required, ['transcript']);
+		assert.equal(payload.tools[0].function.parameters.additionalProperties, false);
+		assert.equal(payload.tools[0].function.strict, undefined);
+		assert.equal(payload.response_format, undefined);
 		assert.equal(payload.messages[1].content[1].input_audio.data, 'synthetic-prepared-audio');
 		return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: {
 			content: `\`\`\`json\n${JSON.stringify({ transcription: transcript })}\n\`\`\``
 		} }] }) };
 	});
 	assert.equal(await transcribeWithAudioModel('unused.wav', 'Preserve original dictation.', 'synthetic-prepared-audio'), transcript);
+	assert.equal(calls, 1);
+});
+
+test('documented tool-call completion accepts null message content and tool_calls finish reason', () => {
+	assert.equal(audioTranscriptionChoice(toolChoice()), transcript);
+	assert.equal(audioTranscriptionChoice(toolChoice(JSON.stringify({ transcript, confidence: null }))), transcript);
+	for (const args of ['not JSON', '[]', 'null', '{}', '{"transcript":12}', '{"text":"synthetic text"}', null]) {
+		assert.throws(() => audioTranscriptionChoice(toolChoice(args)), AudioTranscriptFormatError);
+	}
+	const wrong = toolChoice();
+	wrong.message.tool_calls[0].function.name = 'generate_report';
+	assert.throws(() => audioTranscriptionChoice(wrong), /expected one transcript submission/);
+	assert.throws(() => audioTranscriptionChoice({ ...toolChoice(), finish_reason: 'length' }), /not completed/);
+	assert.throws(() => audioTranscriptionChoice({ ...toolChoice(), message: { ...toolChoice().message, refusal: 'synthetic-private-refusal' } }), /declined/);
+});
+
+test('tool-call payload validation rejects missing, duplicate and incomplete submissions', () => {
+	for (const choice of [
+		{ finish_reason: 'tool_calls', message: { content: null } },
+		{ finish_reason: 'tool_calls', message: { tool_calls: [] } },
+		{ finish_reason: 'tool_calls', message: { tool_calls: [null] } },
+		{ finish_reason: 'tool_calls', message: { tool_calls: [...toolChoice().message.tool_calls, ...toolChoice().message.tool_calls] } },
+		{ ...toolChoice(), finish_reason: 'stop' }
+	]) assert.throws(() => audioTranscriptionChoice(choice), AudioTranscriptFormatError);
+});
+
+test('metadata-only, wrong-schema and malformed format results retry original audio once using the same model', async (t) => {
+	for (const content of [JSON.stringify({ language: 'fa', duration: 60 }), JSON.stringify({ final_report: 'Synthetic generated report, not dictation.' }), 'Audio duration: 60 seconds', '{transcript: "synthetic text"}']) {
+		await t.test(content.startsWith('{') ? 'structured format' : 'duration metadata', async (t) => {
+			const requests = [];
+			t.mock.method(globalThis, 'fetch', async (_url, options) => {
+				requests.push(JSON.parse(options.body));
+				return { ok: true, json: async () => ({ choices: [requests.length === 1 ? {
+					finish_reason: 'stop', message: { content }
+				} : toolChoice()] }) };
+			});
+			assert.equal(await transcribeWithAudioModel('unused.wav', 'Preserve negation and dates.', 'original-audio'), transcript);
+			assert.equal(requests.length, 2);
+			for (const payload of requests) {
+				assert.equal(payload.model, 'gpt-audio-1.5');
+				assert.equal(payload.tool_choice.function.name, 'submit_transcript');
+				assert.equal(payload.messages.length, 2);
+				assert.equal(payload.messages[1].content[1].input_audio.data, 'original-audio');
+			}
+			assert.doesNotMatch(requests[0].messages[0].content, /previous attempt/);
+			assert.match(requests[1].messages[0].content, /Listen to the original audio again/);
+			assert.ok(!JSON.stringify(requests[1]).includes(content));
+		});
+	}
+});
+
+test('malformed tool arguments get one correction attempt and persistent format failures stop after two calls', async (t) => {
+	let calls = 0;
+	t.mock.method(globalThis, 'fetch', async () => {
+		calls++;
+		return { ok: true, json: async () => ({ choices: [toolChoice('{"final_report":"synthetic-private-text"}')] }) };
+	});
+	await assert.rejects(transcribeWithAudioModel('unused.wav', 'Transcribe.', 'original-audio'), (error) => {
+		assert.ok(error instanceof AudioTranscriptFormatError);
+		assert.doesNotMatch(error.message, /synthetic-private-text/);
+		return true;
+	});
+	assert.equal(calls, 2);
+});
+
+test('valid metadata-rich legacy transcript envelopes do not need a retry', async (t) => {
+	let calls = 0;
+	t.mock.method(globalThis, 'fetch', async () => {
+		calls++;
+		return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: {
+			content: JSON.stringify({ transcript, language: null, confidence: 0.9, timestamps: [] })
+		} }] }) };
+	});
+	assert.equal(await transcribeWithAudioModel('unused.wav', 'Transcribe.', 'original-audio'), transcript);
 	assert.equal(calls, 1);
 });

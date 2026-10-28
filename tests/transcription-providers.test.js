@@ -222,7 +222,10 @@ test('GPT Audio transcription sends ordered parts to Chat Completions then passe
 			assert.match(system, /Preserve negation, uncertainty, laterality, numbers/);
 			assert.match(system, /Never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
 			assert.match(system, /Preserve the original date notation and component order/);
-			assert.match(system, /not a report, JSON, code fences or audio metadata/);
+			assert.match(system, /verbatim, not a report/);
+			assert.match(system, /submit_transcript function's transcript field/);
+			assert.equal(payload.tool_choice.function.name, 'submit_transcript');
+			assert.equal(payload.parallel_tool_calls, false);
 			assert.match(system, /Do not summarise, translate or complete sentences/);
 			assert.doesNotMatch(system, /Synthetic template|YYYY\/MM\/DD|report generator/);
 			const content = payload.messages[1].content;
@@ -235,8 +238,12 @@ test('GPT Audio transcription sends ordered parts to Chat Completions then passe
 			assert.deepEqual(decoded.subarray(44), readFileSync(transcriptions ? second : audio).subarray(44));
 			setTranscriptionSettings(db, { provider: 'elevenlabs', model: 'scribe_v2' });
 			const dictation = dictations[transcriptions++];
-			const wrapped = transcriptions === 1 ? JSON.stringify({ transcript: dictation }) : `\`\`\`text\n${dictation}\n\`\`\``;
-			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: wrapped } }] }) };
+			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'tool_calls', message: {
+				content: null,
+				tool_calls: [{ id: `synthetic-${transcriptions}`, type: 'function', function: {
+					name: 'submit_transcript', arguments: JSON.stringify({ transcript: dictation })
+				} }]
+			} }] }) };
 		}
 		assert.equal(url, 'https://api.openai.com/v1/responses');
 		assert.equal(transcriptions, 2);
@@ -250,6 +257,47 @@ test('GPT Audio transcription sends ordered parts to Chat Completions then passe
 	});
 	const result = await processRecording(db, studyId, id, undefined, directory);
 	assert.equal(transcriptions, 2);
+	assert.equal(reports, 1);
+	assert.equal(readFileSync(result.path, 'utf8'), 'Synthetic completed report.');
+	assert.equal(getRecording(db, studyId, id).processing, 0);
+});
+
+test('one-minute GPT Audio recordings recover a format failure from original audio before template-based generation', async t => {
+	const { db, audio, directory, studyId, id } = fixture(t, { audioModel: true });
+	writeFileSync(audio, wave(1000, 16000 * 60));
+	setTranscriptionSettings(db, { provider: 'openai', model: 'gpt-audio-1.5' });
+	const dictation = 'سمت چپ low T1؛ 1.5 mm. مقایسه با 22 اسفند 1405.';
+	let calls = 0, reports = 0, originalAudio;
+	t.mock.method(globalThis, 'fetch', async (url, options) => {
+		const payload = JSON.parse(options.body);
+		if (url === 'https://api.openai.com/v1/chat/completions') {
+			calls++;
+			const data = payload.messages[1].content[1].input_audio.data;
+			if (calls === 1) {
+				originalAudio = data;
+				assert.equal(Buffer.from(data, 'base64').length, 44 + 16000 * 60 * 2);
+				return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: {
+					content: JSON.stringify({ language: 'fa', duration: 60 })
+				} }] }) };
+			}
+			assert.equal(calls, 2);
+			assert.equal(data, originalAudio);
+			assert.equal(payload.tool_choice.function.name, 'submit_transcript');
+			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'tool_calls', message: {
+				content: null, tool_calls: [{ id: 'synthetic-one-minute', type: 'function', function: {
+					name: 'submit_transcript', arguments: JSON.stringify({ transcript: dictation })
+				} }]
+			} }] }) };
+		}
+		assert.equal(url, 'https://api.openai.com/v1/responses');
+		assert.equal(calls, 2);
+		assert.ok(payload.input.includes(`Doctor's dictation:\n"${dictation}"`));
+		assert.match(payload.input, /Findings: Synthetic template/);
+		reports++;
+		return reportResponse();
+	});
+	const result = await processRecording(db, studyId, id, undefined, directory);
+	assert.equal(calls, 2);
 	assert.equal(reports, 1);
 	assert.equal(readFileSync(result.path, 'utf8'), 'Synthetic completed report.');
 	assert.equal(getRecording(db, studyId, id).processing, 0);
@@ -278,7 +326,7 @@ test('GPT Audio transcription failures do not generate, fall back or overwrite a
 			assert.doesNotMatch(error.message, /private-provider-content/);
 			return true;
 		});
-		assert.equal(calls, 1);
+		assert.equal(calls, ['wrapper', 'fence', 'duration'].includes(failure) ? 2 : 1);
 		assert.equal(getRecording(db, studyId, id).processing, 0);
 		assert.equal(getRecording(db, studyId, id).text_report_path, previous);
 		assert.equal(readFileSync(previous, 'utf8'), 'Previous report.');
