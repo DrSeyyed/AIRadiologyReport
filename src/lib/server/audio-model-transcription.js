@@ -1,5 +1,6 @@
 import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
 import { prepareDirectAudio } from './direct-audio.js';
+import { normalizeAudioTranscriptOutput } from './audio-transcript-output.js';
 
 export async function transcribeWithAudioModel(filePath, prompt, preparedAudio) {
 	const data = preparedAudio ?? await prepareDirectAudio([{ audio_report_path: filePath }], { transcription: true });
@@ -35,10 +36,5 @@ export async function transcribeWithAudioModel(filePath, prompt, preparedAudio) 
 	const choice = result?.choices?.[0];
 	if (choice?.message?.refusal) throw new Error('OpenAI declined audio-model transcription. Review the recording and try again.');
 	if (choice?.finish_reason !== 'stop') throw new Error('OpenAI audio-model transcription was not completed.');
-	const text = typeof choice.message?.content === 'string' ? choice.message.content.trim() : '';
-	if (!text || text === 'NO_USABLE_CLINICAL_DICTATION')
-		throw new Error('OpenAI audio-model transcription returned no usable text.');
-	if (text.startsWith('{') || text.startsWith('[') || text.startsWith('```') || /^(?:audio\s+)?duration\s*[:=]/i.test(text))
-		throw new Error('OpenAI audio-model transcription returned an unusable transcript format.');
-	return text;
+	return normalizeAudioTranscriptOutput(choice.message?.content);
 }

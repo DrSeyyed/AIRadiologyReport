@@ -1,3 +1,5 @@
+import { durationOnly, noDictation, repairJsonTransport } from './audio-output-format.js';
+
 const fieldType = (value) =>
 	value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
 const diagnosticFields = [
@@ -30,47 +32,6 @@ const invalidOutput = (format, wrappers) =>
 	new Error(
 		`Direct audio reporting returned an unusable report format. The previous report has been preserved. Try generating again or use the transcription workflow. Format diagnostic: ${format}${wrappers.length ? `; wrappers=${wrappers.join(' > ')}` : ''}.`
 	);
-const durationOnly =
-	/^(?:(?:the|this|it|provided|supplied|attached|uploaded|input|recording|audio|file|clip|has|a|an|is|of|in|length|duration|about|approximately|roughly|estimated|total|long|and|contains|runs|lasts|for|exactly|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b|[\d\s:.,~()=*-])+$/i;
-const noDictation =
-	/^(?:NO_USABLE_CLINICAL_DICTATION|No (?:usable|intelligible|audible) (?:clinical )?(?:dictation|speech|audio)(?: (?:was |is )?(?:detected|found|provided|available))?)[.!]?$/i;
-
-function repairJsonTransport(text) {
-	// Repair transport syntax only; never add missing quotes, braces or clinical text.
-	let result = '';
-	let inString = false;
-	let escaped = false;
-	for (let index = 0; index < text.length; index++) {
-		const character = text[index];
-		if (inString) {
-			if (escaped) {
-				result += character;
-				escaped = false;
-				continue;
-			}
-			if (character === '\\') {
-				result += character;
-				escaped = true;
-				continue;
-			}
-			if (character === '"') inString = false;
-			if (character === '\n') result += '\\n';
-			else if (character === '\r') result += '\\r';
-			else if (character === '\t') result += '\\t';
-			else result += character;
-		} else {
-			if (character === '"') inString = true;
-			if (character === ',') {
-				let next = index + 1;
-				while (next < text.length && ' \t\r\n'.includes(text[next])) next++;
-				if (text[next] === '}' || text[next] === ']') continue;
-			}
-			result += character;
-		}
-	}
-	return result;
-}
-
 function jsonSyntaxDiagnostic(error) {
 	const message = typeof error?.message === 'string' ? error.message : '';
 	if (/unterminated string/i.test(message)) return 'incomplete JSON string';

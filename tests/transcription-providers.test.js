@@ -234,7 +234,9 @@ test('GPT Audio transcription sends ordered parts to Chat Completions then passe
 			assert.equal(decoded.readUInt32LE(24), 16000);
 			assert.deepEqual(decoded.subarray(44), readFileSync(transcriptions ? second : audio).subarray(44));
 			setTranscriptionSettings(db, { provider: 'elevenlabs', model: 'scribe_v2' });
-			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: `  ${dictations[transcriptions++]}  ` } }] }) };
+			const dictation = dictations[transcriptions++];
+			const wrapped = transcriptions === 1 ? JSON.stringify({ transcript: dictation }) : `\`\`\`text\n${dictation}\n\`\`\``;
+			return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: wrapped } }] }) };
 		}
 		assert.equal(url, 'https://api.openai.com/v1/responses');
 		assert.equal(transcriptions, 2);
@@ -267,7 +269,7 @@ test('GPT Audio transcription failures do not generate, fall back or overwrite a
 			return { ok: true, json: async () => {
 				if (failure === 'json') throw new Error('private-provider-content');
 				if (failure === 'missing') return {};
-				const content = { empty: '  ', nonstring: { text: 'private-provider-content' }, 'no-dictation': 'NO_USABLE_CLINICAL_DICTATION', wrapper: '{"text":"private-provider-content"}', fence: '```text\nprivate-provider-content\n```', duration: 'Audio duration: 12 seconds' }[failure] ?? 'Synthetic partial transcription.';
+				const content = { empty: '  ', nonstring: { text: 'private-provider-content' }, 'no-dictation': 'NO_USABLE_CLINICAL_DICTATION', wrapper: '{"final_report":"private-provider-content"}', fence: '```text\nAudio duration: 12 seconds\n```', duration: 'Audio duration: 12 seconds' }[failure] ?? 'Synthetic partial transcription.';
 				return { choices: [{ finish_reason: failure === 'incomplete' ? 'length' : 'stop', message: { content, ...(failure === 'refusal' ? { refusal: 'private-provider-content' } : {}) } }] };
 			} };
 		});
