@@ -18,15 +18,13 @@
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
 	<h1 class="text-2xl font-semibold">Transcription settings</h1>
-	<p>Choose the provider and model for transcription. Choosing a provider sends audio to that provider. There is no silent fallback to another provider.</p>
-	<p>OpenAI remains required for report generation, even when ElevenLabs handles transcription. ElevenLabs transcription additionally requires ELEVENLABS_API_KEY. Keys are configured on the server, not on this page.</p>
-	<p class="text-sm">Compare transcription accuracy for mixed Persian/English dictation using representative recordings; neither provider or model is guaranteed to be more accurate.</p>
+	<p id="model-help" class="text-sm">Used only in Transcribe, then generate mode.</p>
 	{#if data.recoveryWarning}<div class="alert alert-warning" role="alert">{data.recoveryWarning}</div>{/if}
 	{#if !data.configured.openai}
 		<div class="alert alert-warning" role="alert">OPENAI_API_KEY is missing. OpenAI report generation is unavailable.</div>
 	{/if}
-	{#if !data.configured[provider]}
-		<div class="alert alert-warning" role="alert">The selected transcription provider's key is missing ({provider === 'openai' ? 'OPENAI_API_KEY' : 'ELEVENLABS_API_KEY'}). Transcription is unavailable for this selection. You may save now and configure the key later.</div>
+	{#if provider === 'elevenlabs' && !data.configured.elevenlabs}
+		<div class="alert alert-warning" role="alert">ELEVENLABS_API_KEY is missing. ElevenLabs transcription is unavailable.</div>
 	{/if}
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">Transcription settings saved.</div>{/if}
@@ -44,17 +42,17 @@
 		</label>
 		<label class="form-control min-w-0">
 			<span class="label-text">Transcription model</span>
-			<select name="model" class="select select-bordered w-full min-w-0" value={model} onchange={(event) => selection = { provider, model: event.currentTarget.value }} aria-describedby="model-help legacy-help audio-model-help">
+			<select name="model" class="select select-bordered w-full min-w-0" value={model} onchange={(event) => selection = { provider, model: event.currentTarget.value }} aria-describedby="model-help">
 				{#each models as entry (entry.id)}
 					<option value={entry.id}>{entry.label}</option>
 				{/each}
 			</select>
 		</label>
-		<p id="model-help" class="text-sm">The default remains OpenAI / GPT Transcribe. Providers are never switched automatically. ElevenLabs offers Scribe v2 Medical and Scribe v2.</p>
-		<p id="legacy-help" class="text-sm">OpenAI models labelled legacy are deprecated and scheduled to shut down on February 26, 2027. Prefer a current model.</p>
-		<p id="audio-model-help" class="text-sm">GPT Audio 1.5 can transcribe each audio part through Chat Completions, then pass the ordered transcripts to the existing gpt-6.1-sol report generator. Choose Transcribe, then generate in Reporting settings to use this selection; direct audio reporting remains a separate option.</p>
+		{#if models.find((entry) => entry.id === model)?.label.includes('(legacy)')}
+			<p class="text-sm text-warning">This model retires on February 26, 2027.</p>
+		{/if}
 		{#if model === DIRECT_AUDIO_MODEL}
-			<div class="alert alert-info" role="status">GPT Audio transcription requires FFmpeg on the server and supports up to 10 minutes per audio part. It makes one transcription request per part, followed by the usual report-generation request. Original date notation is preserved during transcription; the report generator applies numeric Jalali dates and the selected template.</div>
+			<p class="text-sm">Requires FFmpeg. Maximum 10 minutes per audio part.</p>
 		{/if}
 		<noscript><p>Enable JavaScript to change providers and update the available model options.</p></noscript>
 		<button class="btn btn-primary" type="submit">Save settings</button>

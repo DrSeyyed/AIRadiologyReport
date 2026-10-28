@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { compile } from 'svelte/compiler';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import {
 	getReportGenerationSettings,
@@ -472,103 +473,13 @@ async function loadRecordingHttp(db, t) {
 	return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 }
 
-function inspectionEvent(studyId, recordingId, role = 'admin') {
-	return { locals: { user: role ? { id: 99, role } : null }, params: { id: String(studyId), recordingId: String(recordingId) } };
-}
-
-test('administrator inspection returns the full raw provider JSON without parsing malformed report content or saving anything', async (t) => {
-	const { db, directory, studyId, id } = fixture(t);
-	const path = saveRecordingReport(db, id, 'Keep the existing report.', directory);
-	const before = getRecording(db, studyId, id);
-	const files = readdirSync(directory).sort();
-	setReportGenerationSettings(db, { mode: 'direct_audio' });
-	const raw = {
-		id: 'synthetic-response', model: 'gpt-audio-1.5',
-		choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: "{final_report: 'Synthetic report. <script>window.diagnosticExecuted = true</script>'}" } }],
-		usage: { prompt_tokens: 12, completion_tokens: 8 }
-	};
-	let calls = 0;
-	t.mock.method(globalThis, 'fetch', async (url, options) => {
-		calls++;
-		assert.equal(url, 'https://api.openai.com/v1/chat/completions');
-		assert.equal(getRecording(db, studyId, id).processing, 1);
-		assert.equal(JSON.parse(options.body).model, 'gpt-audio-1.5');
-		return { ok: true, json: async () => raw };
-	});
-	const { inspectAudio } = await loadRecordingHttp(db, t);
-	const response = await inspectAudio(inspectionEvent(studyId, id));
-	assert.equal(response.status, 200);
-	assert.equal(response.headers.get('cache-control'), 'private, no-store');
-	const result = await response.json();
-	assert.deepEqual(result, { ok: true, diagnostic: true, raw_response: raw });
-	assert.doesNotMatch(JSON.stringify(result), /synthetic-openai-key|input_audio|Synthetic template/);
-	assert.equal(calls, 1);
-	assert.deepEqual(getRecording(db, studyId, id), before);
-	assert.equal(readFileSync(path, 'utf8'), 'Keep the existing report.');
-	assert.deepEqual(readdirSync(directory).sort(), files);
-});
-
-test('inspection exposes incomplete provider responses for diagnosis but never creates a report', async (t) => {
-	const { db, directory, studyId, id } = fixture(t);
-	setReportGenerationSettings(db, { mode: 'direct_audio' });
-	const before = getRecording(db, studyId, id);
-	const files = readdirSync(directory).sort();
-	const raw = { choices: [{ finish_reason: 'length', message: { content: '{"final_report":"Synthetic truncated response' } }] };
-	t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => raw }));
-	const { inspectAudio } = await loadRecordingHttp(db, t);
-	const response = await inspectAudio(inspectionEvent(studyId, id));
-	assert.equal(response.status, 200);
-	assert.deepEqual((await response.json()).raw_response, raw);
-	assert.deepEqual(getRecording(db, studyId, id), before);
-	assert.equal(getRecording(db, studyId, id).text_report_path, null);
-	assert.deepEqual(readdirSync(directory).sort(), files);
-});
-
-test('raw response inspection rejects anonymous and non-admin callers before accessing the database', async (t) => {
-	const { inspectAudio } = await loadRecordingHttp(null, t);
-	t.mock.method(globalThis, 'fetch', async () => assert.fail('Unauthorized diagnostic request'));
-	for (const role of [null, 'resident', 'attending', 'typist']) {
-		const response = await inspectAudio(inspectionEvent(1, 1, role));
-		assert.equal(response.status, role ? 403 : 401);
-		assert.deepEqual(Object.keys(await response.json()), ['error']);
-	}
-});
-
-test('inspection retains mode, signed, disabled, lock, reviewer, template, audio and study ownership guards', async (t) => {
-	for (const scenario of ['pipeline-mode', 'signed', 'disabled', 'processing', 'resident', 'attending', 'template', 'audio', 'wrong-study']) {
-		await t.test(scenario, async (t) => {
-			const { db, directory, audio, studyId, id } = fixture(t);
-			const path = saveRecordingReport(db, id, 'Existing guarded report.', directory);
-			if (scenario !== 'pipeline-mode') setReportGenerationSettings(db, { mode: 'direct_audio' });
-			if (scenario === 'signed') db.prepare('UPDATE study_recordings SET resident_checked=1 WHERE id=?').run(id);
-			if (scenario === 'disabled') db.prepare('UPDATE studies SET disabled=1 WHERE id=?').run(studyId);
-			if (scenario === 'processing') db.prepare('UPDATE study_recordings SET processing=1,processing_started_at=? WHERE id=?').run(Math.floor(Date.now() / 1000), id);
-			if (scenario === 'resident') db.prepare('UPDATE study_recordings SET corresponding_resident_id=NULL WHERE id=?').run(id);
-			if (scenario === 'attending') db.prepare('UPDATE studies SET corresponding_attending_id=NULL WHERE id=?').run(studyId);
-			if (scenario === 'template') db.exec('DELETE FROM report_templates');
-			if (scenario === 'audio') rmSync(audio);
-			const before = getRecording(db, studyId, id);
-			t.mock.method(globalThis, 'fetch', async () => assert.fail('Guarded diagnostic request must not upload audio'));
-			const { inspectAudio } = await loadRecordingHttp(db, t);
-			const response = await inspectAudio(inspectionEvent(scenario === 'wrong-study' ? studyId + 1 : studyId, id));
-			assert.ok(response.status >= 400);
-			assert.deepEqual(Object.keys(await response.json()), ['error']);
-			assert.deepEqual(getRecording(db, studyId, id), before);
-			assert.equal(readFileSync(path, 'utf8'), 'Existing guarded report.');
-		});
-	}
-});
-
-test('inspection transport errors release the processing lock and preserve reports without exposing response bodies', async (t) => {
-	const { db, directory, studyId, id } = fixture(t);
-	const path = saveRecordingReport(db, id, 'Keep this report.', directory);
-	setReportGenerationSettings(db, { mode: 'direct_audio' });
-	const before = getRecording(db, studyId, id);
-	t.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 500, text: async () => 'synthetic-provider-secret' }));
-	const { inspectAudio } = await loadRecordingHttp(db, t);
-	const response = await inspectAudio(inspectionEvent(studyId, id));
-	assert.equal(response.status, 500);
-	assert.deepEqual(await response.json(), { error: 'Direct audio reporting failed (HTTP 500).' });
-	assert.deepEqual(getRecording(db, studyId, id), before);
-	assert.equal(readFileSync(path, 'utf8'), 'Keep this report.');
+test('temporary raw-audio inspection is absent from the UI and API', async (t) => {
+	const http = await loadRecordingHttp(null, t);
+	assert.equal('inspectAudio' in http, false);
+	assert.equal(existsSync(new URL('../src/routes/api/studies/[id]/recordings/[recordingId]/inspect-audio/+server.js', import.meta.url)), false);
+	const card = readFileSync(new URL('../src/routes/studies/RecordingCard.svelte', import.meta.url), 'utf8');
+	assert.doesNotMatch(card, /inspect-audio|inspectAudioResponse|diagnosticsOpen|rawResponse|Direct audio diagnostics/);
+	assert.match(card, /Transcribe & Generate/);
+	const result = compile(card, { generate: 'server' });
+	assert.deepEqual(result.warnings, []);
 });

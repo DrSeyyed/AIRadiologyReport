@@ -133,14 +133,15 @@ test('database save failures are safe and unrelated load failures are not disgui
 	assert.throws(() => page.load({ locals: admin }), /synthetic-openai-secret/);
 });
 
-test('reporting UI compiles without accessibility warnings and documents explicit, future-only behavior', () => {
+test('reporting UI stays concise, compiles accessibly and retains essential warnings and save behavior', () => {
 	const source = readFileSync(new URL('../src/routes/admin/reporting/+page.svelte', import.meta.url), 'utf8');
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
-	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="pipeline-help direct-help scope-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /all ordered audio parts, templates/, /assigned attending's English preference/, /text output only/, /skips separate OpenAI\/ElevenLabs transcription/, /gpt-6\.1-sol/, /Transcription settings are retained/, /Both modes require OPENAI_API_KEY/, /10 minutes of total audio/, /Docker installs ffmpeg automatically/, /FFMPEG_PATH/, /future processing only/, /no automatic fallback or regeneration/, /Signed reports and existing clinical permissions remain unchanged/, /experimental; accuracy is not guaranteed/]) {
+	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="mode-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /each REPORT_GENERATION_MODES/, /mode === 'direct_audio'/, /Requires FFmpeg/, /10 minutes of total audio/, /OPENAI_API_KEY is missing/, /future processing only/, /Existing reports are unchanged/, /Review generated reports before signing/]) {
 		assert.match(source, pattern);
 	}
+	assert.doesNotMatch(source, /pipeline-help|direct-help|scope-help|fixed gpt-6\.1-sol|all ordered audio parts/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/reporting'\)\}[^]*?>Reporting settings<[^]*?\{\/if\}/);
 });

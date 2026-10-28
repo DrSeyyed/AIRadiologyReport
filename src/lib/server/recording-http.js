@@ -183,18 +183,6 @@ export const generate = handler(async ({ db, studyId, recordingId }) => {
 	return json(result);
 });
 
-const inspectAudioResponse = handler(async ({ db, studyId, recordingId }) => {
-	const result = await processRecording(db, studyId, recordingId, undefined, undefined, { inspectDirectAudio: true });
-	return json(result, { headers: { 'Cache-Control': 'private, no-store' } });
-});
-
-export async function inspectAudio(event) {
-	if (!event.locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	if (event.locals.user.role !== 'admin')
-		return json({ error: 'Only administrators may inspect raw audio responses.' }, { status: 403 });
-	return inspectAudioResponse(event);
-}
-
 export const readReport = handler(
 	({ recording }) => {
 		if (recording.text_report_path && !existsSync(recording.text_report_path))

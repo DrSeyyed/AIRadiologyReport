@@ -167,7 +167,7 @@ export async function generateRecordingReport(s, template, value = DEFAULT_TRANS
 	return openaiGenerateReport(reportPrompt(s, template, transcriptions.join('\n'), englishInstruction));
 }
 
-export async function requestDirectAudioReport(s, template) {
+async function requestDirectAudioReport(s, template) {
 	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const prompt = reportPrompt(s, template, undefined, englishInstruction);
 	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
