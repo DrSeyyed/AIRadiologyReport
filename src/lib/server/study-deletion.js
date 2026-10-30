@@ -1,6 +1,7 @@
 import { getStudyDetail } from './studies.js';
 import { telegramVoiceCount } from './study-state.js';
 import { deleteMessage, editStudyMessage } from './telegram.js';
+import { processTelegramVoiceDeletion } from './telegram-voice-deletion.js';
 
 const deleting = new Set();
 
@@ -21,10 +22,19 @@ export async function deleteStudy(db, studyId, confirmation = {}, remove = delet
 			db.prepare('UPDATE pending_voice SET done = 1 WHERE study_id = ?').run(studyId);
 			db.prepare('DELETE FROM pending_telegram WHERE study_id = ?').run(studyId);
 			db.prepare(`INSERT OR IGNORE INTO study_telegram_voices(study_id,chat_id,message_id)
-				SELECT study_id,chat_id,reply_message_id FROM pending_voice WHERE study_id = ?`).run(studyId);
+				SELECT study_id,chat_id,reply_message_id FROM pending_voice p WHERE study_id = ? AND NOT EXISTS
+				(SELECT 1 FROM telegram_voice_deletions d WHERE d.chat_id = p.chat_id AND d.message_id = p.reply_message_id)`).run(studyId);
 			return { ...study, disabled: 1 };
 		})();
 		let failed = false;
+		const cleanups = db.prepare(`SELECT chat_id, message_id FROM telegram_voice_deletions
+			WHERE study_id = ? AND (telegram_deleted = 0 OR files_deleted = 0 OR refreshed = 0)`).all(studyId);
+		for (const job of cleanups) {
+			const complete = await processTelegramVoiceDeletion(db, {
+				remove, refresh: edit, chatId: job.chat_id, messageId: job.message_id, now: Math.floor(Date.now() / 1000) + 30
+			});
+			if (!complete) failed = true;
+		}
 		const voices = db.prepare('SELECT * FROM study_telegram_voices WHERE study_id = ? AND deleted = 0 ORDER BY message_id DESC').all(studyId);
 		for (const voice of voices) {
 			try {

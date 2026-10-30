@@ -208,6 +208,20 @@ CREATE TABLE IF NOT EXISTS study_telegram_voices (
 );
 CREATE INDEX IF NOT EXISTS idx_study_telegram_voices ON study_telegram_voices(study_id);
 
+CREATE TABLE IF NOT EXISTS telegram_voice_deletions (
+  chat_id TEXT NOT NULL,
+  message_id INTEGER NOT NULL,
+  study_id INTEGER NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  audio_path TEXT,
+  report_path TEXT,
+  telegram_deleted INTEGER NOT NULL DEFAULT 0 CHECK (telegram_deleted IN (0, 1)),
+  files_deleted INTEGER NOT NULL DEFAULT 0 CHECK (files_deleted IN (0, 1)),
+  refreshed INTEGER NOT NULL DEFAULT 0 CHECK (refreshed IN (0, 1)),
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (chat_id, message_id)
+);
+
 -- Stop legacy topic index change tracking without deleting existing metadata.
 DROP TRIGGER IF EXISTS telegram_index_studies_insert;
 DROP TRIGGER IF EXISTS telegram_index_studies_delete;

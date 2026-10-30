@@ -19,7 +19,7 @@ export const POST = async ({ request }) => {
 			if (update.message) await handleTelegramRegistration(db, msg);
 			return json({ ok: true });
 		}
-		await handleTelegramGroupMessage(db, msg);
+		await handleTelegramGroupMessage(db, msg, { allowDelete: Boolean(update.message) });
 		return json({ ok: true });
 	} catch (error) {
 		return json(

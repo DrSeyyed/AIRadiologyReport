@@ -12,6 +12,7 @@ export function trackStudyReply(db, message) {
 	const parentId = telegramReplyMessageId(message);
 	if (!(message.voice || message.audio) || !parentId) return null;
 	const chatId = String(message.chat.id);
+	if (db.prepare('SELECT 1 FROM telegram_voice_deletions WHERE chat_id = ? AND message_id IN (?, ?)').get(chatId, message.message_id, parentId)) return null;
 	const study = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)')
 		.get(String(parentId), `${parentId}.0`);
 	const parent = study ? null : db.prepare('SELECT study_id FROM study_telegram_voices WHERE chat_id = ? AND message_id = ? AND deleted = 0')

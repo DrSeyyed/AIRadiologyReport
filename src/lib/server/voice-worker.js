@@ -4,6 +4,7 @@ import { appendRecording, appendRecordingAudio, getRecording, assertCanAppendRec
 import { downloadFile, syncStudyMessage, sendReply } from './telegram.js';
 import { getApprovedTelegramUser } from './telegram-registration.js';
 import { trackStudyReply, telegramReplyMessageId } from './telegram-replies.js';
+import { processTelegramVoiceDeletion } from './telegram-voice-deletion.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -34,6 +35,7 @@ export function queueVoiceReply(db, message, now = Math.floor(Date.now() / 1000)
 	if (!sender || !['resident', 'attending'].includes(sender.role)) return false;
 	return db.transaction(() => {
 		const chatId = String(message.chat.id);
+		if (db.prepare('SELECT 1 FROM telegram_voice_deletions WHERE chat_id = ? AND message_id IN (?, ?)').get(chatId, message.message_id, replyId)) return false;
 		if (db.prepare('SELECT id FROM pending_voice WHERE chat_id = ? AND reply_message_id = ?').get(chatId, message.message_id)) return true;
 		const study = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)').get(String(replyId), `${replyId}.0`);
 		const parent = study ? null : db.prepare('SELECT * FROM pending_voice WHERE chat_id = ? AND reply_message_id = ?').get(chatId, replyId);
@@ -102,7 +104,14 @@ export async function processVoiceJob(
 			assertCanAppendRecordingAudio(db, job.study_id, target, sender);
 		}
 		savedPath = await download(job.file_id, path.join(directory, `study_${job.study_id}_voice_${job.id}.ogg`));
-		if (!db.prepare('SELECT id FROM studies WHERE id = ?').get(job.study_id)) {
+		if (!db.prepare('SELECT id FROM studies WHERE id = ?').get(job.study_id) ||
+			db.prepare('SELECT 1 FROM telegram_voice_deletions WHERE chat_id = ? AND message_id = ?').get(job.chat_id, job.reply_message_id)) {
+			if (fs.existsSync(savedPath)) fs.unlinkSync(savedPath);
+			return true;
+		}
+		const currentJob = db.prepare('SELECT done FROM pending_voice WHERE id = ?').get(job.id);
+		if (!currentJob) throw recordingError('Original voice no longer exists.', 404);
+		if (currentJob.done) {
 			if (fs.existsSync(savedPath)) fs.unlinkSync(savedPath);
 			return true;
 		}
@@ -143,7 +152,9 @@ export function startVoiceWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await processVoiceJob(getDb());
+			const db = getDb();
+			await processTelegramVoiceDeletion(db);
+			await processVoiceJob(db);
 		} catch {
 			console.warn('Voice queue unavailable; retrying later.');
 		} finally {

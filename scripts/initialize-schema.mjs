@@ -24,6 +24,7 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 					DROP TRIGGER IF EXISTS trg_studies_ai_set_age;
 					DROP TRIGGER IF EXISTS trg_studies_au_set_age;
 					DROP TRIGGER IF EXISTS trg_patients_au_propagate_age;
+					DROP TABLE IF EXISTS telegram_voice_deletions;
 					DROP TABLE IF EXISTS study_telegram_voices;
 					DROP TABLE IF EXISTS recording_examinations;
 					DROP TABLE IF EXISTS recording_audio_parts;
@@ -111,7 +112,8 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 			addColumn('studies', 'disabled', 'INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))');
 			addColumn('studies', 'telegram_send_started_at', 'INTEGER');
 			db.exec(`INSERT OR IGNORE INTO study_telegram_voices(study_id,chat_id,message_id)
-				SELECT study_id,chat_id,reply_message_id FROM pending_voice`);
+				SELECT study_id,chat_id,reply_message_id FROM pending_voice p WHERE NOT EXISTS
+				(SELECT 1 FROM telegram_voice_deletions d WHERE d.chat_id = p.chat_id AND d.message_id = p.reply_message_id)`);
 			addColumn('studies', 'needs_attention', 'INTEGER NOT NULL DEFAULT 0 CHECK (needs_attention IN (0, 1))');
 			addColumn('studies', 'attention_note', "TEXT NOT NULL DEFAULT '' CHECK (length(attention_note) <= 300)");
 			addColumn('users', 'telegram_user_id', 'TEXT');
