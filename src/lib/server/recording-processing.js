@@ -15,7 +15,7 @@ import { getTranscriptionSettings } from './transcription-settings.js';
 import { getAttendingReportPreferences } from './report-preferences.js';
 import { getReportGenerationSettings } from './report-generation-settings.js';
 import { getGptAudioSettings } from './gpt-audio-settings.js';
-import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
+import { isAudioModel } from '../audio-models.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -60,23 +60,26 @@ export async function processRecording(
 	const template = recordingTemplate(db, recording);
 	const study = getStudyDetail(db, studyId);
 	let transcriptionSettings;
+	let reportingSettings;
 	let gptAudioSettings;
 	let reportEnglishVariant;
 	let runGeneration = generate;
 	if (generate === generateRecordingReport) {
-		const reporting = getReportGenerationSettings(db);
+		reportingSettings = getReportGenerationSettings(db);
 		reportEnglishVariant = getAttendingReportPreferences(db, study.corresponding_attending_id).english_variant;
-		if (!process.env.OPENAI_API_KEY)
+		const direct = reportingSettings.mode === 'direct_audio';
+		if ((!direct || reportingSettings.provider === 'openai') && !process.env.OPENAI_API_KEY)
 			throw recordingError('Set OPENAI_API_KEY to enable report generation.', 501);
-		if (reporting.mode === 'direct_audio') {
+		if (direct) {
 			runGeneration = generateDirectAudioReport;
 		} else {
 			transcriptionSettings = getTranscriptionSettings(db);
 			if (transcriptionSettings.provider === 'elevenlabs' && !process.env.ELEVENLABS_API_KEY)
 				throw recordingError('Set ELEVENLABS_API_KEY to use ElevenLabs transcription.', 501);
 		}
-		if (reporting.mode === 'direct_audio' || transcriptionSettings?.model === DIRECT_AUDIO_MODEL)
-			gptAudioSettings = getGptAudioSettings(db);
+		if ((direct ? reportingSettings : transcriptionSettings).provider === 'gemini' && !process.env.GEMINI_API_KEY)
+			throw recordingError('Set GEMINI_API_KEY to use Gemini audio models.', 501);
+		if (direct || isAudioModel(transcriptionSettings)) gptAudioSettings = getGptAudioSettings(db);
 	}
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db
@@ -86,7 +89,7 @@ export async function processRecording(
 		.run(started, recordingId);
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
 	try {
-		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings }, template, transcriptionSettings);
+		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings, report_generation_settings: reportingSettings }, template, transcriptionSettings);
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
 		const path = saveRecordingReport(db, recordingId, text, directory);

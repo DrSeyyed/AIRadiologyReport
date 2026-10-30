@@ -23,6 +23,7 @@ import {
 	getRecording
 } from '../src/lib/server/recordings.js';
 import { insertStudy } from '../src/lib/server/studies.js';
+import { DEFAULT_DIRECT_AUDIO_SETTINGS } from '../src/lib/audio-models.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 function wave(samples = 1600, amplitude = 1000) {
@@ -98,7 +99,7 @@ const conversionDirs = () =>
 
 test('generation mode defaults to existing pipeline, persists strictly and invalid settings never overwrite it', (t) => {
 	const { db } = fixture(t);
-	assert.deepEqual(getReportGenerationSettings(db), { mode: 'transcribe_then_generate' });
+	assert.deepEqual(getReportGenerationSettings(db), { mode: 'transcribe_then_generate', ...DEFAULT_DIRECT_AUDIO_SETTINGS });
 	setReportGenerationSettings(db, { mode: 'direct_audio' });
 	for (const value of [
 		null,
@@ -108,10 +109,10 @@ test('generation mode defaults to existing pipeline, persists strictly and inval
 		{ mode: 'direct_audio', model: 'arbitrary' }
 	]) {
 		assert.throws(() => setReportGenerationSettings(db, value));
-		assert.deepEqual(getReportGenerationSettings(db), { mode: 'direct_audio' });
+		assert.deepEqual(getReportGenerationSettings(db), { mode: 'direct_audio', ...DEFAULT_DIRECT_AUDIO_SETTINGS });
 	}
 	initializeSchema(db, schema);
-	assert.deepEqual(getReportGenerationSettings(db), { mode: 'direct_audio' });
+	assert.deepEqual(getReportGenerationSettings(db), { mode: 'direct_audio', ...DEFAULT_DIRECT_AUDIO_SETTINGS });
 	db.prepare(
 		"UPDATE application_settings SET value='broken' WHERE key='report_generation_settings'"
 	).run();

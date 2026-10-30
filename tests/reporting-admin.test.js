@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { compile } from 'svelte/compiler';
 import { DEFAULT_REPORT_GENERATION_SETTINGS, REPORT_GENERATION_MODES } from '../src/lib/report-generation-models.js';
 import { DEFAULT_GPT_AUDIO_SETTINGS, GPT_AUDIO_SUBSTITUTES, MAX_GPT_AUDIO_LIMIT_SECONDS } from '../src/lib/gpt-audio-settings.js';
+import { AUDIO_MODEL_PROVIDERS } from '../src/lib/audio-models.js';
 
 const admin = { user: { id: 1, role: 'admin' } };
 const routeUrl = new URL('../src/routes/admin/reporting/+page.server.js', import.meta.url);
@@ -49,9 +50,39 @@ async function fixture(t, env = {}, initialValue) {
 	return { state, page, submit, submitAudio };
 }
 
+test('direct audio selections persist independently of mode and invalid pairs cannot overwrite them', async (t) => {
+	const { page, state } = await fixture(t, { GEMINI_API_KEY: 'synthetic-gemini-secret' });
+	assert.equal(page.load({ locals: admin }).configured.gemini, true);
+	assertNoSecrets(page.load({ locals: admin }));
+	async function submit(settings, duplicate = false) {
+		const form = new FormData();
+		for (const [key, value] of Object.entries(settings)) form.set(key, value);
+		if (duplicate) form.append('model', settings.model);
+		return page.actions.default({ locals: admin, request: new Request('http://localhost/admin/reporting', { method: 'POST', body: form }) });
+	}
+	for (const provider of AUDIO_MODEL_PROVIDERS) for (const model of provider.models) {
+		for (const mode of ['direct_audio', 'transcribe_then_generate']) {
+			const settings = { mode, provider: provider.id, model: model.id };
+			assert.deepEqual(await submit(settings), { success: true, settings });
+			assert.deepEqual(page.load({ locals: admin }).settings, settings);
+			const reloaded = await fixture(t, {}, state.value);
+			assert.deepEqual(reloaded.page.load({ locals: admin }).settings, settings);
+		}
+	}
+	const previous = state.value;
+	for (const settings of [
+		{ mode: 'direct_audio', provider: 'gemini', model: 'gpt-realtime-2' },
+		{ mode: 'direct_audio', provider: 'openai', model: 'gemini-3.8-flash' },
+		{ mode: 'direct_audio', provider: 'gemini' },
+		{ mode: 'direct_audio', model: 'gemini-3.8-flash' }
+	]) assert.equal((await submit(settings)).status, 400);
+	assert.equal((await submit({ mode: 'direct_audio', provider: 'gemini', model: 'gemini-3.8-flash' }, true)).status, 400);
+	assert.equal(state.value, previous);
+});
+
 function assertNoSecrets(value) {
 	const serialized = JSON.stringify(value);
-	for (const secret of ['synthetic-openai-secret', 'synthetic-elevenlabs-secret', '<script>']) assert.ok(!serialized.includes(secret));
+	for (const secret of ['synthetic-openai-secret', 'synthetic-elevenlabs-secret', 'synthetic-gemini-secret', '<script>']) assert.ok(!serialized.includes(secret));
 }
 
 test('every load and save checks fresh administrator authorization before database or request access', async (t) => {
@@ -82,7 +113,7 @@ test('default stays unchanged and load exposes settings, recovery warnings and k
 			recoveryWarning: null,
 			gptAudioSettings: DEFAULT_GPT_AUDIO_SETTINGS,
 			gptAudioRecoveryWarning: null,
-			configured: { openai: Boolean(env.OPENAI_API_KEY), elevenlabs: Boolean(env.ELEVENLABS_API_KEY) }
+			configured: { openai: Boolean(env.OPENAI_API_KEY), elevenlabs: Boolean(env.ELEVENLABS_API_KEY), gemini: Boolean(env.GEMINI_API_KEY) }
 		});
 		assert.equal(data.settings.mode, 'transcribe_then_generate');
 		assert.equal(state.writes, 0);
@@ -93,7 +124,7 @@ test('default stays unchanged and load exposes settings, recovery warnings and k
 test('all supported modes persist and survive a fresh route instance without requiring a key', async (t) => {
 	const { page, state, submit } = await fixture(t);
 	for (const { id } of REPORT_GENERATION_MODES) {
-		const settings = { mode: id };
+		const settings = { ...DEFAULT_REPORT_GENERATION_SETTINGS, mode: id };
 		assert.deepEqual(await submit(id), { success: true, settings });
 		assert.deepEqual(JSON.parse(state.value), settings);
 		assert.deepEqual(page.load({ locals: admin }).settings, settings);
@@ -150,7 +181,7 @@ test('reporting UI stays concise, compiles accessibly and retains essential warn
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
-	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="mode-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /each REPORT_GENERATION_MODES/, /mode === 'direct_audio'/, /Requires FFmpeg/, /shared GPT Audio total recording limit/, /OPENAI_API_KEY is missing/, /future processing only/, /Existing reports are unchanged/, /Review generated reports before signing/]) {
+	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="mode-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /each REPORT_GENERATION_MODES/, /mode === 'direct_audio'/, /Requires FFmpeg/, /shared audio-model total recording limit/, /OPENAI_API_KEY is missing/, /GEMINI_API_KEY is missing/, /name="provider"/, /name="model"/, /future processing only/, /Existing reports are unchanged/, /Review generated reports before signing/]) {
 		assert.match(source, pattern);
 	}
 	assert.doesNotMatch(source, /pipeline-help|direct-help|scope-help|fixed gpt-6\.1-sol|all ordered audio parts/);
@@ -254,7 +285,7 @@ test('enhanced forms reset only their own draft after success and keep all draft
 	assert.equal(callbacks.length, 2);
 	for (const [index, callback] of callbacks.entries()) {
 		for (const type of ['success', 'failure']) {
-			const state = { selection: 'direct_audio', audioSelection: 'elevenlabs:scribe_v2', limitSelection: '1800', saving: false, savingAudio: false };
+			const state = { selection: 'direct_audio', modelSelection: { provider: 'gemini', model: 'gemini-3.8-flash' }, audioSelection: 'elevenlabs:scribe_v2', limitSelection: '1800', saving: false, savingAudio: false };
 			const enhance = new Function('state', `with (state) { return (${callback}); }`)(state);
 			const completion = enhance();
 			assert.equal(state[index === 0 ? 'saving' : 'savingAudio'], true);
@@ -267,6 +298,7 @@ test('enhanced forms reset only their own draft after success and keep all draft
 			assert.equal(state.saving, false);
 			assert.equal(state.savingAudio, false);
 			assert.equal(state.selection, index === 0 && type === 'success' ? null : 'direct_audio');
+			assert.deepEqual(state.modelSelection, index === 0 && type === 'success' ? null : { provider: 'gemini', model: 'gemini-3.8-flash' });
 			assert.equal(state.audioSelection, index === 1 && type === 'success' ? null : 'elevenlabs:scribe_v2');
 			assert.equal(state.limitSelection, index === 1 && type === 'success' ? null : '1800');
 		}

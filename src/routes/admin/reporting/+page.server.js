@@ -36,7 +36,7 @@ export function load({ locals }) {
 		recoveryWarning,
 		gptAudioSettings,
 		gptAudioRecoveryWarning,
-		configured: { openai: Boolean(process.env.OPENAI_API_KEY), elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY) }
+		configured: { openai: Boolean(process.env.OPENAI_API_KEY), elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY), gemini: Boolean(process.env.GEMINI_API_KEY) }
 	};
 }
 
@@ -71,7 +71,15 @@ export const actions = {
 		if (!REPORT_GENERATION_MODES.some((entry) => entry.id === mode)) {
 			return fail(400, { error: 'Select a supported reporting mode.' });
 		}
-		const settings = normalizeReportGenerationSettings({ mode });
+		let settings;
+		try {
+			if (form.getAll('mode').length !== 1) throw new Error();
+			const legacy = !form.has('provider') && !form.has('model');
+			if (!legacy && (form.getAll('provider').length !== 1 || form.getAll('model').length !== 1)) throw new Error();
+			settings = normalizeReportGenerationSettings(legacy ? { mode } : { mode, provider: form.get('provider'), model: form.get('model') });
+		} catch {
+			return fail(400, { error: 'Select a supported direct audio provider and model.' });
+		}
 		try {
 			setReportGenerationSettings(getDb(), settings);
 		} catch {

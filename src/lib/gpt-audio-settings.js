@@ -1,11 +1,11 @@
-import { DIRECT_AUDIO_MODEL } from './report-generation-models.js';
+import { isAudioModel } from './audio-models.js';
 import { TRANSCRIPTION_PROVIDERS } from './transcription-models.js';
 
 export const DEFAULT_GPT_AUDIO_SETTINGS = { limitSeconds: 600, substitute: null };
 export const MAX_GPT_AUDIO_LIMIT_SECONDS = Math.floor((0xffffffff - 36) / 32000);
 export const GPT_AUDIO_SUBSTITUTES = TRANSCRIPTION_PROVIDERS.map((provider) => ({
 	...provider,
-	models: provider.models.filter((model) => model.id !== DIRECT_AUDIO_MODEL)
+	models: provider.models.filter((model) => !isAudioModel({ provider: provider.id, model: model.id }))
 })).filter((provider) => provider.models.length > 0);
 
 function hasShape(value, keys) {

@@ -44,6 +44,7 @@
 		"jalaali-js": "^1.2.8",
 		"marked": "^16.2.0",
 		"undici": "^7.13.0",
+		"ws": "^8.18.3",
 		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	}
 }

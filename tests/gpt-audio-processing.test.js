@@ -228,7 +228,7 @@ test('preparation enforces decoded total duration to the sample, returns split W
 	writeFileSync(f.second, wave(8001));
 	await assert.rejects(prepareDirectAudio(parts, { limitSeconds: 1, splitParts: true }), AudioDurationLimitError);
 	for (const limitSeconds of [0, -1, 1.5, NaN, Infinity, '600', 134218]) {
-		await assert.rejects(prepareDirectAudio(parts, { limitSeconds }), /valid GPT Audio time limit/);
+		await assert.rejects(prepareDirectAudio(parts, { limitSeconds }), /valid audio-model time limit/);
 	}
 	assert.equal(readdirSync(f.directory).some(name => name.startsWith('radiology-audio-')), false);
 });

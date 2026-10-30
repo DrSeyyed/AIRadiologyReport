@@ -14,12 +14,12 @@ export class AudioDurationLimitError extends Error {
 		const duration = limitSeconds % 60 === 0
 			? `${limitSeconds / 60} minute${limitSeconds === 60 ? '' : 's'}`
 			: `${limitSeconds} second${limitSeconds === 1 ? '' : 's'}`;
-		super(`GPT Audio supports at most ${duration} of total recording audio under the administrator's settings. Select a substitute transcription model in Reporting settings for longer recordings.`);
+		super(`The selected audio model supports at most ${duration} of total recording audio under the administrator's settings. Select a substitute transcription model in Reporting settings for longer recordings.`);
 		this.name = 'AudioDurationLimitError';
 	}
 }
 
-function encodeWave(buffers, bytes) {
+function encodeWave(buffers, bytes, sampleRate) {
 	const header = Buffer.alloc(44);
 	header.write('RIFF', 0);
 	header.writeUInt32LE(bytes + 36, 4);
@@ -27,8 +27,8 @@ function encodeWave(buffers, bytes) {
 	header.writeUInt32LE(16, 16);
 	header.writeUInt16LE(1, 20);
 	header.writeUInt16LE(1, 22);
-	header.writeUInt32LE(SAMPLE_RATE, 24);
-	header.writeUInt32LE(SAMPLE_RATE * 2, 28);
+	header.writeUInt32LE(sampleRate, 24);
+	header.writeUInt32LE(sampleRate * 2, 28);
 	header.writeUInt16LE(2, 32);
 	header.writeUInt16LE(16, 34);
 	header.write('data', 36);
@@ -36,10 +36,11 @@ function encodeWave(buffers, bytes) {
 	return Buffer.concat([header, ...buffers]).toString('base64');
 }
 
-export async function prepareDirectAudio(parts, { transcription = false, limitSeconds = MAX_DIRECT_AUDIO_SECONDS, splitParts = false } = {}) {
+export async function prepareDirectAudio(parts, { transcription = false, limitSeconds = MAX_DIRECT_AUDIO_SECONDS, splitParts = false, sampleRate = SAMPLE_RATE } = {}) {
 	if (!Number.isSafeInteger(limitSeconds) || limitSeconds < 1 || limitSeconds > MAX_GPT_AUDIO_LIMIT_SECONDS)
-		throw new Error('Select a valid GPT Audio time limit in seconds.');
-	const maxPcmBytes = limitSeconds * SAMPLE_RATE * 2;
+		throw new Error('Select a valid audio-model time limit in seconds.');
+	if (![16000, 24000].includes(sampleRate)) throw new Error('Unsupported audio sample rate.');
+	const maxPcmBytes = limitSeconds * sampleRate * 2;
 	if (!parts?.length) throw new Error(transcription
 		? 'No audio parts were provided for audio-model transcription.'
 		: 'No audio parts were provided for direct reporting.');
@@ -70,11 +71,11 @@ export async function prepareDirectAudio(parts, { transcription = false, limitSe
 						'-ac',
 						'1',
 						'-ar',
-						String(SAMPLE_RATE),
+						String(sampleRate),
 						'-c:a',
 						'pcm_s16le',
 						'-t',
-						String((maxPcmBytes - bytes) / (SAMPLE_RATE * 2) + 1),
+						String((maxPcmBytes - bytes) / (sampleRate * 2) + 1),
 						'-f',
 						's16le',
 						output
@@ -101,9 +102,11 @@ export async function prepareDirectAudio(parts, { transcription = false, limitSe
 			if (bytes > maxPcmBytes) throw new AudioDurationLimitError(limitSeconds);
 			buffers.push(await readFile(output));
 		}
-		// Check the entire recording before any part can be sent to GPT Audio.
-		if (splitParts) return buffers.map((buffer) => encodeWave([buffer], buffer.length));
-		return encodeWave(buffers, bytes);
+		// Check the entire recording before any part can be sent to a provider.
+		if ((splitParts ? buffers.some((buffer) => buffer.length > 0xffffffff - 36) : bytes > 0xffffffff - 36))
+			throw new Error('Converted audio exceeds the WAV size limit. Use shorter recordings.');
+		if (splitParts) return buffers.map((buffer) => encodeWave([buffer], buffer.length, sampleRate));
+		return encodeWave(buffers, bytes, sampleRate);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

@@ -1,10 +1,16 @@
 <script>
 	import { enhance } from '$app/forms';
 	import { REPORT_GENERATION_MODES } from '$lib/report-generation-models.js';
+	import { AUDIO_MODEL_PROVIDERS } from '$lib/audio-models.js';
 	import { GPT_AUDIO_SUBSTITUTES, MAX_GPT_AUDIO_LIMIT_SECONDS } from '$lib/gpt-audio-settings.js';
 
 	let { data, form } = $props();
 	let selection = $state(null);
+	let modelSelection = $state(null);
+	let saved = $derived(form?.settings ?? data.settings);
+	let provider = $derived(modelSelection?.provider ?? saved.provider);
+	let model = $derived(modelSelection?.model ?? saved.model);
+	let models = $derived(AUDIO_MODEL_PROVIDERS.find((entry) => entry.id === provider).models);
 	let saving = $state(false);
 	let mode = $derived(selection ?? form?.settings?.mode ?? data.settings.mode);
 	let savingAudio = $state(false);
@@ -19,12 +25,15 @@
 	<h1 class="text-2xl font-semibold">Reporting settings</h1>
 	<p id="mode-help" class="text-sm">Applies to future processing only. Existing reports are unchanged.</p>
 	{#if mode === 'direct_audio'}
-		<p class="text-sm">Requires FFmpeg. Uses the shared GPT Audio total recording limit below.</p>
+		<p class="text-sm">Requires FFmpeg. Uses the shared audio-model total recording limit below.</p>
 	{/if}
 	<p class="text-sm">Review generated reports before signing.</p>
 	{#if data.recoveryWarning}<div class="alert alert-warning" role="alert">{data.recoveryWarning}</div>{/if}
-	{#if !data.configured.openai}
+	{#if (mode !== 'direct_audio' || provider === 'openai') && !data.configured.openai}
 		<div class="alert alert-warning" role="alert">OPENAI_API_KEY is missing. Report generation is unavailable.</div>
+	{/if}
+	{#if mode === 'direct_audio' && provider === 'gemini' && !data.configured.gemini}
+		<div class="alert alert-warning" role="alert">GEMINI_API_KEY is missing. Gemini audio models are unavailable.</div>
 	{/if}
 	{#if form?.error && form.section !== 'gpt_audio'}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success && form.section !== 'gpt_audio'}<div class="alert alert-success" role="status">Reporting settings saved.</div>{/if}
@@ -33,7 +42,10 @@
 		return async ({ result, update }) => {
 			try {
 				await update({ reset: false });
-				if (result.type === 'success') selection = null;
+				if (result.type === 'success') {
+					selection = null;
+					modelSelection = null;
+				}
 			} finally {
 				saving = false;
 			}
@@ -47,12 +59,35 @@
 				<option value={entry.id}>{entry.label}</option>
 			{/each}
 		</select>
+		{#if mode === 'direct_audio'}
+			<label class="form-control min-w-0">
+				<span class="label-text">Direct audio provider</span>
+				<select name="provider" class="select select-bordered w-full min-w-0" value={provider} disabled={saving} onchange={(event) => {
+					const next = AUDIO_MODEL_PROVIDERS.find((entry) => entry.id === event.currentTarget.value);
+					modelSelection = { provider: next.id, model: next.models[0].id };
+				}}>
+					{#each AUDIO_MODEL_PROVIDERS as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
+				</select>
+			</label>
+			<label class="form-control min-w-0">
+				<span class="label-text">Direct audio model</span>
+				<select name="model" class="select select-bordered w-full min-w-0" value={model} disabled={saving} onchange={(event) => modelSelection = { provider, model: event.currentTarget.value }}>
+					{#each models as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
+				</select>
+			</label>
+		{:else}
+			<input type="hidden" name="provider" value={provider} />
+			<input type="hidden" name="model" value={model} />
+		{/if}
 		<button class="btn btn-primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>
 	</form>
 
-	<h2 class="text-xl font-semibold">GPT Audio duration policy</h2>
-	<p id="audio-help" class="text-sm">For future direct reporting and GPT Audio transcription. Only above the total limit, substitute the entire recording, then generate with gpt-6.1-sol. Disabled substitution stops over-limit processing; never truncates audio. Primary transcription selection is unchanged.</p>
+	<h2 class="text-xl font-semibold">Audio-model duration policy</h2>
+	<p id="audio-help" class="text-sm">Shared by GPT Audio, GPT Realtime and Gemini in both workflows. Only above the total limit, substitute the entire recording, then generate with gpt-6.1-sol. Disabled substitution stops over-limit processing; never truncates audio. Primary transcription selection is unchanged.</p>
 	{#if data.gptAudioRecoveryWarning}<div class="alert alert-warning" role="alert">{data.gptAudioRecoveryWarning}</div>{/if}
+	{#if substitute && !data.configured.openai}
+		<div class="alert alert-warning" role="alert">OPENAI_API_KEY is missing. Over-limit substitution requires OpenAI report generation.</div>
+	{/if}
 	{#if substitute.startsWith('elevenlabs:') && !data.configured.elevenlabs}
 		<div class="alert alert-warning" role="alert">ELEVENLABS_API_KEY is missing. The selected substitute is unavailable when the limit is exceeded.</div>
 	{/if}

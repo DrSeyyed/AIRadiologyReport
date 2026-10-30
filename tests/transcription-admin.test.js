@@ -65,7 +65,7 @@ test('default load exposes only boolean key flags and never automatically switch
 		const { page, state } = await fixture(t, env);
 		const data = page.load({ locals });
 		assert.deepEqual(data.settings, DEFAULT_TRANSCRIPTION_SETTINGS);
-		assert.deepEqual(data.configured, { openai: Boolean(env.OPENAI_API_KEY), elevenlabs: Boolean(env.ELEVENLABS_API_KEY) });
+		assert.deepEqual(data.configured, { openai: Boolean(env.OPENAI_API_KEY), elevenlabs: Boolean(env.ELEVENLABS_API_KEY), gemini: Boolean(env.GEMINI_API_KEY) });
 		assert.equal(data.recoveryWarning, null);
 		assert.equal(state.writes, 0);
 		assertNoSecrets(data);
@@ -143,8 +143,9 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	assert.match(source, /OPENAI_API_KEY is missing/);
 	assert.match(source, /ELEVENLABS_API_KEY is missing/);
 	assert.match(source, /label\.includes\('\(legacy\)'\)/);
-	assert.match(source, /model === DIRECT_AUDIO_MODEL/);
-	assert.match(source, /total GPT Audio recording limit and substitute/);
+	assert.match(source, /isAudioModel\(\{ provider, model \}\)/);
+	assert.match(source, /shared audio-model recording limit and substitute/);
+	assert.match(source, /GEMINI_API_KEY is missing/);
 	assert.match(source, /href=\{resolve\('\/admin\/reporting'\)\}/);
 	assert.doesNotMatch(source, /10 minutes|per audio part/);
 	assert.doesNotMatch(source, /audio-model-help|Chat Completions|gpt-6\.1-sol|Compare transcription accuracy/);

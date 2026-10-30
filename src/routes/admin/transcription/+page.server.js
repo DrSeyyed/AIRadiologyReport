@@ -25,7 +25,8 @@ export function load({ locals }) {
 		recoveryWarning,
 		configured: {
 			openai: Boolean(process.env.OPENAI_API_KEY),
-			elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY)
+			elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
+			gemini: Boolean(process.env.GEMINI_API_KEY)
 		}
 	};
 }

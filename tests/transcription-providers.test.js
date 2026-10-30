@@ -11,6 +11,7 @@ import { transcribeAudio } from '../src/lib/server/recording-generation.js';
 import { processRecording, saveRecordingReport } from '../src/lib/server/recording-processing.js';
 import { appendRecording, appendRecordingAudio, configureRecording, getRecording } from '../src/lib/server/recordings.js';
 import { insertStudy } from '../src/lib/server/studies.js';
+import { isAudioModel } from '../src/lib/audio-models.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 function wave(amplitude = 1000, samples = 160) {
@@ -105,7 +106,7 @@ test('dedicated transcription models use the correct provider endpoint and crede
 		return { ok: true, json: async () => ({ text: '  فارسی with low T1 and high T2.  ' }) };
 	});
 	for (const provider of TRANSCRIPTION_PROVIDERS) for (const model of provider.models) {
-		if (model.id === 'gpt-audio-1.5') continue;
+		if (isAudioModel({ provider: provider.id, model: model.id })) continue;
 		selected = { provider: provider.id, model: model.id };
 		assert.equal(await transcribeAudio(audio, 'synthetic.ogg', selected), 'فارسی with low T1 and high T2.');
 	}
@@ -342,7 +343,7 @@ test('GPT Audio transcription rejects invalid or oversized audio before upload a
 		t.mock.method(globalThis, 'fetch', async () => assert.fail('Invalid audio must not be uploaded'));
 		await assert.rejects(processRecording(db, studyId, id, undefined, directory), failure === 'invalid'
 			? /Audio conversion failed/
-			: /GPT Audio supports at most 10 minutes of total recording audio/);
+			: /selected audio model supports at most 10 minutes of total recording audio/);
 		assert.equal(getRecording(db, studyId, id).processing, 0);
 		assert.equal(getRecording(db, studyId, id).text_report_path, previous);
 		assert.equal(readFileSync(previous, 'utf8'), 'Previous report.');

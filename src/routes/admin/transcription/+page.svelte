@@ -2,7 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { resolve } from '$app/paths';
 	import { TRANSCRIPTION_PROVIDERS } from '$lib/transcription-models.js';
-	import { DIRECT_AUDIO_MODEL } from '$lib/report-generation-models.js';
+	import { isAudioModel } from '$lib/audio-models.js';
 
 	let { data, form } = $props();
 	let selection = $state(null);
@@ -26,6 +26,9 @@
 	{/if}
 	{#if provider === 'elevenlabs' && !data.configured.elevenlabs}
 		<div class="alert alert-warning" role="alert">ELEVENLABS_API_KEY is missing. ElevenLabs transcription is unavailable.</div>
+	{/if}
+	{#if provider === 'gemini' && !data.configured.gemini}
+		<div class="alert alert-warning" role="alert">GEMINI_API_KEY is missing. Gemini transcription is unavailable.</div>
 	{/if}
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">Transcription settings saved.</div>{/if}
@@ -52,8 +55,8 @@
 		{#if models.find((entry) => entry.id === model)?.label.includes('(legacy)')}
 			<p class="text-sm text-warning">This model retires on February 26, 2027.</p>
 		{/if}
-		{#if model === DIRECT_AUDIO_MODEL}
-			<p class="text-sm">Requires FFmpeg. The total GPT Audio recording limit and substitute are configured in <a class="link" href={resolve('/admin/reporting')}>Reporting settings</a>.</p>
+		{#if isAudioModel({ provider, model })}
+			<p class="text-sm">Requires FFmpeg. The shared audio-model recording limit and substitute are configured in <a class="link" href={resolve('/admin/reporting')}>Reporting settings</a>.</p>
 		{/if}
 		<noscript><p>Enable JavaScript to change providers and update the available model options.</p></noscript>
 		<button class="btn btn-primary" type="submit">Save settings</button>

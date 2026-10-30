@@ -3,7 +3,8 @@ import { basename } from 'node:path';
 import { examinationLabel, recordingExaminations } from '../recording-examinations.js';
 import { DEFAULT_TRANSCRIPTION_SETTINGS, normalizeTranscriptionSettings } from '../transcription-models.js';
 import { reportEnglishInstruction } from './report-preferences.js';
-import { DIRECT_AUDIO_MODEL } from '../report-generation-models.js';
+import { DIRECT_AUDIO_MODEL, DEFAULT_DIRECT_AUDIO_SETTINGS, audioModel, audioModelSampleRate, isAudioModel } from '../audio-models.js';
+import { generateAudioModelText, normalizeProviderTranscript } from './generative-audio.js';
 import { prepareDirectAudio, AudioDurationLimitError } from './direct-audio.js';
 import { DEFAULT_GPT_AUDIO_SETTINGS, normalizeGptAudioSettings } from '../gpt-audio-settings.js';
 import { normalizeDirectReportOutput } from './direct-report-output.js';
@@ -19,10 +20,15 @@ Radiology vocabulary (spelling hints only, not findings to insert): high, low, T
 Preserve negation, uncertainty, laterality, numbers, decimal points and measurement units exactly as dictated. Do not swap high with low, hypo with hyper, T1 with T2, or right with left. Do not infer a signal or density from the expected diagnosis. Do not add glossary terms, findings, normal statements or recommendations that were not spoken. Do not guess unclear words or complete missing speech.
 ${calendarInstruction} Preserve the original date notation and component order, including Jalali month names.`;
 
-export async function transcribeAudio(filePath, fileName, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
+export async function transcribeAudio(filePath, fileName, value = DEFAULT_TRANSCRIPTION_SETTINGS, preparedAudio) {
 	const settings = normalizeTranscriptionSettings(value);
 	if (settings.provider === 'openai' && settings.model === DIRECT_AUDIO_MODEL)
-		return transcribeWithAudioModel(filePath, transcriptionPrompt);
+		return transcribeWithAudioModel(filePath, transcriptionPrompt, preparedAudio);
+	if (isAudioModel(settings)) {
+		const audio = preparedAudio ?? await prepareDirectAudio([{ audio_report_path: filePath }], { transcription: true, sampleRate: audioModelSampleRate(settings) });
+		const text = await generateAudioModelText(settings, audio, transcriptionPrompt, 'transcription');
+		return normalizeProviderTranscript(text, settings.provider);
+	}
 	const elevenlabs = settings.provider === 'elevenlabs';
 	const label = elevenlabs ? 'ElevenLabs' : 'OpenAI';
 	const form = new FormData();
@@ -158,16 +164,17 @@ ${transcription === undefined ? 'Listen to the attached audio. It contains every
 Patient gender: ${s.patient_gender}`;
 }
 
-async function prepareRecordingAudio(s, { transcription = false } = {}) {
+async function prepareRecordingAudio(s, { transcription = false, sampleRate = 16000 } = {}) {
 	const policy = normalizeGptAudioSettings(s.gpt_audio_settings ?? DEFAULT_GPT_AUDIO_SETTINGS);
 	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	try {
-		const audio = await prepareDirectAudio(parts, { transcription, limitSeconds: policy.limitSeconds, splitParts: transcription });
+		const audio = await prepareDirectAudio(parts, { transcription, limitSeconds: policy.limitSeconds, splitParts: transcription, sampleRate });
 		return { audio };
 	} catch (error) {
 		if (!(error instanceof AudioDurationLimitError) || !policy.substitute) throw error;
 		const key = policy.substitute.provider === 'elevenlabs' ? 'ELEVENLABS_API_KEY' : 'OPENAI_API_KEY';
-		if (!process.env[key]) throw new Error(`Set ${key} to use the GPT Audio substitute transcription model.`);
+		if (!process.env.OPENAI_API_KEY) throw new Error('Set OPENAI_API_KEY to generate a report with the over-limit transcription substitute.');
+		if (!process.env[key]) throw new Error(`Set ${key} to use the audio-model substitute transcription model.`);
 		return { substitute: policy.substitute };
 	}
 }
@@ -177,16 +184,14 @@ export async function generateRecordingReport(s, template, value = DEFAULT_TRANS
 	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	let preparedAudio;
-	if (settings.provider === 'openai' && settings.model === DIRECT_AUDIO_MODEL) {
-		const prepared = await prepareRecordingAudio(s, { transcription: true });
+	if (isAudioModel(settings)) {
+		const prepared = await prepareRecordingAudio(s, { transcription: true, sampleRate: audioModelSampleRate(settings) });
 		if (prepared.substitute) return generateRecordingReport(s, template, prepared.substitute);
 		preparedAudio = prepared.audio;
 	}
 	const transcriptions = [];
 	for (const [index, part] of audioParts.entries())
-		transcriptions.push(preparedAudio
-			? await transcribeWithAudioModel(part.audio_report_path, transcriptionPrompt, preparedAudio[index])
-			: await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings));
+		transcriptions.push(await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings, preparedAudio?.[index]));
 	return openaiGenerateReport(reportPrompt(s, template, transcriptions.join('\n'), englishInstruction));
 }
 
@@ -223,8 +228,15 @@ async function requestDirectAudioReport(s, template, data) {
 }
 
 export async function generateDirectAudioReport(s, template) {
-	const prepared = await prepareRecordingAudio(s);
+	const settings = s.report_generation_settings ?? DEFAULT_DIRECT_AUDIO_SETTINGS;
+	if (!audioModel(settings)) throw new Error('Select a supported direct audio provider and model.');
+	const prepared = await prepareRecordingAudio(s, { sampleRate: audioModelSampleRate(settings) });
 	if (prepared.substitute) return generateRecordingReport(s, template, prepared.substitute);
+	if (audioModel(settings).transport !== 'chat') {
+		const prompt = reportPrompt(s, template, undefined, reportEnglishInstruction(s.report_english_variant ?? 'british'));
+		const text = await generateAudioModelText(settings, prepared.audio, `${prompt}\nReturn only the completed report itself, not JSON, code fences, a transcript or audio metadata. If no intelligible clinical dictation is audible, return exactly NO_USABLE_CLINICAL_DICTATION; never invent a report for silence, noise or inaudible speech.`, 'report');
+		return normalizeDirectReportOutput(text);
+	}
 	const result = await requestDirectAudioReport(s, template, prepared.audio);
 	const choice = result?.choices?.[0];
 	if (choice?.message?.refusal) throw new Error('OpenAI declined direct audio report generation. Review the recording and try again.');
