@@ -40,10 +40,31 @@ function completedText(response, task) {
 	if (response?.status !== 'completed' || response.status_details != null) {
 		throw new Error('OpenAI Realtime response did not complete successfully.');
 	}
-	if (!Array.isArray(response.output) || response.output.length !== 1) {
-		throw new Error('OpenAI Realtime returned missing or ambiguous output.');
+	if (!Array.isArray(response.output) || !response.output.length) {
+		throw new Error('OpenAI Realtime returned missing output.');
 	}
-	const item = response.output[0];
+	let item;
+	if (task === 'transcription') {
+		const calls = response.output.filter((entry) => entry?.type === 'function_call');
+		if (calls.length !== 1) {
+			throw new Error(`OpenAI Realtime returned missing or ambiguous transcript submission (${response.output.length} output items, ${calls.length} function calls).`);
+		}
+		item = calls[0];
+		// Realtime may emit an assistant preamble alongside the required tool call.
+		// Discard its text rather than treating it as part of the clinical dictation.
+		if (response.output.some((entry) => entry !== item && (
+			entry?.type !== 'message' || entry.status !== 'completed' || entry.role !== 'assistant' || entry.refusal ||
+			!Array.isArray(entry.content) || !entry.content.length ||
+			entry.content.some((part) => part?.type !== 'output_text' || typeof part.text !== 'string' || part.refusal)
+		))) {
+			throw new Error('OpenAI Realtime returned incomplete, refused or unexpected output alongside the transcript submission.');
+		}
+	} else {
+		if (response.output.length !== 1) {
+			throw new Error('OpenAI Realtime returned ambiguous report output.');
+		}
+		item = response.output[0];
+	}
 	if (!item || item.status !== 'completed' || item.refusal) {
 		throw new Error('OpenAI Realtime returned incomplete or refused output.');
 	}

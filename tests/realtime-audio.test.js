@@ -159,6 +159,40 @@ for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-min
 	});
 }
 
+for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini']) {
+	for (const before of [true, false]) {
+		test(`${model} extracts only the required transcript when a completed assistant message is ${before ? 'before' : 'after'} the call`, async (t) => {
+			const call = transcript('Original dictated words.');
+			const preamble = report('I will transcribe the recording.');
+			const f = fixture(t, { model, final: done(before ? [preamble, call] : [call, preamble]) });
+			assert.equal(await f.pending, 'Original dictated words.');
+			assert.equal(f.socket.sent.filter((event) => event.type === 'response.create').length, 1);
+			cleaned(f.socket);
+		});
+	}
+}
+
+for (const [label, output] of [
+	['multiple submissions with a preamble', [report('Preamble.'), transcript('One.'), transcript('Two.')]],
+	['preamble without a submission', [report('Preamble.'), report('Not a transcript submission.')]],
+	['incomplete preamble', [{ ...report('Partial.'), status: 'incomplete' }, transcript('Words.')]],
+	['refused preamble', [{ ...report('No.'), refusal: 'Refused.' }, transcript('Words.')]],
+	['refusal content with a submission', [{ ...report('No.'), content: [{ type: 'refusal', refusal: 'No.' }] }, transcript('Words.')]],
+	['audio content with a submission', [{ ...report('No.'), content: [{ type: 'output_audio', transcript: 'Not text.' }] }, transcript('Words.')]],
+	['nonstring preamble', [report(123), transcript('Words.')]],
+	['user message with a submission', [{ ...report('Not an assistant.'), role: 'user' }, transcript('Words.')]],
+	['unknown item with a submission', [{ type: 'unknown', status: 'completed' }, transcript('Words.')]],
+	['null item with a submission', [null, transcript('Words.')]],
+	['wrong function alongside submission', [{ ...transcript('Other.'), name: 'other_tool' }, transcript('Words.')]]
+]) {
+	test(`rejects transcription ${label}`, async (t) => {
+		const f = fixture(t, { final: done(output) });
+		await assert.rejects(f.pending, /OpenAI Realtime/);
+		assert.equal(f.socket.sent.filter((event) => event.type === 'response.create').length, 1);
+		cleaned(f.socket);
+	});
+}
+
 test('report task requests only text and returns a completed assistant message', async (t) => {
 	const f = fixture(t, {
 		task: 'report',
@@ -169,6 +203,12 @@ test('report task requests only text and returns a completed assistant message',
 	assert.equal(f.socket.sent[0].session.tool_choice, 'none');
 	assert.match(f.socket.sent[0].session.instructions, /completed report/);
 	assert.equal(f.socket.sent.filter((event) => event.type === 'response.create').length, 1);
+	cleaned(f.socket);
+});
+
+test('direct reporting still rejects multiple output items instead of combining ambiguous reports', async (t) => {
+	const f = fixture(t, { task: 'report', final: done([report('One report.'), report('Another report.')]) });
+	await assert.rejects(f.pending, /ambiguous report output/);
 	cleaned(f.socket);
 });
 
