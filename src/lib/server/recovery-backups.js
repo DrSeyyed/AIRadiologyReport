@@ -179,7 +179,12 @@ function pauseRestoredStorage(db) {
 			'INSERT INTO application_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value'
 		).run('storage_settings', JSON.stringify(settings));
 	}
-	for (const table of ['storage_restore_requests', 'storage_jobs', 'storage_worker_lock']) {
+	for (const table of [
+		'storage_job_cancellations',
+		'storage_restore_requests',
+		'storage_jobs',
+		'storage_worker_lock'
+	]) {
 		if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) {
 			db.prepare(`DELETE FROM ${table}`).run();
 		}

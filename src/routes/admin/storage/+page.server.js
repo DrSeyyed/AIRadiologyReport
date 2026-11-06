@@ -10,7 +10,12 @@ import {
 	storagePasswordConfigured
 } from '$lib/server/storage-settings.js';
 import { probeStorageHost } from '$lib/server/storage-transport.js';
-import { queueStorageJob, storageStatus } from '$lib/server/storage-worker.js';
+import {
+	queueStorageJob,
+	storageStatus,
+	cancelStorageJob,
+	pauseAndCancelStorageJobs
+} from '$lib/server/storage-worker.js';
 import { listRecovery } from '$lib/server/recovery-backups.js';
 
 function requireAdmin(locals) {
@@ -108,6 +113,37 @@ export const actions = {
 				error:
 					'Unable to read the SSH host fingerprint. Check hostname, SSH port and network access.'
 			});
+		}
+	},
+	cancel: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			const id = field(form, 'jobId');
+			if (!/^[1-9]\d{0,15}$/.test(id)) throw new Error();
+			const cancelled = cancelStorageJob(getDb(), Number(id));
+			return {
+				message: cancelled
+					? 'Cancellation requested. Waiting/retrying jobs will not run again. Running work stops at its next safety check; refresh status before changing credentials. Automatic schedules remain enabled unless paused separately.'
+					: 'This job has already finished or been cancelled.'
+			};
+		} catch {
+			return fail(400, {
+				error: 'Unable to cancel this job. Refresh status and select a valid job.'
+			});
+		}
+	},
+	pause: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			if (field(form, 'confirmation') !== 'pause') throw new Error();
+			const count = pauseAndCancelStorageJobs(getDb());
+			return {
+				message: `Background storage jobs paused; cancellation requested for ${count} jobs, including connection tests and restore preparations. Running operations may need to finish or time out before settings can be saved. Refresh status, then change the password and test the connection before re-enabling jobs.`
+			};
+		} catch {
+			return fail(400, { error: 'Unable to pause storage jobs. Refresh status and try again.' });
 		}
 	},
 	recoveryPoints: async ({ locals }) => {

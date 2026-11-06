@@ -40,6 +40,8 @@ export function queueStorageJob(
 			)
 			.get(kind);
 		if (existing) {
+			if (db.prepare('SELECT 1 FROM storage_job_cancellations WHERE job_id=?').get(existing.id))
+				throw new Error('Wait for cancellation to finish before requesting another job.');
 			if (
 				kind === 'restore' &&
 				db
@@ -65,6 +67,41 @@ export function queueStorageJob(
 				backupId
 			);
 		return id;
+	})();
+}
+
+function finishCancelledJob(db, id, now) {
+	db.prepare(
+		"UPDATE storage_jobs SET status='failed',attempts=8,finished_at=?,retry_at=0,result=NULL,error='Cancelled by administrator.' WHERE id=? AND status IN ('pending','running','failed')"
+	).run(now, id);
+}
+
+export function cancelStorageJob(db, id, { now = Math.floor(Date.now() / 1000) } = {}) {
+	if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid storage job.');
+	return db.transaction(() => {
+		const job = db.prepare('SELECT status,attempts FROM storage_jobs WHERE id=?').get(id);
+		if (!job || job.status === 'succeeded' || (job.status === 'failed' && job.attempts >= 8))
+			return false;
+		db.prepare(
+			'INSERT OR IGNORE INTO storage_job_cancellations(job_id,requested_at) VALUES(?,?)'
+		).run(id, now);
+		if (job.status !== 'running') finishCancelledJob(db, id, now);
+		return true;
+	})();
+}
+
+export function pauseAndCancelStorageJobs(db, { now = Math.floor(Date.now() / 1000) } = {}) {
+	return db.transaction(() => {
+		db.prepare(
+			"INSERT INTO application_settings(key,value) VALUES('storage_settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+		).run(JSON.stringify({ ...getStorageSettings(db), enabled: false }));
+		const jobs = db
+			.prepare(
+				"SELECT id FROM storage_jobs WHERE status IN ('pending','running') OR (status='failed' AND attempts < 8)"
+			)
+			.all();
+		for (const job of jobs) cancelStorageJob(db, job.id, { now });
+		return jobs.length;
 	})();
 }
 
@@ -122,7 +159,7 @@ export async function processStorageJob(
 		!getStorageSettings(db).enabled &&
 		!db
 			.prepare(
-				"SELECT 1 FROM storage_jobs WHERE kind IN ('test','restore') AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8)) LIMIT 1"
+				"SELECT 1 FROM storage_jobs WHERE (kind IN ('test','restore') AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8))) OR (status='running' AND EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)) LIMIT 1"
 			)
 			.get()
 	)
@@ -134,14 +171,26 @@ export async function processStorageJob(
 		db.prepare(
 			'INSERT INTO storage_worker_lock(id,owner,expires_at) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at'
 		).run(owner, now + 600);
+		for (const interrupted of db
+			.prepare(
+				"SELECT id FROM storage_jobs WHERE status='running' AND EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)"
+			)
+			.all())
+			finishCancelledJob(db, interrupted.id, now);
 		db.prepare(
 			"UPDATE storage_jobs SET status = 'failed', retry_at = ?, error = 'Interrupted by server restart; retrying.' WHERE status = 'running'"
 		).run(now);
 		return true;
 	})();
 	if (!claimed) return false;
-	const owned = () =>
+	let job;
+	const leaseOwned = () =>
 		db.prepare('SELECT owner FROM storage_worker_lock WHERE id = 1').get()?.owner === owner;
+	const cancelled = () =>
+		Boolean(
+			job && db.prepare('SELECT 1 FROM storage_job_cancellations WHERE job_id=?').get(job.id)
+		);
+	const owned = () => leaseOwned() && !cancelled();
 	const heartbeat = setInterval(() => {
 		try {
 			db.prepare('UPDATE storage_worker_lock SET expires_at = ? WHERE id = 1 AND owner = ?').run(
@@ -153,7 +202,6 @@ export async function processStorageJob(
 		}
 	}, heartbeatMs);
 	heartbeat.unref();
-	let job;
 	try {
 		scheduleStorageJobs(db, now);
 		const settings = getStorageSettings(db);
@@ -186,9 +234,12 @@ export async function processStorageJob(
 			await prune(connection, settings, now);
 		}
 		if (!owned()) throw new Error('Storage worker lease expired.');
-		db.prepare(
-			"UPDATE storage_jobs SET status='succeeded',finished_at=?,result=?,error=NULL WHERE id=?"
-		).run(Math.floor(Date.now() / 1000), JSON.stringify(result ?? {}), job.id);
+		const completed = db
+			.prepare(
+				"UPDATE storage_jobs SET status='succeeded',finished_at=?,result=?,error=NULL WHERE id=? AND status='running' AND NOT EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)"
+			)
+			.run(Math.floor(Date.now() / 1000), JSON.stringify(result ?? {}), job.id);
+		if (!completed.changes) throw new Error('Storage job no longer active.');
 		db.prepare(
 			"DELETE FROM storage_jobs WHERE kind IN ('archive','test') AND status='succeeded' AND finished_at < ?"
 		).run(now - 7 * 86400);
@@ -208,7 +259,12 @@ export async function processStorageJob(
 		return Boolean(job);
 	} finally {
 		clearInterval(heartbeat);
-		db.prepare('DELETE FROM storage_worker_lock WHERE id=1 AND owner=?').run(owner);
+		try {
+			if (job && leaseOwned() && cancelled())
+				finishCancelledJob(db, job.id, Math.floor(Date.now() / 1000));
+		} finally {
+			db.prepare('DELETE FROM storage_worker_lock WHERE id=1 AND owner=?').run(owner);
+		}
 	}
 }
 
@@ -239,10 +295,10 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 		.all();
 	const jobs = db
 		.prepare(
-			'SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result FROM storage_jobs ORDER BY id DESC LIMIT 30'
+			'SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested FROM storage_jobs ORDER BY id DESC LIMIT 30'
 		)
 		.all()
-		.map(({ result, ...job }) => {
+		.map(({ result, cancelRequested, ...job }) => {
 			let backupId = null;
 			let restoreDirectory = null;
 			try {
@@ -258,7 +314,20 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			} catch {
 				/* Incomplete jobs have no recovery identifier. */
 			}
-			return { ...job, backupId, restoreDirectory };
+			return {
+				...job,
+				status: cancelRequested
+					? job.status === 'running'
+						? 'cancelling'
+						: 'cancelled'
+					: job.status,
+				canCancel:
+					!cancelRequested &&
+					(['pending', 'running'].includes(job.status) ||
+						(job.status === 'failed' && job.attempts < 8)),
+				backupId,
+				restoreDirectory
+			};
 		});
 	const preparedRestores = db
 		.prepare(

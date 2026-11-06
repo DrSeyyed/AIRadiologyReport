@@ -763,6 +763,8 @@ test('restore pauses storage and clears all job and lease history while retainin
 		CREATE TABLE storage_worker_lock(id INTEGER PRIMARY KEY, owner TEXT, expires_at INTEGER);
 		INSERT INTO storage_jobs VALUES(1,'full','succeeded'),(2,'full','running'),(3,'database','pending'),(4,'database','failed');
 		INSERT INTO storage_worker_lock VALUES(1,'obsolete-worker',2000000000);
+		CREATE TABLE storage_job_cancellations(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id), requested_at INTEGER NOT NULL);
+		INSERT INTO storage_job_cancellations VALUES(2,1800000000);
 	`);
 	const settings = {
 		enabled: true,
@@ -800,6 +802,10 @@ test('restore pauses storage and clears all job and lease history while retainin
 		});
 		assert.equal(values.storage_password, 'opaque-encrypted-credential');
 		assert.equal(values.unrelated_setting, 'keep unchanged');
+		assert.equal(
+			restored.prepare('SELECT count(*) AS n FROM storage_job_cancellations').get().n,
+			0
+		);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_jobs').get().n, 0);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_worker_lock').get().n, 0);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 0);
@@ -815,6 +821,7 @@ test('restore pauses storage and clears all job and lease history while retainin
 		settings
 	);
 	assert.equal(f.db.prepare('SELECT count(*) AS n FROM storage_jobs').get().n, 4);
+	assert.equal(f.db.prepare('SELECT count(*) AS n FROM storage_job_cancellations').get().n, 1);
 });
 
 test('full settings extras are accepted and daily/monthly full catalogs survive newer database snapshots', async (t) => {

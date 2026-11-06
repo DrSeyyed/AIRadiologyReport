@@ -214,6 +214,53 @@ test('admin restore requires explicit confirmation and a single valid recovery I
 	assert.equal((await submit('restore', conflicting)).status, 400);
 });
 
+test('admin cancel validates one job ID, stops queued tests and preserves completed jobs', async (t) => {
+	const { submit, db, page } = await fixture(t);
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,created_at) VALUES('test','pending',1),('full','succeeded',1)"
+	).run();
+	const form = new FormData();
+	for (const invalid of ['0', '-1', '1.5', '9007199254740992', 'one']) {
+		form.set('jobId', invalid);
+		assert.equal((await submit('cancel', form)).status, 400);
+	}
+	form.set('jobId', '1');
+	form.append('jobId', '2');
+	assert.equal((await submit('cancel', form)).status, 400);
+	form.set('jobId', '1');
+	assert.ok((await submit('cancel', form)).message);
+	assert.equal(
+		page.load({ locals: admin }).status.jobs.find((job) => job.id === 1).status,
+		'cancelled'
+	);
+	form.set('jobId', '2');
+	assert.match((await submit('cancel', form)).message, /already finished/);
+	assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=2').get().status, 'succeeded');
+});
+
+test('admin pause cancels all jobs without requiring a usable encryption key or exposing stored credentials', async (t) => {
+	const { submit, db, page } = await fixture(t);
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,created_at) VALUES('test','pending',1),('database','failed',1)"
+	).run();
+	const form = new FormData();
+	assert.equal((await submit('pause', form)).status, 400);
+	form.set('confirmation', 'pause');
+	const before = db
+		.prepare("SELECT value FROM application_settings WHERE key='storage_password'")
+		.get().value;
+	delete process.env.STORAGE_ENCRYPTION_KEY;
+	const result = await submit('pause', form);
+	assert.ok(result.message);
+	assert.ok(!JSON.stringify(result).includes(before));
+	assert.equal(page.load({ locals: admin }).settings.enabled, false);
+	assert.ok(page.load({ locals: admin }).status.jobs.every((job) => job.status === 'cancelled'));
+	assert.equal(
+		db.prepare("SELECT value FROM application_settings WHERE key='storage_password'").get().value,
+		before
+	);
+});
+
 test('storage settings page compiles and navigation is admin-only', () => {
 	const page = readFileSync(
 		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
@@ -226,6 +273,9 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.ok(!page.includes('bind:value={settings.password}'));
 	assert.match(page, /action="\?\/recoveryPoints"/);
 	assert.match(page, /action="\?\/restore"/);
+	assert.match(page, /action="\?\/cancel"/);
+	assert.match(page, /action="\?\/pause" use:enhance=\{pauseEnhance\}/);
+	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
 	assert.match(page, /name="confirmation" value="prepare" required/);
 	assert.match(page, /Manual activation required/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');

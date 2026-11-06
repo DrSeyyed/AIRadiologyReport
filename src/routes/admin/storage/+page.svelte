@@ -11,6 +11,12 @@
 		['dailyRetention', 'Daily recovery points to keep', 1, 3650],
 		['monthlyRetention', 'Monthly recovery points to keep', 1, 120]
 	];
+	function pauseEnhance() {
+		return async ({ update, result }) => {
+			await update();
+			if (result.type === 'success') settings.enabled = false;
+		};
+	}
 	function time(value) {
 		if (!value) return '—';
 		const date = new Date(value * 1000);
@@ -61,6 +67,10 @@
 			<button class="btn btn-outline" name="kind" value="database" disabled={!data.settings.enabled || !data.settings.backupsEnabled}>Recovery snapshot now</button>
 			<button class="btn btn-primary" name="kind" value="full" disabled={!data.settings.enabled || !data.settings.backupsEnabled}>Full recovery backup now</button>
 		</form>
+		<form method="POST" action="?/pause" use:enhance={pauseEnhance}>
+			<button class="btn btn-warning" name="confirmation" value="pause">Pause &amp; cancel all</button>
+		</form>
+		<p class="text-sm">Cancel stops one job, not future scheduled work. Pause &amp; cancel all disables automatic jobs and cancels queued/retrying jobs, connection tests and restore preparations. Running work stops at its next safety check; an in-flight transfer may need to finish or time out. Wait until no jobs are running or cancelling before changing the password. Existing audio, backups and completed restore copies are preserved.</p>
 		<p>Awaiting archive: {data.status.backlog}. Archived: {data.status.archived.count} audio files ({(data.status.archived.bytes / 1048576).toFixed(1)} MB); evicted from SSD: {data.status.archived.evicted}.</p>
 		{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled snapshot: {time(data.status.nextDatabase)}. Next daily full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
 		{#each data.status.last as item (item.kind)}<p>Last successful {item.kind}: {time(item.at)}</p>{/each}
@@ -93,9 +103,9 @@
 		{/if}
 		<p class="text-sm">After success, the job details show the prepared directory relative to the application working directory. Follow the README recovery instructions before manually activating it. Do not merge restored database files with live DB/WAL files.</p>
 		<div class="overflow-x-auto">
-			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th></tr></thead><tbody>
+			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status} ({job.attempts}/8)</td><td>{time(job.started_at || job.created_at)}</td><td>{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td>{#if job.canCancel}<form method="POST" action="?/cancel" use:enhance><button class="btn btn-sm btn-outline" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{/each}
 			</tbody></table>
 		</div>

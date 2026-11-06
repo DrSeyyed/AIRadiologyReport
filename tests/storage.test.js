@@ -26,6 +26,8 @@ import {
 } from '../src/lib/server/storage-audio.js';
 import {
 	processStorageJob,
+	cancelStorageJob,
+	pauseAndCancelStorageJobs,
 	queueStorageJob,
 	scheduleStorageJobs,
 	storageStatus
@@ -482,6 +484,127 @@ test('restore result cannot publish arbitrary paths or succeed after losing work
 	);
 	assert.deepEqual(storageStatus(db, now).preparedRestores, []);
 	assert.equal(storageStatus(db, now).jobs[0].restoreDirectory, null);
+});
+
+test('cancelled waiting jobs stay terminal across scheduling, retries and schema reinitialization', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const id = queueStorageJob(db, 'test', { now });
+	assert.equal(cancelStorageJob(db, id, { now }), true);
+	assert.equal(cancelStorageJob(db, id, { now }), false);
+	assert.equal(cancelStorageJob(db, 999999, { now }), false);
+	for (const invalid of [0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1])
+		assert.throws(() => cancelStorageJob(db, invalid));
+	initializeSchema(db, schema);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'cancelled');
+	assert.equal(storageStatus(db, now).jobs[0].canCancel, false);
+	assert.equal(
+		await processStorageJob(db, {
+			now: now + 86400,
+			testConnection: async () => assert.fail('Cancelled job must not run')
+		}),
+		false
+	);
+	assert.notEqual(queueStorageJob(db, 'test', { now: now + 1, retryNow: true }), id);
+});
+
+test('pause and cancel all preserves credentials and data while cancelling every active kind', async (t) => {
+	const { db, audio, settings } = fixture(t);
+	const before = db
+		.prepare("SELECT value FROM application_settings WHERE key='storage_password'")
+		.get().value;
+	const ids = ['test', 'archive', 'database', 'full'].map((kind) =>
+		queueStorageJob(db, kind, { now })
+	);
+	ids.push(queueStorageJob(db, 'restore', { now, backupId: `${now}-${randomUUID()}` }));
+	db.prepare("UPDATE storage_jobs SET status='failed',attempts=3 WHERE id=?").run(ids[0]);
+	backupCompleted(db);
+	assert.equal(pauseAndCancelStorageJobs(db, { now }), 5);
+	assert.equal(getStorageSettings(db).enabled, false);
+	assert.equal(getStorageSettings(db).archiveEnabled, settings.archiveEnabled);
+	assert.equal(getStorageSettings(db).backupsEnabled, settings.backupsEnabled);
+	assert.equal(
+		db.prepare("SELECT value FROM application_settings WHERE key='storage_password'").get().value,
+		before
+	);
+	assert.ok(existsSync(audio));
+	assert.equal(storageStatus(db, now).jobs.filter((job) => job.status === 'cancelled').length, 5);
+	assert.equal(pauseAndCancelStorageJobs(db, { now }), 0);
+	assert.equal(await processStorageJob(db, { now: now + 86400 }), false);
+	assert.equal(storageStatus(db, now).jobs.filter((job) => job.status === 'succeeded').length, 1);
+	saveStorageSettings(
+		db,
+		{ ...getStorageSettings(db), enabled: false },
+		'synthetic-updated-password'
+	);
+	assert.equal(getStorageConnection(db).password, 'synthetic-updated-password');
+});
+
+test('running cancellation retains the lease and settings guard until cooperative cleanup finishes', async (t) => {
+	const { db, settings, audio } = fixture(t);
+	const id = queueStorageJob(db, 'archive', { now });
+	await processStorageJob(db, {
+		now,
+		runArchive: async (_db, _connection, { owned }) => {
+			assert.equal(owned(), true);
+			pauseAndCancelStorageJobs(db, { now });
+			assert.equal(owned(), false);
+			assert.ok(db.prepare('SELECT * FROM storage_worker_lock').get());
+			assert.equal(storageStatus(db, now).jobs.find((job) => job.id === id).status, 'cancelling');
+			assert.throws(
+				() => saveStorageSettings(db, { ...settings, enabled: false }, 'new-password'),
+				/running/
+			);
+			assert.throws(() => queueStorageJob(db, 'archive', { now }), /Enable/);
+			return { archived: 0 };
+		}
+	});
+	assert.equal(storageStatus(db, now).jobs.find((job) => job.id === id).status, 'cancelled');
+	assert.equal(db.prepare('SELECT * FROM storage_worker_lock').get(), undefined);
+	assert.ok(existsSync(audio));
+	saveStorageSettings(db, getStorageSettings(db), 'new-password');
+	assert.equal(getStorageConnection(db).password, 'new-password');
+});
+
+test('running connection-test cancellation cannot publish success or retry and completed jobs cannot be cancelled', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const id = queueStorageJob(db, 'test', { now });
+	await processStorageJob(db, {
+		now,
+		testConnection: async () => {
+			cancelStorageJob(db, id, { now });
+			assert.throws(() => queueStorageJob(db, 'test'), /cancellation/);
+			return { verified: true };
+		}
+	});
+	assert.equal(storageStatus(db, now).jobs[0].status, 'cancelled');
+	assert.equal(await processStorageJob(db, { now: now + 3600 }), false);
+	const current = Math.floor(Date.now() / 1000);
+	const completed = queueStorageJob(db, 'test', { now: current });
+	await processStorageJob(db, {
+		now: current,
+		testConnection: async () => ({ verified: true })
+	});
+	assert.equal(cancelStorageJob(db, completed), false);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'succeeded');
+});
+
+test('interrupted cancellations settle after lease expiry even while automatic jobs are paused', async (t) => {
+	const { db, settings } = fixture(t);
+	const id = queueStorageJob(db, 'archive', { now });
+	db.prepare("UPDATE storage_jobs SET status='running',attempts=1 WHERE id=?").run(id);
+	db.prepare('INSERT INTO storage_worker_lock VALUES(1,?,?)').run('expired-worker', now - 1);
+	pauseAndCancelStorageJobs(db, { now });
+	assert.equal(getStorageSettings(db).enabled, false);
+	assert.equal(await processStorageJob(db, { now }), false);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'cancelled');
+	assert.equal(db.prepare('SELECT * FROM storage_worker_lock').get(), undefined);
+	assert.equal(
+		db.prepare('SELECT finished_at FROM storage_jobs WHERE id=?').get(id).finished_at,
+		now
+	);
+	saveStorageSettings(db, { ...settings, enabled: false });
 });
 
 async function importedWith(sourceUrl, overrides) {

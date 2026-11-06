@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS storage_jobs (
 );
 CREATE INDEX IF NOT EXISTS storage_jobs_due ON storage_jobs(status, retry_at);
 
+CREATE TABLE IF NOT EXISTS storage_job_cancellations (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+  requested_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS storage_restore_requests (
   job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
   backup_id TEXT NOT NULL
