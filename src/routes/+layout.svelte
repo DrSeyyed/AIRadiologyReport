@@ -80,6 +80,7 @@
 				<li><a href={resolve('/admin/pacs')} class="link link-primary p-3">PACS viewer settings</a></li>
 				<li><a href={resolve('/admin/transcription')} class="link link-primary p-3">Transcription settings</a></li>
 				<li><a href={resolve('/admin/reporting')} class="link link-primary p-3">Reporting settings</a></li>
+				<li><a href={resolve('/admin/storage')} class="link link-primary p-3">Storage &amp; Backups</a></li>
 				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
 			{/if}
 		</ul>

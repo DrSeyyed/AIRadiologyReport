@@ -5,6 +5,43 @@ CREATE TABLE IF NOT EXISTS application_settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS storage_audio (
+  path TEXT PRIMARY KEY,
+  object_key TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  remote_sha256 TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL,
+  evicted_at INTEGER,
+  destination TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('archive', 'database', 'full', 'test', 'restore')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+  schedule_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  result TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS storage_jobs_due ON storage_jobs(status, retry_at);
+
+CREATE TABLE IF NOT EXISTS storage_restore_requests (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+  backup_id TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_worker_lock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 CREATE TABLE
   IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +186,7 @@ CREATE TABLE IF NOT EXISTS study_recordings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_study ON study_recordings(study_id);
+CREATE INDEX IF NOT EXISTS idx_recordings_audio_path ON study_recordings(audio_report_path);
 
 CREATE TABLE IF NOT EXISTS recording_examinations (
   recording_id INTEGER NOT NULL REFERENCES study_recordings(id) ON DELETE CASCADE,
@@ -166,6 +204,7 @@ CREATE TABLE IF NOT EXISTS recording_audio_parts (
   sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_audio_parts_path ON recording_audio_parts(audio_report_path);
 CREATE INDEX IF NOT EXISTS idx_audio_parts_recording ON recording_audio_parts(recording_id);
 
 

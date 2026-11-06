@@ -12,6 +12,7 @@ import {
 	recordingError
 } from './recordings.js';
 import { processRecording, saveRecordingReport } from './recording-processing.js';
+import { readStoredAudio } from './storage-audio.js';
 import { syncStudyMessage } from './telegram.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -111,12 +112,13 @@ export const remove = handler(async ({ db, studyId, recordingId, recording }) =>
 });
 
 export const audio = handler(
-	({ recording, request }) => {
+	async ({ db, recording, request }) => {
 		const partId = new URL(request.url).searchParams.get('part') || '0';
 		const part = /^\d+$/.test(partId) ? recording.audio_parts.find((item) => item.id === Number(partId)) : null;
-		if (!part || !existsSync(part.audio_report_path))
-			throw recordingError('Audio file not found', 404);
-		const buffer = readFileSync(part.audio_report_path);
+		if (!part) throw recordingError('Audio file not found', 404);
+		let buffer;
+		try { buffer = await readStoredAudio(db, part.audio_report_path); }
+		catch (error) { throw recordingError(error.status === 404 ? 'Audio file not found' : 'Archived audio is temporarily unavailable. Try again later.', error.status === 404 ? 404 : 503); }
 		const extension = extname(part.audio_report_path).toLowerCase();
 		const type =
 			{

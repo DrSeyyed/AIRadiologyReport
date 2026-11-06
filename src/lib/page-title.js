@@ -4,6 +4,7 @@ const titles = new Map([
 	['/admin/pacs', 'PACS viewer settings'],
 	['/admin/transcription', 'Transcription settings'],
 	['/admin/reporting', 'Reporting settings'],
+	['/admin/storage', 'Storage & Backups'],
 	['/admin/body-parts', 'Manage body parts'],
 	['/admin/telegram-registrations', 'Telegram registrations']
 ]);

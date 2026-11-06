@@ -20,6 +20,9 @@ db
 # Uploads
 uploads
 
+# Verified recovery copies (contain private application data)
+/restore-staging/
+
 # Env
 .env
 .env.*

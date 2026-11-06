@@ -61,6 +61,57 @@ volumes:
 
 This change applies to new recordings only. Existing files and database paths are not migrated automatically. Before removing an old container, back up recordings stored at `/uploads/voices`; recovering them into the new directory also requires updating their `audio_report_path` values in the database.
 
+## Storage and recovery backups
+
+**Admin → Storage & Backups** configures a separate SSH/SFTP storage server using password authentication. The feature is disabled by default. It does not require Telegram. The application server must remain running for scheduled jobs; there is no external cron requirement.
+
+### Initial setup
+
+1. Install dependencies/rebuild the application image and run `npm run db:init` before starting the updated server. Keep the existing `db` and `uploads` volumes.
+2. Generate a permanent encryption key with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"`. Supply it to the application as `STORAGE_ENCRYPTION_KEY`. Keep a separate, secure offsite copy; **losing or replacing it makes existing archives, recovery backups and the saved storage password unreadable**. It is deliberately excluded from backup environment exports. There is no automatic key rotation.
+3. On the storage server, create a dedicated account and an existing, writable absolute folder (for example `/home/storage/radiology`). Root and parent directories must not be symlinks. Restrict access to this account and the application server; SFTP needs no remote shell commands.
+4. Enter hostname, SSH port, username, password and remote folder. **Observe fingerprint** reads the server's SSH key without authenticating. Verify that SHA256 fingerprint independently with the hosting provider/server console, then explicitly enter it as the trusted fingerprint and save. Observation does not establish trust.
+5. **Test saved connection** queues a pinned read/write/hash/delete test. Refresh the page for its result. Enable audio archiving, recovery backups and background jobs only after reviewing settings.
+
+The SSH password is encrypted in SQLite, never displayed or returned to the browser. Blank password fields preserve it. The destination (including host key) cannot be changed once archives or recovery backups are in use; password and scheduling changes remain possible. Destination/key migration needs a separate planned procedure. Wait for a running job before changing settings. Changing a destination does not move existing data.
+
+### Archiving, schedules and retention
+
+- Browser and Telegram audio is saved locally first. A persistent background job discovers both existing and newly referenced recordings, copying up to ten new files per archive pass, normally once per minute. Objects are authenticated-encrypted, then verified by SHA256 before being registered in SQLite. Unavailable storage never prevents initial recording uploads.
+- Local retention defaults to **30 days** from recording creation. Eviction requires an unchanged local file, a freshly verified archive, no active report processing and a successful full recovery backup that started strictly after archiving. Keep recovery backups enabled if SSD eviction is wanted. Storage/backup failures preserve local audio; old files may therefore remain longer than the retention period.
+- Playback and report generation transparently retrieve, authenticate and decrypt archive-only audio into temporary files, then remove them. Original recording paths/signatures remain unchanged. Playback retains HTTP byte-range support. An unavailable/corrupt archive does not overwrite an existing report.
+- Authorized recording deletions remove active references immediately. A later archive pass removes orphaned archive objects; historical recovery snapshots are deliberately retained according to policy, not immediately erased. Turning off archiving also pauses this cleanup.
+- Recovery snapshots default to **hourly**, and full backups run daily at **02:00 UTC**. Defaults retain **48 recent, 30 daily and 12 monthly recovery points**. The interval, daily UTC hour and retention counts are configurable. Enabling starts with currently due work; missed periods are not all backfilled. Manual snapshot/full/archive actions use the same persistent queue.
+- Every recovery snapshot includes a consistent SQLite backup plus all snapshot-referenced audio and reports, **including audio already evicted from SSD**. Full backups additionally include other files under `uploads`, custom `VOICE_SAVE_DIR`, archived audio and sanitized server configuration exports. Remote archives and recovery file objects are independent copies. This is application-data recovery, not an operating-system/image backup: preserve deployment files, application version, mounts, reverse-proxy configuration and external PACS data separately.
+- Completed recovery points are published last. Partial/failed transfers are not recovery points. Jobs have a database lease/heartbeat, retry with backoff up to eight attempts and resume after restarts. The admin page shows backlog, last successes and persistent failures; refresh it for updates. No outbound failure alert is configured by this feature.
+- Retention removes obsolete encrypted manifests/indexes only. **Shared encrypted backup objects are retained**, so retention does not yet fully reclaim storage space; safe reference-aware garbage collection is intentionally not implemented. Monitor storage capacity. Archive objects are separate from recovery retention.
+
+Only regular files under the working directory's `uploads` and the configured `VOICE_SAVE_DIR` are eligible audio sources; symlinks/path escapes are rejected. Migrate legacy paths into persisted folders before enabling archiving. Snapshot collection fails rather than silently publishing missing/changing referenced data. SFTP connections use a 20-second connection bound and a one-hour whole-operation bound; large backlogs/storage must be sized accordingly. Pausing background jobs does not disable archived playback.
+
+### Preparing a restore from the admin panel
+
+1. Open **Admin → Storage & Backups → Restore a recovery backup** and choose **Load recovery points from storage**. This reads completed recovery points from the saved, fingerprint-pinned SFTP destination, including backups created before the current database. The original encryption key and saved connection are required; scheduled jobs may remain disabled.
+2. Select a full backup or recovery snapshot, acknowledge that this only prepares a separate copy, and click **Prepare restore**. Preparation runs in the persistent worker queue, with the same lease, restart recovery and retry policy as other jobs. It downloads only the selected manifest's referenced encrypted objects, authenticates/decrypts them, checks SQLite integrity, and restores all included audio locally. Scheduled backups/archiving wait while a restore job runs; ordinary site activity continues.
+3. Refresh status. On success, **Recent verified copies** and the job details show `restore-staging/<restore UUID>` relative to the application's working directory. The live database, uploads, reports and storage recovery points are never replaced by this action. Restored storage services start paused. No files are exposed through a public download endpoint.
+4. Follow step 4 of **Offline recovery** below to inspect and manually activate the copy during downtime. Never replace a running SQLite database or merge old WAL files. The offline command remains available if the website cannot start.
+
+Restore preparation has a six-hour operation timeout. Its staging directory must not overlap `uploads`, `static` or `VOICE_SAVE_DIR`; conflicting configurations are rejected rather than risking live/private data. Ensure sufficient application-server space for the restored dataset **and** temporary encrypted downloads. Failed/incomplete preparations are cleaned up; successful copies remain until a server administrator removes them after testing/activation. Retries after a crash can leave more than one completed copy. Protect and persist `restore-staging` as private application data (including a dedicated volume when running in a container); it is Git-ignored, excluded from Docker build contexts, not served by the site, and not included in regular backups. The panel retains historical preparation records, so manually removed directories can still appear in status.
+
+### Offline recovery (includes audio)
+
+1. On a separate recovery machine with this application version/dependencies installed, securely supply the original `STORAGE_ENCRYPTION_KEY`.
+2. Use a trusted SFTP client to download a completed recovery point and its objects. Under the configured remote root, completion indexes are `backups/indexes/<id>.<database|full>.json`, encrypted manifests are `backups/manifests/<id>.enc`, and shared encrypted objects are `backups/objects/<sha256>.enc`. Ignore `.pending` files and snapshots without a completion index. Recovery IDs also appear on successful jobs in the admin page. Downloading all objects is safe; copying the archive's `audio` directory is **not** required.
+3. Run the offline command, targeting a **new empty folder**, never the live application:
+
+```powershell
+node scripts\restore-backup.mjs --manifest "C:\recovery\snapshot.enc" --objects "C:\recovery\objects" --output "C:\recovery\restored"
+```
+
+The command verifies/decrypts objects and manifest, rejects traversal and checks SQLite integrity. Output contains `db/pacs.db`, `uploads/...`, optionally `voice/...`, `environment.json` and a sanitized `.env` when available. Audio and report paths are rewritten relative to this restored application root. External voice directories map to `voice`; uploaded audio retains its uploads-relative location. Archive metadata is cleared because the recovered audio is local and does not require the original storage server. Storage jobs start paused after restoration.
+
+4. Inspect and test the restored database, reports and several audio files **before** promotion. Stop the live app/workers, preserve old data, and install restored directories together without merging old DB/WAL files. Set the application's working directory to the restored root. Review `.env` and apply `environment.json` manually, adjusting paths/mounts and supplying excluded credentials/key separately. Review the storage connection and re-enable it explicitly only after testing.
+5. Perform a recovery drill regularly. A second copy on the same storage server does not protect against that server/account being lost; maintain a third independent/offline/immutable copy or provider snapshots.
+
 ## Reporting mode: transcription pipeline or direct audio
 
 Administrators can open **Admin → Reporting settings** and choose:

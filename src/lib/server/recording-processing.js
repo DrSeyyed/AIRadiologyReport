@@ -16,6 +16,7 @@ import { getAttendingReportPreferences } from './report-preferences.js';
 import { getReportGenerationSettings } from './report-generation-settings.js';
 import { getGptAudioSettings } from './gpt-audio-settings.js';
 import { isAudioModel } from '../audio-models.js';
+import { withRecordingAudio } from './storage-audio.js';
 
 export function saveRecordingReport(db, recordingId, text, directory = 'uploads/reports') {
 	const recording = db.prepare('SELECT study_id FROM study_recordings WHERE id = ?').get(recordingId);
@@ -55,7 +56,7 @@ export async function processRecording(
 		throw recordingError(
 			'Select and save modality and examination (body part/contrast) before Transcribe & Generate.'
 		);
-	if (!recording.audio_parts.length || recording.audio_parts.some((part) => !existsSync(part.audio_report_path)))
+	if (!recording.audio_parts.length || recording.audio_parts.some((part) => !existsSync(part.audio_report_path) && !db.prepare('SELECT 1 FROM storage_audio WHERE path = ?').get(part.audio_report_path)))
 		throw recordingError('Audio file not found on server', 404);
 	const template = recordingTemplate(db, recording);
 	const study = getStudyDetail(db, studyId);
@@ -88,15 +89,27 @@ export async function processRecording(
 		)
 		.run(started, recordingId);
 	if (!claimed.changes) throw recordingError('Recording is already being processed.', 409);
+	let leaseTimestamp = started;
+	const heartbeat = setInterval(() => {
+		const next = Math.floor(Date.now() / 1000);
+		try {
+			const updated = db.prepare('UPDATE study_recordings SET processing_started_at = ? WHERE id = ? AND processing = 1 AND processing_started_at = ?').run(next, recordingId, leaseTimestamp);
+			if (updated.changes) leaseTimestamp = next;
+		} catch { /* The processing lease will expire if the database is unavailable. */ }
+	}, 60_000);
+	heartbeat.unref();
 	try {
-		const text = await runGeneration({ ...study, ...recording, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings, report_generation_settings: reportingSettings }, template, transcriptionSettings);
+		const text = await withRecordingAudio(db, recording, (hydrated) => runGeneration({ ...study, ...hydrated, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings, report_generation_settings: reportingSettings }, template, transcriptionSettings));
 		if (typeof text !== 'string' || !text.trim())
 			throw recordingError('Report generation returned no text.', 502);
+		if (!db.prepare('SELECT 1 FROM study_recordings WHERE id = ? AND processing = 1 AND processing_started_at = ?').get(recordingId, leaseTimestamp))
+			throw recordingError('Recording processing lease expired. The previous report has been preserved.', 409);
 		const path = saveRecordingReport(db, recordingId, text, directory);
 		return { ok: true, path, text };
 	} finally {
+		clearInterval(heartbeat);
 		db.prepare(
 			'UPDATE study_recordings SET processing = 0, processing_started_at = NULL WHERE id = ? AND processing_started_at = ?'
-		).run(recordingId, started);
+		).run(recordingId, leaseTimestamp);
 	}
 }

@@ -1,0 +1,559 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { initializeSchema } from '../scripts/initialize-schema.mjs';
+import { insertStudy } from '../src/lib/server/studies.js';
+import { appendRecording, configureRecording, getRecording } from '../src/lib/server/recordings.js';
+import {
+	DEFAULT_STORAGE_SETTINGS,
+	normalizeStorageSettings,
+	getStorageSettings,
+	getStorageConnection,
+	saveStorageSettings,
+	storageDestination
+} from '../src/lib/server/storage-settings.js';
+import {
+	archiveAudio,
+	withAudioFile,
+	withRecordingAudio,
+	readStoredAudio
+} from '../src/lib/server/storage-audio.js';
+import {
+	processStorageJob,
+	queueStorageJob,
+	scheduleStorageJobs,
+	storageStatus
+} from '../src/lib/server/storage-worker.js';
+
+const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
+const now = 1800000000;
+function fixture(t) {
+	const key = process.env.STORAGE_ENCRYPTION_KEY;
+	process.env.STORAGE_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+	const db = new Database(':memory:');
+	initializeSchema(db, schema);
+	db.exec(
+		"INSERT INTO modalities VALUES(1,'MR','MRI'); INSERT INTO exam_types VALUES(1,'BRAIN','Brain'); INSERT INTO users(id,full_name,role) VALUES(1,'Synthetic resident','resident'),(2,'Synthetic attending','attending'); INSERT INTO report_templates(modality_id,exam_type_id,text) VALUES(1,1,'Synthetic template')"
+	);
+	const studyId = insertStudy(db, {
+		patient_code: 'storage-test',
+		patient_firstname: 'Synthetic',
+		patient_lastname: 'Fixture',
+		exam_date_jalali: '1405-01-01',
+		exam_time: '10:00',
+		corresponding_resident_id: 1,
+		corresponding_attending_id: 2
+	});
+	const directory = mkdtempSync(join(tmpdir(), 'radiology-storage-test-'));
+	const audio = join(directory, 'audio.ogg');
+	writeFileSync(audio, 'synthetic audio');
+	const recording = appendRecording(db, studyId, audio);
+	configureRecording(db, studyId, recording.id, {
+		modality_id: 1,
+		exam_type_id: 1,
+		corresponding_resident_id: 1
+	});
+	db.prepare("UPDATE study_recordings SET created_at='2000-01-01 00:00:00' WHERE id=?").run(
+		recording.id
+	);
+	const settings = {
+		...DEFAULT_STORAGE_SETTINGS,
+		enabled: true,
+		archiveEnabled: true,
+		backupsEnabled: true,
+		host: 'storage.invalid',
+		username: 'synthetic',
+		root: '/radiology',
+		fingerprint: `SHA256:${'a'.repeat(43)}`
+	};
+	saveStorageSettings(db, settings, 'synthetic-password');
+	const objects = new Map();
+	const client = {
+		async mkdir() {},
+		async put(local, remote) {
+			objects.set(remote, readFileSync(local));
+		},
+		async get(remote, local) {
+			if (!objects.has(remote)) throw new Error('Synthetic unavailable object');
+			await writeFile(local, objects.get(remote));
+		},
+		async delete(remote) {
+			objects.delete(remote);
+		},
+		async lstat(path) {
+			return objects.has(path)
+				? { isFile: true, isSymbolicLink: false }
+				: { isDirectory: true, isSymbolicLink: false };
+		},
+		createReadStream(path) {
+			return Readable.from([objects.get(path) ?? Buffer.alloc(0)]);
+		}
+	};
+	const transport = async (connection, action) => action(client);
+	const options = { now, roots: [directory], transport };
+	t.after(() => {
+		db.close();
+		rmSync(directory, { recursive: true, force: true });
+		if (key === undefined) delete process.env.STORAGE_ENCRYPTION_KEY;
+		else process.env.STORAGE_ENCRYPTION_KEY = key;
+	});
+	return {
+		db,
+		directory,
+		audio,
+		recording,
+		studyId,
+		settings,
+		connection: getStorageConnection(db),
+		objects,
+		client,
+		transport,
+		options
+	};
+}
+
+function backupCompleted(db, startedAt = now + 1) {
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,created_at,started_at,finished_at,attempts) VALUES('full','succeeded',?,?,?,1)"
+	).run(startedAt, startedAt, startedAt + 1);
+}
+
+test('storage settings are disabled by default, validated and credentials encrypted without password echoes', (t) => {
+	const { db, settings } = fixture(t);
+	assert.equal(DEFAULT_STORAGE_SETTINGS.enabled, false);
+	assert.equal(getStorageConnection(db).password, 'synthetic-password');
+	assert.ok(!JSON.stringify(getStorageSettings(db)).includes('password'));
+	assert.ok(
+		!db
+			.prepare("SELECT value FROM application_settings WHERE key='storage_password'")
+			.get()
+			.value.includes('synthetic-password')
+	);
+	saveStorageSettings(db, { ...settings, localRetentionDays: 45 });
+	assert.equal(getStorageConnection(db).password, 'synthetic-password');
+	for (const input of [
+		{ localRetentionDays: 0 },
+		{ fileBackupHour: 24 },
+		{ hourlyRetention: 0 },
+		{ enabled: 'true' },
+		{ root: '/' },
+		{ root: '/a/../b' },
+		{ host: 'https://storage.invalid' },
+		{ fingerprint: 'wrong' },
+		{ password: 'not-a-public-setting' }
+	]) {
+		assert.throws(() => normalizeStorageSettings({ ...settings, ...input }));
+	}
+	assert.equal(
+		normalizeStorageSettings({ ...settings, fingerprint: `${settings.fingerprint}=` }).fingerprint,
+		settings.fingerprint
+	);
+});
+
+test('schema is repeatable and schedules/password can change but an in-use destination cannot', (t) => {
+	const { db, settings } = fixture(t);
+	initializeSchema(db, schema);
+	backupCompleted(db);
+	assert.throws(() => saveStorageSettings(db, { ...settings, root: '/different' }), /in use/);
+	saveStorageSettings(db, { ...settings, dailyRetention: 60 }, 'rotated-synthetic');
+	assert.equal(getStorageConnection(db).password, 'rotated-synthetic');
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('archive','running',?)").run(
+		now
+	);
+	assert.throws(() => saveStorageSettings(db, settings), /running/);
+});
+
+test('audio archive is encrypted, verified and independent backup is required before local eviction', async (t) => {
+	const { db, audio, connection, objects, options, transport } = fixture(t);
+	assert.deepEqual(await archiveAudio(db, connection, options), { copied: 1, evicted: 0 });
+	assert.ok(existsSync(audio));
+	assert.equal(objects.size, 1);
+	assert.ok(![...objects.values()][0].includes(Buffer.from('synthetic audio')));
+	assert.equal(
+		db.prepare('SELECT destination FROM storage_audio').get().destination,
+		storageDestination(connection)
+	);
+	backupCompleted(db, now);
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 1 }), {
+		copied: 0,
+		evicted: 0
+	});
+	assert.ok(existsSync(audio));
+	backupCompleted(db);
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 2 }), {
+		copied: 0,
+		evicted: 1
+	});
+	assert.equal(existsSync(audio), false);
+	assert.equal(String(await readStoredAudio(db, audio, { transport })), 'synthetic audio');
+	let temporary;
+	await assert.rejects(
+		withAudioFile(
+			db,
+			audio,
+			async (local) => {
+				temporary = local;
+				assert.ok(existsSync(local));
+				throw new Error('Synthetic callback failure');
+			},
+			{ transport }
+		),
+		/callback failure/
+	);
+	assert.equal(existsSync(temporary), false);
+});
+
+test('failed archive upload, corrupt remote object and changed local source never evict original audio', async (t) => {
+	const context = fixture(t);
+	const { db, audio, connection, client, options, objects } = context;
+	const put = client.put;
+	client.put = async () => {
+		throw new Error('Synthetic transfer failure');
+	};
+	await assert.rejects(archiveAudio(db, connection, options));
+	assert.ok(existsSync(audio));
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+	client.put = put;
+	await archiveAudio(db, connection, options);
+	backupCompleted(db);
+	const remote = [...objects.keys()][0];
+	objects.set(remote, Buffer.from('corrupted'));
+	await assert.rejects(
+		archiveAudio(db, connection, { ...options, now: now + 2 }),
+		/verification failed/
+	);
+	assert.ok(existsSync(audio));
+	writeFileSync(audio, 'changed locally');
+	await assert.rejects(archiveAudio(db, connection, { ...options, now: now + 2 }), /changed/);
+	assert.ok(existsSync(audio));
+});
+
+test('processing audio stays local and archived retrieval rejects tampering and deleted references', async (t) => {
+	const { db, audio, recording, connection, options, objects, transport } = fixture(t);
+	await archiveAudio(db, connection, options);
+	backupCompleted(db);
+	db.prepare('UPDATE study_recordings SET processing=1 WHERE id=?').run(recording.id);
+	await archiveAudio(db, connection, { ...options, now: now + 2 });
+	assert.ok(existsSync(audio));
+	db.prepare('UPDATE study_recordings SET processing=0 WHERE id=?').run(recording.id);
+	await archiveAudio(db, connection, { ...options, now: now + 2 });
+	const remote = [...objects.keys()][0];
+	const valid = objects.get(remote);
+	objects.set(remote, Buffer.from('tampered'));
+	await assert.rejects(readStoredAudio(db, audio, { transport }), /verification/);
+	objects.set(remote, valid);
+	db.prepare('DELETE FROM study_recordings WHERE id=?').run(recording.id);
+	await assert.rejects(readStoredAudio(db, audio, { transport }), /not found/);
+	objects.set('/radiology/backups/object', Buffer.from('independent recovery fixture'));
+	await archiveAudio(db, connection, options);
+	assert.equal(objects.has(remote), false);
+	assert.equal(objects.has('/radiology/backups/object'), true);
+});
+
+test('local-first retrieval and hydration preserve recording metadata and clean downloaded parts', async (t) => {
+	const { db, audio, recording, studyId, connection, options, transport } = fixture(t);
+	assert.equal(
+		String(
+			await readStoredAudio(db, audio, {
+				transport: () => {
+					throw new Error('Network must not be used');
+				}
+			})
+		),
+		'synthetic audio'
+	);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	let temporary;
+	await withRecordingAudio(
+		db,
+		getRecording(db, studyId, recording.id),
+		async (hydrated) => {
+			temporary = hydrated.audio_parts[0].audio_report_path;
+			assert.notEqual(temporary, audio);
+			assert.equal(hydrated.audio_report_path, temporary);
+			assert.equal(readFileSync(temporary, 'utf8'), 'synthetic audio');
+			assert.equal(hydrated.id, recording.id);
+		},
+		{ transport }
+	);
+	assert.equal(existsSync(temporary), false);
+	assert.equal(getRecording(db, studyId, recording.id).audio_report_path, audio);
+});
+
+test('archive sources outside configured roots and lost ownership are rejected without local deletion', async (t) => {
+	const { db, audio, connection, options } = fixture(t);
+	await assert.rejects(
+		archiveAudio(db, connection, { ...options, roots: [join(options.roots[0], 'other')] }),
+		/outside/
+	);
+	await assert.rejects(archiveAudio(db, connection, { ...options, owned: () => false }), /lease/);
+	assert.ok(existsSync(audio));
+});
+
+test('persistent scheduling deduplicates work, honours pause and derives UTC periods', (t) => {
+	const { db, settings } = fixture(t);
+	scheduleStorageJobs(db, now);
+	scheduleStorageJobs(db, now);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
+	assert.equal(
+		queueStorageJob(db, 'full'),
+		db.prepare("SELECT id FROM storage_jobs WHERE kind='full'").get().id
+	);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	scheduleStorageJobs(db, now + 86400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
+	assert.throws(() => queueStorageJob(db, 'archive'), /Enable/);
+	assert.ok(queueStorageJob(db, 'test'));
+	const status = storageStatus(db, now);
+	assert.ok(status.nextDatabase > now);
+	assert.equal(new Date(status.nextFull * 1000).getUTCHours(), settings.fileBackupHour);
+	assert.ok(!JSON.stringify(status).includes('synthetic-password'));
+});
+
+test('storage worker owns a durable lease, retries failures and resumes interrupted jobs', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, archiveEnabled: false });
+	let backups = 0;
+	const options = {
+		now,
+		runBackup: async () => {
+			backups++;
+			return { id: 'synthetic-snapshot' };
+		},
+		prune: async () => ({ kept: 1 })
+	};
+	db.prepare('INSERT INTO storage_worker_lock VALUES(1,?,?)').run('another-owner', now + 10);
+	assert.equal(await processStorageJob(db, options), false);
+	assert.equal(backups, 0);
+	db.prepare('DELETE FROM storage_worker_lock').run();
+	await processStorageJob(db, {
+		...options,
+		runBackup: async () => {
+			throw new Error('Do not expose synthetic-secret');
+		}
+	});
+	const failed = db.prepare("SELECT * FROM storage_jobs WHERE kind='full'").get();
+	assert.equal(failed.status, 'failed');
+	assert.equal(failed.attempts, 1);
+	assert.ok(!failed.error.includes('synthetic-secret'));
+	assert.ok(failed.retry_at > now);
+	queueStorageJob(db, 'full', { now, retryNow: true });
+	assert.equal(
+		db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(failed.id).retry_at,
+		now
+	);
+	await processStorageJob(db, { ...options, now: failed.retry_at });
+	assert.equal(backups, 1);
+	assert.equal(
+		db.prepare("SELECT status FROM storage_jobs WHERE kind='full'").get().status,
+		'succeeded'
+	);
+	db.prepare("UPDATE storage_jobs SET status='running' WHERE kind='database'").run();
+	await processStorageJob(db, { ...options, now: failed.retry_at + 1 });
+	assert.equal(
+		db.prepare("SELECT status FROM storage_jobs WHERE kind='database'").get().status,
+		'succeeded'
+	);
+	assert.equal(db.prepare('SELECT * FROM storage_worker_lock').get(), undefined);
+});
+
+test('restore preparation is explicitly selected, durable and deduplicated even with services paused', (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	for (const backupId of [null, '', '../outside', '1800000000-' + '-'.repeat(36)])
+		assert.throws(() => queueStorageJob(db, 'restore', { backupId }), /valid recovery/);
+	const backupId = `${now}-${randomUUID()}`;
+	const id = queueStorageJob(db, 'restore', { now, backupId });
+	assert.equal(queueStorageJob(db, 'restore', { now, backupId }), id);
+	assert.throws(
+		() => queueStorageJob(db, 'restore', { backupId: `${now}-${randomUUID()}` }),
+		/existing restore/
+	);
+	assert.equal(
+		db.prepare('SELECT backup_id FROM storage_restore_requests WHERE job_id=?').get(id).backup_id,
+		backupId
+	);
+	scheduleStorageJobs(db, now);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
+});
+
+test('paused worker prepares a restore without backup pruning or live mutations and retains safe status', async (t) => {
+	const { db, settings, audio } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const backupId = `${now}-${randomUUID()}`;
+	const restoreId = randomUUID();
+	const id = queueStorageJob(db, 'restore', { now, backupId });
+	let preparations = 0;
+	assert.equal(
+		await processStorageJob(db, {
+			now,
+			prepareRestore: async (connection, options) => {
+				preparations++;
+				assert.equal(connection.host, settings.host);
+				assert.equal(options.backupId, backupId);
+				assert.equal(options.owned(), true);
+				return { id: backupId, restoreId, files: 3, privateValue: 'must-not-appear' };
+			},
+			runBackup: async () => assert.fail('Restore must not create backups'),
+			prune: async () => assert.fail('Restore must not prune recovery points')
+		}),
+		true
+	);
+	assert.equal(preparations, 1);
+	assert.equal(
+		db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status,
+		'succeeded'
+	);
+	assert.ok(existsSync(audio));
+	assert.equal(getStorageSettings(db).enabled, false);
+	const status = storageStatus(db, now);
+	assert.equal(status.jobs[0].restoreDirectory, `restore-staging/${restoreId}`);
+	assert.equal(status.preparedRestores[0].directory, `restore-staging/${restoreId}`);
+	assert.ok(!JSON.stringify(status).includes('must-not-appear'));
+	for (let index = 0; index < 31; index++)
+		db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('test','succeeded',?)").run(
+			now + index
+		);
+	assert.equal(
+		storageStatus(db, now).preparedRestores[0].directory,
+		`restore-staging/${restoreId}`
+	);
+});
+
+test('failed restore preparation sanitizes errors and can be manually retried without changing its target', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const backupId = `${now}-${randomUUID()}`;
+	const id = queueStorageJob(db, 'restore', { now, backupId });
+	await processStorageJob(db, {
+		now,
+		prepareRestore: async () => {
+			throw new Error('synthetic-private-failure');
+		}
+	});
+	const failed = db.prepare('SELECT * FROM storage_jobs WHERE id=?').get(id);
+	assert.equal(failed.status, 'failed');
+	assert.ok(!failed.error.includes('synthetic-private-failure'));
+	assert.deepEqual(storageStatus(db, now).preparedRestores, []);
+	queueStorageJob(db, 'restore', { now: now + 1, backupId, retryNow: true });
+	await processStorageJob(db, {
+		now: now + 1,
+		prepareRestore: async () => ({ id: backupId, restoreId: randomUUID() })
+	});
+	assert.equal(
+		db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status,
+		'succeeded'
+	);
+});
+
+test('restore result cannot publish arbitrary paths or succeed after losing worker ownership', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const backupId = `${now}-${randomUUID()}`;
+	const id = queueStorageJob(db, 'restore', { now, backupId });
+	await processStorageJob(db, {
+		now,
+		prepareRestore: async () => ({ id: backupId, restoreId: '../outside' })
+	});
+	assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status, 'failed');
+	queueStorageJob(db, 'restore', { now: now + 1, backupId, retryNow: true });
+	await processStorageJob(db, {
+		now: now + 1,
+		prepareRestore: async () => {
+			db.prepare('DELETE FROM storage_worker_lock').run();
+			return { id: backupId, restoreId: randomUUID() };
+		}
+	});
+	assert.notEqual(
+		db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status,
+		'succeeded'
+	);
+	assert.deepEqual(storageStatus(db, now).preparedRestores, []);
+	db.prepare("UPDATE storage_jobs SET status='succeeded',result=? WHERE id=?").run(
+		JSON.stringify({ restoreId: '../outside', directory: 'private-path' }),
+		id
+	);
+	assert.deepEqual(storageStatus(db, now).preparedRestores, []);
+	assert.equal(storageStatus(db, now).jobs[0].restoreDirectory, null);
+});
+
+async function importedWith(sourceUrl, overrides) {
+	const source = readFileSync(sourceUrl, 'utf8').replace(
+		/from (['"])([^'"]+)\1/g,
+		(statement, quote, specifier) => {
+			const target =
+				overrides[specifier] ??
+				(specifier.startsWith('.')
+					? new URL(specifier, sourceUrl).href
+					: import.meta.resolve(specifier));
+			return `from ${JSON.stringify(target)}`;
+		}
+	);
+	return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+}
+
+test('archived playback keeps HTTP byte ranges and generation uses hydrated audio without changing stored paths', async (t) => {
+	const { db, audio, recording, studyId, connection, options, transport, directory } = fixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	const key = randomUUID();
+	globalThis[key] = {
+		db,
+		readStoredAudio: (db, path) => readStoredAudio(db, path, { transport }),
+		withRecordingAudio: (db, recording, action) =>
+			withRecordingAudio(db, recording, action, { transport })
+	};
+	t.after(() => delete globalThis[key]);
+	const audioModule = `data:text/javascript,${encodeURIComponent(`export const readStoredAudio=(...args)=>globalThis[${JSON.stringify(key)}].readStoredAudio(...args); export const withRecordingAudio=(...args)=>globalThis[${JSON.stringify(key)}].withRecordingAudio(...args);`)}`;
+	const processing = await importedWith(
+		new URL('../src/lib/server/recording-processing.js', import.meta.url),
+		{ './storage-audio.js': audioModule }
+	);
+	const http = await importedWith(new URL('../src/lib/server/recording-http.js', import.meta.url), {
+		'$lib/server/db': `data:text/javascript,${encodeURIComponent(`export const getDb=()=>globalThis[${JSON.stringify(key)}].db;`)}`,
+		'./storage-audio.js': audioModule
+	});
+	const response = await http.audio({
+		params: { id: String(studyId), recordingId: String(recording.id) },
+		locals: { user: { id: 2, role: 'attending' } },
+		request: new Request('http://localhost/audio', { headers: { range: 'bytes=2-5' } })
+	});
+	assert.equal(response.status, 206);
+	assert.equal(response.headers.get('cache-control'), 'private, no-store');
+	assert.equal(await response.text(), 'nthe');
+	let hydratedPath;
+	const result = await processing.processRecording(
+		db,
+		studyId,
+		recording.id,
+		async (context) => {
+			hydratedPath = context.audio_parts[0].audio_report_path;
+			assert.equal(readFileSync(hydratedPath, 'utf8'), 'synthetic audio');
+			return 'Synthetic report.';
+		},
+		directory
+	);
+	assert.equal(result.text, 'Synthetic report.');
+	assert.equal(existsSync(hydratedPath), false);
+	const saved = getRecording(db, studyId, recording.id);
+	assert.equal(saved.audio_report_path, audio);
+	assert.equal(saved.processing, 0);
+	const reportPath = saved.text_report_path;
+	globalThis[key].withRecordingAudio = async () => {
+		throw new Error('Synthetic storage outage');
+	};
+	await assert.rejects(
+		processing.processRecording(db, studyId, recording.id, async () => 'Must not run', directory),
+		/outage/
+	);
+	assert.equal(getRecording(db, studyId, recording.id).text_report_path, reportPath);
+	assert.equal(readFileSync(reportPath, 'utf8'), 'Synthetic report.');
+	assert.equal(getRecording(db, studyId, recording.id).processing, 0);
+});
