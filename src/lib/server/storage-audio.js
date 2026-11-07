@@ -86,6 +86,7 @@ export async function archiveAudio(
 		concurrency = 4,
 		roots = ['uploads', ...(process.env.VOICE_SAVE_DIR ? [process.env.VOICE_SAVE_DIR] : [])],
 		transport = withStorage,
+		verify = hashRemote,
 		owned = () => true,
 		onProgress = () => {}
 	} = {}
@@ -258,7 +259,7 @@ export async function archiveAudio(
 								phases.set(workerClient, 'verifying');
 								activity();
 								if (
-									(await hashRemote(workerClient, remote, {
+									(await verify(workerClient, remote, {
 										...connection,
 										onProgress: verificationProgress
 									})) !== remoteSha256
@@ -319,7 +320,7 @@ export async function archiveAudio(
 						phases.set(workerClient, 'verifying');
 						activity();
 						if (
-							(await hashRemote(workerClient, storagePath(connection, 'audio', saved.object_key), {
+							(await verify(workerClient, storagePath(connection, 'audio', saved.object_key), {
 								...connection,
 								onProgress: verificationProgress
 							})) !== saved.remote_sha256

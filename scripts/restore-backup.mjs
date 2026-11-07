@@ -11,12 +11,13 @@
  * Ignore backups/indexes/*.pending and manifests without a completed index.
  * Only STORAGE_ENCRYPTION_KEY is required at restore time; no SSH/provider environment is used.
  * node scripts/restore-backup.mjs --manifest <file.enc> --objects <directory> --output <new-empty-directory>
- * Database-only snapshots include all referenced audio/reports. Full snapshots also include
- * uploads extras/templates. Relative uploads paths are preserved; custom VOICE_SAVE_DIR
+ * Legacy database snapshots include all referenced audio/reports. New full recovery points also include
+ * upload extras/templates, using individual encrypted objects (legacy bundles remain supported). Relative uploads paths are preserved; custom VOICE_SAVE_DIR
  * files map to voice/. All recording audio/report database paths become app-root-relative,
  * including formerly absolute paths, so the restored tree can be promoted to another app root.
  * Output: db/pacs.db, uploads/... and/or voice/..., environment.json, and .env if originally present.
  * storage_audio rows are removed, not merely marked unevicted: restored media is entirely local.
+ * Synchronization queue/catalog/object tracking is cleared so stale remote versions cannot be reused.
  * Storage enabled/archiveEnabled/backupsEnabled are reset to false. storage_jobs history and
  * storage_worker_lock leases are cleared, including succeeded remote-backup metadata. Connection
  * settings and encrypted credentials are preserved for admin review, never automatically enabled.

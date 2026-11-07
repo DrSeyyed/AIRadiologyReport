@@ -38,9 +38,16 @@ function storageFormSettings(form) {
 			if (form.getAll(key).length > 1 || (form.has(key) && form.get(key) !== 'on'))
 				throw new Error('Invalid storage switch.');
 			values[key] = form.has(key);
+		} else if (key === 'fullBackupHours') {
+			const value = field(form, key).trim();
+			if (!/^\d+(?:\s*,\s*\d+)*$/.test(value))
+				throw new Error('Enter comma-separated UTC hours from 0 to 23.');
+			values[key] = value.split(',').map((hour) => Number(hour.trim()));
 		} else if (typeof defaultValue === 'number') {
+			if (['databaseIntervalHours', 'fileBackupHour'].includes(key) && !form.has(key)) continue;
 			const value = field(form, key);
-			if (!/^\d+$/.test(value)) throw new Error('Enter whole numbers for timeouts, schedules and retention.');
+			if (!/^\d+$/.test(value))
+				throw new Error('Enter whole numbers for timeouts, schedules and retention.');
 			values[key] = Number(value);
 		} else values[key] = field(form, key).trim();
 	}
@@ -77,7 +84,7 @@ export const actions = {
 		} catch {
 			return fail(400, {
 				error:
-					'Invalid storage settings. Complete the connection, SHA256 fingerprint, timeout and schedule fields with valid values. Inactivity timeouts must be whole seconds from 1 to 600.'
+					'Invalid storage settings. Complete the connection, SHA256 fingerprint, timeout and schedule fields with valid values. Inactivity timeouts must be whole seconds from 1 to 600; full backup hours must be 1–24 unique comma-separated UTC hours from 0 to 23, and integrity audit days must be from 1 to 365.'
 			});
 		}
 		try {
@@ -174,7 +181,7 @@ export const actions = {
 			if (!connection.password) throw new Error();
 			const id = queueStorageReset(db);
 			return {
-				message: `Storage reset job ${id} queued; schedules are paused. The worker first recovers and hash-verifies all archived audio locally, then removes only audio/ and backups/ under the saved remote root. The live database is not restored or deleted. Schedules remain paused after completion. Refresh status to monitor progress.`
+				message: `Storage reset job ${id} queued; schedules are paused. The worker first recovers and hash-verifies all archived audio locally, then removes only audio/, files/ and backups/ under the saved remote root. The live database is not restored or deleted. Schedules remain paused after completion. Refresh status to monitor progress.`
 			};
 		} catch {
 			return fail(400, {

@@ -9,6 +9,7 @@ import { gunzipSync } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
 import Database from 'better-sqlite3';
 import { backupRecovery } from '../src/lib/server/recovery-backups.js';
+import { ensureStorageFileState } from '../src/lib/server/storage-file-state.js';
 import { decryptFile, encryptFile } from '../src/lib/server/storage-crypto.js';
 import { hashRemote, storagePath } from '../src/lib/server/storage-transport.js';
 import { isStorageRestoreId, prepareStorageRestore } from '../src/lib/server/storage-restore.js';
@@ -48,6 +49,16 @@ async function fixture(t) {
 		INSERT INTO storage_worker_lock VALUES(1);
 		INSERT INTO application_settings VALUES('storage_settings','{"enabled":true,"archiveEnabled":true,"backupsEnabled":true}');
 	`);
+	ensureStorageFileState(db);
+	db.prepare('INSERT INTO storage_file_catalog(path,original,destination) VALUES(?,?,?)').run(
+		'uploads/old',
+		'uploads/old',
+		'old'
+	);
+	db.prepare('INSERT INTO storage_file_queue(path,queued_at) VALUES(?,?)').run('uploads/old', 1);
+	db.prepare(
+		'INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)'
+	).run('old', 'old.enc', 'old', 'old', 1, 1, 1, 1);
 	await fs.writeFile(path.join(app, 'uploads', 'audio.ogg'), 'audio payload');
 	await fs.writeFile(path.join(app, 'uploads', 'report.md'), 'report payload');
 	await fs.writeFile(path.join(app, 'uploads', 'unreferenced.ogg'), 'extra audio');
@@ -112,7 +123,7 @@ async function fixture(t) {
 	const backup = await backupRecovery(
 		db,
 		connection,
-		{ cwd: app, now: 1800000000, kind: 'full', env: {} },
+		{ cwd: app, now: 1800000000, kind: 'full', env: {}, format: 'concat-gzip-v1' },
 		deps
 	);
 	downloads.length = 0;
@@ -204,6 +215,9 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 		);
 		for (const table of [
 			'storage_audio',
+			'storage_file_queue',
+			'storage_file_catalog',
+			'storage_file_objects',
 			'storage_jobs',
 			'storage_restore_requests',
 			'storage_reset_requests',

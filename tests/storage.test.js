@@ -4,7 +4,6 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
-import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
@@ -58,7 +57,7 @@ function fixture(t) {
 		corresponding_resident_id: 1,
 		corresponding_attending_id: 2
 	});
-	const directory = mkdtempSync(join(tmpdir(), 'radiology-storage-test-'));
+	const directory = mkdtempSync(join(process.cwd(), '.storage-test-'));
 	const audio = join(directory, 'audio.ogg');
 	writeFileSync(audio, 'synthetic audio');
 	const recording = appendRecording(db, studyId, audio);
@@ -473,7 +472,7 @@ test('running archive progress is sanitized, displayed as archive and frozen aft
 			assert.equal(job.kind, 'archive');
 			assert.match(job.progress, /Copied: 97/);
 			assert.match(job.progress, /uploading: 2; verifying: 1/);
-			assert.match(job.progress, /Read back: 2.00 MiB/);
+			assert.match(job.progress, /Checksum verification: 2.00 MiB/);
 			assert.match(job.progress, /Last transfer\/file activity: 5s ago/);
 			onProgress({ ...progress, verificationBytes: 'synthetic-private-path' });
 			assert.equal(
@@ -686,6 +685,59 @@ test('storage settings are disabled by default, validated and credentials encryp
 	);
 });
 
+test('full backup hours default twice daily, migrate legacy schedules once and persist canonically', (t) => {
+	const { db, settings } = fixture(t);
+	assert.deepEqual(DEFAULT_STORAGE_SETTINGS.fullBackupHours, [0, 12]);
+	assert.deepEqual(normalizeStorageSettings({}).fullBackupHours, [0, 12]);
+	assert.equal(normalizeStorageSettings({}).integrityAuditDays, 7);
+	db.prepare("DELETE FROM application_settings WHERE key='storage_settings'").run();
+	assert.deepEqual(getStorageSettings(db).fullBackupHours, [0, 12]);
+	const legacy = { ...settings, fileBackupHour: 19, databaseIntervalHours: 6 };
+	delete legacy.fullBackupHours;
+	delete legacy.integrityAuditDays;
+	db.prepare("INSERT INTO application_settings(key,value) VALUES('storage_settings',?)").run(
+		JSON.stringify(legacy)
+	);
+	assert.deepEqual(getStorageSettings(db).fullBackupHours, [19]);
+	assert.equal(getStorageSettings(db).integrityAuditDays, 7);
+	saveStorageSettings(db, getStorageSettings(db));
+	const saved = JSON.parse(
+		db.prepare("SELECT value FROM application_settings WHERE key='storage_settings'").get().value
+	);
+	assert.deepEqual(saved.fullBackupHours, [19]);
+	saved.fileBackupHour = 5;
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(
+		JSON.stringify(saved)
+	);
+	assert.deepEqual(getStorageSettings(db).fullBackupHours, [19]);
+	const hours = [23, 0, 12];
+	saveStorageSettings(db, { ...settings, fullBackupHours: hours, integrityAuditDays: 365 });
+	assert.deepEqual(hours, [23, 0, 12]);
+	assert.deepEqual(getStorageSettings(db).fullBackupHours, [0, 12, 23]);
+	assert.equal(getStorageSettings(db).integrityAuditDays, 365);
+	assert.deepEqual(
+		normalizeStorageSettings({ fullBackupHours: Array.from({ length: 24 }, (_, hour) => hour) })
+			.fullBackupHours,
+		Array.from({ length: 24 }, (_, hour) => hour)
+	);
+	for (const fullBackupHours of [
+		[],
+		[0, 0],
+		[-1],
+		[24],
+		[1.5],
+		['12'],
+		null,
+		'0,12',
+		[NaN],
+		Array(2),
+		Array.from({ length: 25 }, (_, i) => i)
+	])
+		assert.throws(() => normalizeStorageSettings({ ...settings, fullBackupHours }));
+	for (const integrityAuditDays of [0, 366, 1.5, '7', null])
+		assert.throws(() => normalizeStorageSettings({ ...settings, integrityAuditDays }));
+});
+
 test('inactivity timeout settings default for legacy rows, validate and persist without changing destination', (t) => {
 	const { db, settings } = fixture(t);
 	const legacy = { ...settings };
@@ -733,6 +785,64 @@ test('schema is repeatable and schedules/password can change but an in-use desti
 		now
 	);
 	assert.throws(() => saveStorageSettings(db, settings), /running/);
+});
+
+for (const table of ['storage_file_objects', 'storage_file_catalog']) {
+	test(`report-only synchronization locks the destination with ${table} tracking alone`, (t) => {
+		const { db, settings } = fixture(t);
+		const destination = storageDestination(settings);
+		const other =
+			table === 'storage_file_objects' ? 'storage_file_catalog' : 'storage_file_objects';
+		db.exec(`DROP TABLE ${other}`);
+		if (table === 'storage_file_objects')
+			db.prepare(
+				`INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)`
+			).run(
+				destination,
+				'synthetic-report-object',
+				'a'.repeat(64),
+				'b'.repeat(64),
+				10,
+				38,
+				now,
+				now
+			);
+		else
+			db.prepare(
+				'INSERT INTO storage_file_catalog(path,original,destination,object_key,synced_at) VALUES(?,?,?,?,?)'
+			).run(
+				'reports/synthetic.docx',
+				'uploads/reports/synthetic.docx',
+				destination,
+				'synthetic-report-object',
+				now
+			);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 0);
+		for (const change of [
+			{ root: '/different' },
+			{ host: 'different.invalid' },
+			{ port: 2222 },
+			{ username: 'different' },
+			{ fingerprint: `SHA256:${'b'.repeat(43)}` }
+		])
+			assert.throws(() => saveStorageSettings(db, { ...settings, ...change }), /in use/);
+		saveStorageSettings(
+			db,
+			{ ...settings, fullBackupHours: [6, 18], integrityAuditDays: 14 },
+			'rotated-synthetic'
+		);
+		assert.deepEqual(getStorageSettings(db).fullBackupHours, [6, 18]);
+		assert.equal(getStorageConnection(db).password, 'rotated-synthetic');
+		assert.equal(storageDestination(getStorageSettings(db)), destination);
+	});
+}
+
+test('legacy databases without file synchronization tables still allow unused destination changes', (t) => {
+	const { db, settings } = fixture(t);
+	db.exec('DROP TABLE storage_file_catalog; DROP TABLE storage_file_objects');
+	saveStorageSettings(db, { ...settings, root: '/unused-new-destination' });
+	assert.equal(getStorageSettings(db).root, '/unused-new-destination');
 });
 
 test('audio archive is encrypted, verified and independent backup is required before local eviction', async (t) => {
@@ -888,9 +998,9 @@ test('archive backlog continues within the same minute without starving newly du
 		1
 	);
 	saveStorageSettings(context.db, context.settings);
-	for (let index = 0; index < 4; index++)
+	for (let index = 0; index < 3; index++)
 		assert.equal(await processStorageJob(context.db, options), true);
-	assert.deepEqual(calls, ['archive', 'full', 'database', 'archive', 'archive']);
+	assert.deepEqual(calls, ['archive', 'full', 'archive', 'archive']);
 	assert.equal(storageStatus(context.db).backlog, 0);
 	assert.equal(await processStorageJob(context.db, options), false);
 });
@@ -909,23 +1019,181 @@ test('persistent scheduling deduplicates work, honours pause and derives UTC per
 	const { db, settings } = fixture(t);
 	scheduleStorageJobs(db, now);
 	scheduleStorageJobs(db, now);
-	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 2);
 	assert.equal(
 		queueStorageJob(db, 'full'),
 		db.prepare("SELECT id FROM storage_jobs WHERE kind='full'").get().id
 	);
 	saveStorageSettings(db, { ...settings, enabled: false });
 	scheduleStorageJobs(db, now + 86400);
-	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 2);
 	assert.throws(() => queueStorageJob(db, 'archive'), /Enable/);
 	assert.ok(queueStorageJob(db, 'test'));
 	const status = storageStatus(db, now);
-	assert.ok(status.nextDatabase > now);
-	assert.equal(new Date(status.nextFull * 1000).getUTCHours(), settings.fileBackupHour);
+	assert.equal(status.nextDatabase, undefined);
+	assert.ok(status.nextFull > now);
+	assert.ok(settings.fullBackupHours.includes(new Date(status.nextFull * 1000).getUTCHours()));
 	assert.ok(!JSON.stringify(status).includes('synthetic-password'));
 });
 
-for (const kind of ['database', 'full']) {
+test('full schedules use the latest UTC slot, skip missed slots and stay stable between ticks', (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, {
+		...settings,
+		archiveEnabled: false,
+		fullBackupHours: [18, 6],
+		fileBackupHour: 3,
+		databaseIntervalHours: 1
+	});
+	const utc = (value) => Date.parse(value) / 1000;
+	for (const [at, due, next] of [
+		['2026-12-31T05:59:59Z', '2026-12-30T18:00:00Z', '2026-12-31T06:00:00Z'],
+		['2026-12-31T06:00:00Z', '2026-12-31T06:00:00Z', '2026-12-31T18:00:00Z'],
+		['2026-12-31T17:59:59Z', '2026-12-31T06:00:00Z', '2026-12-31T18:00:00Z'],
+		['2026-12-31T18:00:00Z', '2026-12-31T18:00:00Z', '2027-01-01T06:00:00Z'],
+		['2027-01-01T00:00:00Z', '2026-12-31T18:00:00Z', '2027-01-01T06:00:00Z'],
+		['2027-01-05T15:00:00Z', '2027-01-05T06:00:00Z', '2027-01-05T18:00:00Z']
+	]) {
+		scheduleStorageJobs(db, utc(at));
+		const latest = db
+			.prepare(
+				"SELECT id,schedule_key FROM storage_jobs WHERE kind='full' ORDER BY id DESC LIMIT 1"
+			)
+			.get();
+		assert.equal(latest.schedule_key, `full:${utc(due)}`);
+		assert.equal(storageStatus(db, utc(at)).nextFull, utc(next));
+		db.prepare(
+			"UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=? WHERE status='pending'"
+		).run(utc(at), utc(at));
+		scheduleStorageJobs(db, utc(at));
+		assert.equal(
+			db.prepare("SELECT MAX(id) AS id FROM storage_jobs WHERE kind='full'").get().id,
+			latest.id
+		);
+	}
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='full'").get().n, 4);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='database'").get().n, 0);
+});
+
+test('full slot retries and cancellation retain one durable identity until the next UTC slot', (t) => {
+	const { db } = fixture(t);
+	const at = Date.parse('2026-12-31T01:00:00Z') / 1000;
+	scheduleStorageJobs(db, at);
+	const id = db.prepare("SELECT id FROM storage_jobs WHERE kind='full'").get().id;
+	db.prepare("UPDATE storage_jobs SET status='failed',attempts=1,retry_at=? WHERE id=?").run(
+		at + 600,
+		id
+	);
+	scheduleStorageJobs(db, at + 15);
+	assert.equal(
+		db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at,
+		at + 600
+	);
+	assert.equal(queueStorageJob(db, 'full', { now: at + 15, retryNow: true }), id);
+	assert.equal(
+		db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at,
+		at + 15
+	);
+	assert.equal(cancelStorageJob(db, id, { now: at + 20 }), true);
+	scheduleStorageJobs(db, at + 30);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='full'").get().n, 1);
+	assert.equal(storageStatus(db, at + 30).jobs.find((job) => job.id === id).status, 'cancelled');
+	scheduleStorageJobs(db, at + 11 * 3600);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='full'").get().n, 2);
+	assert.notEqual(
+		db.prepare("SELECT id FROM storage_jobs WHERE kind='full' AND status='pending'").get().id,
+		id
+	);
+});
+
+test('file synchronization is available for backups without audio eviction, with immediate non-audio continuation', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, archiveEnabled: false });
+	db.prepare('DELETE FROM recording_audio_parts').run();
+	db.prepare('UPDATE study_recordings SET audio_report_path=NULL').run();
+	assert.equal(storageStatus(db).backlog, 0);
+	const fullId = queueStorageJob(db, 'full', { now });
+	db.prepare("UPDATE storage_jobs SET status='failed',attempts=1,retry_at=? WHERE id=?").run(
+		now + 3600,
+		fullId
+	);
+	scheduleStorageJobs(db, now);
+	const archiveId = queueStorageJob(db, 'archive', { now });
+	let calls = 0;
+	const options = {
+		now,
+		runArchive: async (_db, connection) => {
+			assert.equal(connection.archiveEnabled, false);
+			calls++;
+			return { copied: 0, evicted: 0, syncPending: calls === 1 ? 2 : 0 };
+		}
+	};
+	assert.equal(await processStorageJob(db, options), true);
+	assert.equal(
+		db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(archiveId).status,
+		'succeeded'
+	);
+	assert.equal(
+		db
+			.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='archive' AND status='pending'")
+			.get().n,
+		1
+	);
+	assert.equal(await processStorageJob(db, options), true);
+	assert.equal(await processStorageJob(db, options), false);
+	assert.equal(await processStorageJob(db, { ...options, now: now + 60 }), true);
+	assert.equal(calls, 3);
+	saveStorageSettings(db, { ...settings, archiveEnabled: false, backupsEnabled: false });
+	assert.throws(() => queueStorageJob(db, 'archive'), /Enable/);
+	assert.throws(() => queueStorageJob(db, 'full'), /Enable/);
+	assert.throws(() => queueStorageJob(db, 'database'), /Invalid/);
+	const count = db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n;
+	scheduleStorageJobs(db, now + 120);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, count);
+});
+
+test('legacy database jobs retire without interrupting a running owner or hiding recovery history', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,attempts,created_at) VALUES('database','pending',0,1),('database','failed',2,1),('database','running',1,1),('database','succeeded',1,1)"
+	).run();
+	const backupId = `${now}-${randomUUID()}`;
+	db.prepare('UPDATE storage_jobs SET result=? WHERE id=4').run(
+		JSON.stringify({ id: backupId, files: 1, bytes: 2, uploadedObjects: 1, reusedObjects: 0 })
+	);
+	db.prepare('INSERT INTO storage_worker_lock VALUES(1,?,?)').run('active-legacy-owner', now + 60);
+	scheduleStorageJobs(db, now);
+	assert.deepEqual(db.prepare('SELECT status,attempts FROM storage_jobs ORDER BY id').all(), [
+		{ status: 'failed', attempts: 8 },
+		{ status: 'failed', attempts: 8 },
+		{ status: 'running', attempts: 1 },
+		{ status: 'succeeded', attempts: 1 }
+	]);
+	assert.equal(await processStorageJob(db, { now }), false);
+	assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=3').get().status, 'running');
+	const history = storageStatus(db).jobs.find((job) => job.id === 4);
+	assert.equal(history.backupId, backupId);
+	assert.match(history.progress, /objects uploaded and verified/);
+	assert.ok(queueStorageJob(db, 'restore', { now, backupId }));
+	cancelStorageJob(db, 5, { now });
+	db.prepare('DELETE FROM storage_worker_lock').run();
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(
+		JSON.stringify(settings)
+	);
+	await processStorageJob(db, {
+		now,
+		runBackup: async (_db, _connection, { kind }) => {
+			assert.equal(kind, 'full');
+			return {};
+		},
+		prune: async () => {}
+	});
+	assert.equal(db.prepare('SELECT status,attempts FROM storage_jobs WHERE id=3').get().attempts, 8);
+	assert.match(db.prepare('SELECT error FROM storage_jobs WHERE id=3').get().error, /retired/);
+});
+
+for (const kind of ['full']) {
 	test(`${kind} worker persists safe live progress and displays a completed backup summary`, async (t) => {
 		const { db, settings } = fixture(t);
 		saveStorageSettings(db, { ...settings, archiveEnabled: false });
@@ -953,6 +1221,7 @@ for (const kind of ['database', 'full']) {
 		};
 		let report;
 		const result = {
+			format: 'immutable-files-v1',
 			id: `${now}-${randomUUID()}`,
 			files: 4,
 			bytes: 1024 * 1024,
@@ -984,12 +1253,9 @@ for (const kind of ['database', 'full']) {
 					saved
 				);
 				const display = storageStatus(database, now).jobs.find((job) => job.id === jobId).progress;
-				assert.match(display, /Files collected: 2\/4; bundles verified: 1\/2/);
+				assert.match(display, /Files collected: 2\/4; objects verified: 1\/2/);
 				assert.match(display, /Phase: collecting; uploading: 1; verifying: 0/);
-				assert.match(
-					display,
-					/Uploaded: 1.00 MiB; downloaded audio: 2.00 MiB; read back: 3.00 MiB/
-				);
+				assert.match(display, /Uploaded: 1.00 MiB; verified on storage: 3.00 checksum MiB/);
 				assert.match(display, /activity: 7s ago/);
 				assert.doesNotMatch(display, /private-progress-data/);
 				const parallel = { ...progress, phase: 'verifying', uploading: 0, verifying: 4 };
@@ -1025,7 +1291,7 @@ for (const kind of ['database', 'full']) {
 		);
 		const completed = storageStatus(db, now + 100).jobs.find((job) => job.id === jobId);
 		assert.equal(completed.status, 'succeeded');
-		assert.match(completed.progress, /Files: 4; bundles uploaded and verified: 1; reused: 1/);
+		assert.match(completed.progress, /Files: 4; objects uploaded and verified: 1; reused: 1/);
 		assert.doesNotMatch(completed.progress, /ago|Phase:/);
 	});
 }
@@ -1088,6 +1354,7 @@ test('storage worker owns a durable lease, retries failures and resumes interrup
 	let backups = 0;
 	const options = {
 		now,
+		runArchive: async () => ({ copied: 0, evicted: 0, syncPending: 0 }),
 		runBackup: async () => {
 			backups++;
 			return { id: 'synthetic-snapshot' };
@@ -1116,17 +1383,19 @@ test('storage worker owns a durable lease, retries failures and resumes interrup
 	);
 	await processStorageJob(db, { ...options, now: failed.retry_at });
 	await processStorageJob(db, { ...options, now: failed.retry_at + 1 });
-	assert.equal(backups, 2);
+	assert.equal(backups, 1);
 	assert.equal(
 		db.prepare("SELECT status FROM storage_jobs WHERE kind='full'").get().status,
 		'succeeded'
 	);
-	db.prepare("UPDATE storage_jobs SET status='running' WHERE kind='database'").run();
+	db.prepare("UPDATE storage_jobs SET status='running' WHERE kind='full'").run();
+	await processStorageJob(db, { ...options, now: failed.retry_at + 1 });
 	await processStorageJob(db, { ...options, now: failed.retry_at + 1 });
 	assert.equal(
-		db.prepare("SELECT status FROM storage_jobs WHERE kind='database'").get().status,
+		db.prepare("SELECT status FROM storage_jobs WHERE kind='full'").get().status,
 		'succeeded'
 	);
+	assert.equal(backups, 2);
 	assert.equal(db.prepare('SELECT * FROM storage_worker_lock').get(), undefined);
 });
 
@@ -1277,8 +1546,12 @@ test('pause and cancel all preserves credentials and data while cancelling every
 	const before = db
 		.prepare("SELECT value FROM application_settings WHERE key='storage_password'")
 		.get().value;
-	const ids = ['test', 'archive', 'database', 'full'].map((kind) =>
-		queueStorageJob(db, kind, { now })
+	const ids = ['test', 'archive', 'full'].map((kind) => queueStorageJob(db, kind, { now }));
+	ids.push(
+		Number(
+			db.prepare("INSERT INTO storage_jobs(kind,created_at) VALUES('database',?)").run(now)
+				.lastInsertRowid
+		)
 	);
 	ids.push(queueStorageJob(db, 'restore', { now, backupId: `${now}-${randomUUID()}` }));
 	db.prepare("UPDATE storage_jobs SET status='failed',attempts=3 WHERE id=?").run(ids[0]);
@@ -1488,6 +1761,143 @@ function resetFixture(t) {
 	return { ...context, folders, resetOptions, run };
 }
 
+async function seedSyncedResetReport(context) {
+	const { db, connection, objects, client } = context;
+	const objectKey = `${'c'.repeat(64)}.enc`;
+	const remote = `${connection.root}/files/objects/${objectKey}`;
+	await client.mkdir(`${connection.root}/files/objects`);
+	objects.set(remote, Buffer.from('synthetic encrypted report'));
+	const destination = storageDestination(connection);
+	db.prepare(
+		`INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)`
+	).run(
+		destination,
+		objectKey,
+		'a'.repeat(64),
+		'b'.repeat(64),
+		10,
+		objects.get(remote).length,
+		now,
+		now
+	);
+	db.prepare(
+		'INSERT INTO storage_file_catalog(path,original,destination,object_key,synced_at) VALUES(?,?,?,?,?)'
+	).run('reports/synthetic.docx', 'uploads/reports/synthetic.docx', destination, objectKey, now);
+	db.prepare('INSERT INTO storage_file_queue(path,queued_at) VALUES(?,?)').run(
+		'reports/synthetic.docx',
+		now
+	);
+	return remote;
+}
+
+function syncedResetRows(db) {
+	return Object.fromEntries(
+		['storage_file_queue', 'storage_file_catalog', 'storage_file_objects'].map((table) => [
+			table,
+			db.prepare(`SELECT * FROM ${table}`).all()
+		])
+	);
+}
+
+test('reset removes synchronized objects and tracking only after archived audio recovery', async (t) => {
+	const context = resetFixture(t);
+	const { db, connection, options, audio, objects, folders, client, run } = context;
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	db.prepare('UPDATE storage_audio SET evicted_at=?').run(now);
+	const remote = await seedSyncedResetReport(context);
+	await client.mkdir('/radiology/backups/objects');
+	objects.set(`/radiology/backups/objects/${'d'.repeat(64)}.enc`, objects.get(remote));
+	objects.set('/radiology/unrelated.txt', Buffer.from('leave alone'));
+	const before = syncedResetRows(db);
+	const deleted = [];
+	const removedFolders = [];
+	const remove = client.delete;
+	client.delete = async (path) => {
+		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		assert.equal(db.prepare('SELECT restored FROM storage_reset_requests').get().restored, 1);
+		assert.deepEqual(syncedResetRows(db), before);
+		deleted.push(path);
+		return remove(path);
+	};
+	const rmdir = client.rmdir;
+	client.rmdir = async (path, recursive) => {
+		assert.deepEqual(syncedResetRows(db), before);
+		removedFolders.push(path);
+		return rmdir(path, recursive);
+	};
+	queueStorageReset(db, { now });
+	await run();
+	assert.equal(storageStatus(db, now).jobs[0].status, 'succeeded');
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.equal(deleted.length, 3);
+	assert.ok(deleted.includes(remote));
+	assert.ok(
+		removedFolders.indexOf('/radiology/backups') <
+			removedFolders.indexOf('/radiology/files/objects')
+	);
+	assert.ok(
+		removedFolders.indexOf('/radiology/files/objects') < removedFolders.indexOf('/radiology/files')
+	);
+	assert.deepEqual([...folders], ['/', '/radiology']);
+	assert.deepEqual([...objects.keys()], ['/radiology/unrelated.txt']);
+	assert.deepEqual(syncedResetRows(db), {
+		storage_file_queue: [],
+		storage_file_catalog: [],
+		storage_file_objects: []
+	});
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+	assert.equal(getStorageSettings(db).enabled, false);
+});
+
+for (const unexpected of [
+	'files/unexpected.txt',
+	'files/objects/not-an-object.enc',
+	'files/unexpected-directory'
+]) {
+	test(`reset rejects ${unexpected} without deleting remote objects or synchronization tracking`, async (t) => {
+		const context = resetFixture(t);
+		const { db, connection, options, audio, objects, client, run } = context;
+		await archiveAudio(db, connection, options);
+		unlinkSync(audio);
+		await seedSyncedResetReport(context);
+		if (unexpected.endsWith('directory')) await client.mkdir(`${connection.root}/${unexpected}`);
+		else objects.set(`${connection.root}/${unexpected}`, Buffer.from('unrelated'));
+		const before = syncedResetRows(db);
+		const remoteBefore = new Map(objects);
+		client.delete = async () =>
+			assert.fail('Unexpected namespace entry must block all remote deletion');
+		queueStorageReset(db, { now });
+		await run();
+		assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		assert.deepEqual(objects, remoteBefore);
+		assert.deepEqual(syncedResetRows(db), before);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+		assert.equal(db.prepare('SELECT phase FROM storage_reset_requests').get().phase, 'recovering');
+	});
+}
+
+test('failed audio recovery preserves synchronized remote objects and all file tracking', async (t) => {
+	const context = resetFixture(t);
+	const { db, connection, options, audio, objects, client, run } = context;
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	const audioRemote = [...objects.keys()][0];
+	await seedSyncedResetReport(context);
+	objects.set(audioRemote, Buffer.from('corrupted ciphertext'));
+	const before = syncedResetRows(db);
+	const remoteBefore = new Map(objects);
+	client.delete = async () => assert.fail('Audio recovery must finish before remote deletion');
+	queueStorageReset(db, { now });
+	await run();
+	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+	assert.equal(existsSync(audio), false);
+	assert.deepEqual(objects, remoteBefore);
+	assert.deepEqual(syncedResetRows(db), before);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+});
+
 test('clearing finished log preserves backup safety metadata and active jobs, including their future results', (t) => {
 	const { db, settings } = fixture(t);
 	backupCompleted(db);
@@ -1506,7 +1916,7 @@ test('clearing finished log preserves backup safety metadata and active jobs, in
 	assert.equal(storageStatus(db, now).jobs[0].status, 'succeeded');
 });
 
-test('background job types rotate fairly instead of starving full and database backups behind archives', async (t) => {
+test('background job types rotate fairly instead of starving full backups behind file synchronization', async (t) => {
 	const { db } = fixture(t);
 	const current = Math.floor(Date.now() / 1000);
 	const calls = [];
@@ -1523,10 +1933,10 @@ test('background job types rotate fairly instead of starving full and database b
 	};
 	for (let tick = 0; tick < 6; tick++) {
 		const at = current + tick * 61;
-		for (const kind of ['archive', 'database', 'full']) queueStorageJob(db, kind, { now: at });
+		for (const kind of ['archive', 'full']) queueStorageJob(db, kind, { now: at });
 		await processStorageJob(db, { ...options, now: at });
 	}
-	assert.deepEqual(calls, ['full', 'database', 'archive', 'full', 'database', 'archive']);
+	assert.deepEqual(calls, ['full', 'archive', 'full', 'archive', 'full', 'archive']);
 });
 
 test('reset rehydrates and verifies archive-only audio before app-only cleanup, preserving live data and credentials', async (t) => {

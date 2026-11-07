@@ -4,6 +4,7 @@
 	import { onMount, untrack } from 'svelte';
 	let { data, form } = $props();
 	let settings = $state(untrack(() => ({ ...data.settings })));
+	let fullBackupHours = $state(untrack(() => data.settings.fullBackupHours.join(', ')));
 	onMount(() => {
 		let refreshing = false;
 		const timer = setInterval(async () => {
@@ -17,13 +18,12 @@
 	});
 	const timeoutFields = [
 		['uploadTimeoutSeconds', 'Upload inactivity timeout (seconds)'],
-		['verificationTimeoutSeconds', 'Verification/read inactivity timeout (seconds)']
+		['verificationTimeoutSeconds', 'Verification/read and command timeout (seconds)']
 	];
 	const numberFields = [
 		['localRetentionDays', 'Keep local audio (days)', 1, 3650],
-		['databaseIntervalHours', 'Recovery snapshot interval (hours)', 1, 168],
-		['fileBackupHour', 'Daily full backup hour (UTC, 0–23)', 0, 23],
-		['hourlyRetention', 'Recent recovery snapshots to keep', 1, 8760],
+		['integrityAuditDays', 'Remote integrity audit cadence (days)', 1, 365],
+		['hourlyRetention', 'Recent recovery points to keep', 1, 8760],
 		['dailyRetention', 'Daily recovery points to keep', 1, 3650],
 		['monthlyRetention', 'Monthly recovery points to keep', 1, 120]
 	];
@@ -42,7 +42,7 @@
 
 <div class="mx-auto max-w-6xl space-y-6">
 	<h2 class="text-2xl font-bold">Storage &amp; Backups</h2>
-	<p>Encrypted audio archives free SSD space. Separate recovery snapshots protect your database, audio and reports. All schedules use UTC.</p>
+	<p>File synchronization keeps encrypted copies of audio, reports and other managed files on storage. Full recovery backups protect the database and synchronized files. Only audio is eligible for local removal. All schedules use UTC.</p>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.message}<div class="alert alert-info" role="status">{form.message}</div>{/if}
 	{#if form?.fingerprint}<p class="break-all font-mono">Observed (not yet trusted): {form.fingerprint}</p>{/if}
@@ -65,23 +65,32 @@
 			<label class="form-control">Trusted SHA256 host fingerprint<input class="input input-bordered font-mono" name="fingerprint" bind:value={settings.fingerprint} placeholder="SHA256:…" maxlength="64" /></label>
 		</div>
 		<div><button class="btn btn-outline" type="submit" formaction="?/probe" formnovalidate>Observe fingerprint (no login)</button></div>
+		<details class="space-y-2 text-sm">
+			<summary class="cursor-pointer font-semibold">Linux SSH setup and verification</summary>
+			<p>The account needs SSH command execution as well as SFTP, including Linux <code>sha256sum</code>, <code>stat</code>, <code>mkdir</code> and <code>mv</code>. An SFTP-only account is not sufficient. A server administrator can prepare a dedicated directory and read the host fingerprint over a trusted connection:</p>
+			<pre class="overflow-x-auto"><code>sudo install -d -m 700 -o storage -g storage /home/storage/radiology
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
+			<p>Replace the account and path as appropriate; the path must match the remote directory above. Protect this directory from other users. Do not edit or gzip immutable encrypted objects. Storage-side checks hash encrypted bytes; application verification also authenticates and checks plaintext before any local audio eviction.</p>
+		</details>
 		<h3 class="text-lg font-semibold">Transfer timeouts</h3>
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each timeoutFields as [name, label] (name)}
 				<label class="form-control">{label}<input class="input input-bordered" type="number" {name} min="1" max="600" step="1" bind:value={settings[name]} required /></label>
 			{/each}
 		</div>
-		<p class="text-sm">Whole seconds, 1–600. Defaults: upload 30; verification/read 20. Applies to audio archiving, backups and restore downloads. These limit inactivity, not total transfer duration. Pause scheduling, cancel or finish running work, and wait for cleanup before saving; new values apply to subsequent jobs.</p>
+		<p class="text-sm">Whole seconds, 1–600. Defaults: upload 30; verification/read and commands 20. Uploads and verification/download reads use inactivity limits, not total transfer duration. Storage-side hash/link commands instead use the verification timeout as a hard deadline, even if the command is making progress. Pause scheduling, cancel or finish running work, and wait for cleanup before saving; new values apply to subsequent jobs.</p>
 		<h3 class="text-lg font-semibold">Services, schedule and retention</h3>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="enabled" bind:checked={settings.enabled} /> Enable background storage jobs</label>
-		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Copy audio in background and evict eligible local copies</label>
-		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="backupsEnabled" bind:checked={settings.backupsEnabled} /> Scheduled recovery snapshots and daily full backups</label>
+		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Allow eviction of eligible local audio after verified synchronization and backup</label>
+		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="backupsEnabled" bind:checked={settings.backupsEnabled} /> Scheduled full recovery backups and background file synchronization</label>
+		<label class="form-control">Full backup UTC hours (comma-separated, 0-23)<input class="input input-bordered" name="fullBackupHours" bind:value={fullBackupHours} placeholder="0, 12" required /></label>
+		<p class="text-sm">Choose 1-24 unique whole UTC hours. New installations default to twice daily at 00:00 and 12:00 UTC; existing daily schedules retain their saved hour until changed. Missed slots are coalesced into the most recent due full backup.</p>
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each numberFields as [name, label, min, max] (name)}
 				<label class="form-control">{label}<input class="input input-bordered" type="number" {name} {min} {max} bind:value={settings[name]} required /></label>
 			{/each}
 		</div>
-		<p class="text-sm">Audio is removed from SSD only after verified archiving and a successful subsequent full recovery backup. Keep backups enabled for eviction. Pausing jobs does not disable archived-audio playback. Snapshots also include referenced audio and reports; daily full backups add other uploads and server configuration.</p>
+		<p class="text-sm">Background file synchronization runs whenever either service is enabled. Files are immutable, individually encrypted objects without gzip compression; unchanged objects are reused. Audio is removed from SSD only when eviction is enabled, after verified synchronization and a successful subsequent full recovery backup. Keep backups enabled for eviction. Reports and other managed files stay local. Pausing jobs does not disable archived-audio playback. Remote SHA256 integrity audits run in bounded batches at the configured cadence (default 7 days). Full backups capture the database, managed files and server configuration.</p>
 		<p class="text-sm">Retention prunes recovery manifests, not shared encrypted file objects. Storage space is not fully reclaimed automatically. One storage server is not an independent disaster-proof copy; keep another offsite backup.</p>
 		<div><button class="btn btn-primary" type="submit" disabled={!data.keyConfigured || data.status.resetActive}>Save settings</button></div>
 		</fieldset>
@@ -91,16 +100,15 @@
 		<p>Save connection settings first. Jobs run on the application server, survive restarts and retry failures without deleting unverified local audio.</p>
 		<form method="POST" action="?/job" use:enhance class="flex flex-wrap gap-3">
 			<button class="btn btn-outline" name="kind" value="test" disabled={data.status.resetActive}>Test saved connection</button>
-			<button class="btn btn-outline" name="kind" value="archive" disabled={data.status.resetActive || !data.settings.enabled || !data.settings.archiveEnabled}>Archive audio now</button>
-			<button class="btn btn-outline" name="kind" value="database" disabled={data.status.resetActive || !data.settings.enabled || !data.settings.backupsEnabled}>Recovery snapshot now</button>
+			<button class="btn btn-outline" name="kind" value="archive" disabled={data.status.resetActive || !data.settings.enabled || (!data.settings.archiveEnabled && !data.settings.backupsEnabled)}>Sync files now</button>
 			<button class="btn btn-primary" name="kind" value="full" disabled={data.status.resetActive || !data.settings.enabled || !data.settings.backupsEnabled}>Full recovery backup now</button>
 		</form>
 		<form method="POST" action="?/pause" use:enhance={pauseEnhance}>
 			<button class="btn btn-warning" name="confirmation" value="pause">Pause &amp; cancel all</button>
 		</form>
 		<p class="text-sm">Cancel stops one job, not future scheduled work. Pause &amp; cancel all disables automatic jobs and cancels queued/retrying jobs, connection tests and restore preparations. Running work stops at its next safety check; an in-flight transfer may need to finish or time out. Wait until no jobs are running or cancelling before changing the password. Existing audio, backups and completed restore copies are preserved.</p>
-		<p>Awaiting archive: {data.status.backlog}. Archived: {data.status.archived.count} audio files ({(data.status.archived.bytes / 1048576).toFixed(1)} MB); evicted from SSD: {data.status.archived.evicted}.</p>
-		{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled snapshot: {time(data.status.nextDatabase)}. Next daily full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
+		<p>Audio awaiting synchronization: {data.status.backlog}. Archived: {data.status.archived.count} audio files ({(data.status.archived.bytes / 1048576).toFixed(1)} MB); evicted from SSD: {data.status.archived.evicted}.</p>
+		{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
 		{#each data.status.last as item (item.kind)}<p>Last successful {item.kind}: {time(item.at)}</p>{/each}
 		<form method="GET"><button class="btn btn-sm" type="submit">Refresh status</button></form>
 		<h3 class="text-lg font-semibold">Restore a recovery backup</h3>
@@ -116,7 +124,7 @@
 					<select class="select select-bordered font-mono" name="backupId" required>
 						<option value="">Select a backup</option>
 						{#each form.recoveryPoints as point (point.id)}
-							<option value={point.id}>{point.kind === 'full' ? 'Full backup' : 'Recovery snapshot'} — {time(Number(point.id.split('-')[0]))} — {point.id}</option>
+							<option value={point.id}>{point.kind === 'full' ? 'Full backup' : 'Legacy recovery snapshot'} — {time(Number(point.id.split('-')[0]))} — {point.id}</option>
 						{/each}
 					</select>
 				</label>
@@ -141,7 +149,7 @@
 			<div>
 				<h4 class="font-semibold">Reset storage permanently removes remote archives and backups</h4>
 				<p>First use Pause &amp; cancel all, then wait until no jobs are running or cancelling. Ensure adequate free SSD space for ALL archived audio and temporary downloads before resetting.</p>
-				<p>The worker first recovers and hash-verifies all archived audio locally. Only then does it delete the app namespaces <code>audio/</code> and <code>backups/</code> under the configured remote root and clear archive tracking and job history. Other remote files are not removed. This cannot be undone.</p>
+				<p>The worker first recovers and hash-verifies all archived audio locally. Only then does it delete the app namespaces <code>audio/</code>, <code>files/</code> and <code>backups/</code> under the configured remote root and clear archive tracking and job history. Other remote files are not removed. This cannot be undone.</p>
 				<p>The saved connection and encryption key are kept. The live database is never automatically restored or deleted. Scheduling stays paused; review the result before re-enabling jobs.</p>
 			</div>
 		</div>
@@ -152,7 +160,7 @@
 				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Reset storage</button>
 			</fieldset>
 		</form>
-		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Snapshots and full backups show collected files, verified new/reused bundles, transfer MiB and the current phase; totals can grow during collection. Read-back bytes accumulate across the current job; verification reads also update the activity timer. Uploads and verification/download reads use the saved inactivity timeouts above; large files can continue while data is moving. Connection, metadata and overall job limits are unchanged.</p>
+		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Full backups show collected files, verified new/reused objects, transfer MiB and the current phase; totals can grow during collection. Checksum MiB count bytes hashed on storage, not downloaded or read back. New synchronization and full backup paths do not download remote file contents; verification activity updates the activity timer. Uploads and transfer reads use the saved inactivity timeouts; large transfers can continue while data is moving. Storage-side hash/link commands use the verification timeout as a hard deadline, not an inactivity limit. Connection, metadata and overall job limits are unchanged.</p>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs as job (job.id)}

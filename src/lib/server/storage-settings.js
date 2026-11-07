@@ -13,6 +13,8 @@ export const DEFAULT_STORAGE_SETTINGS = Object.freeze({
 	localRetentionDays: 30,
 	databaseIntervalHours: 1,
 	fileBackupHour: 2,
+	fullBackupHours: Object.freeze([0, 12]),
+	integrityAuditDays: 7,
 	hourlyRetention: 48,
 	dailyRetention: 30,
 	monthlyRetention: 12,
@@ -25,6 +27,7 @@ const limits = {
 	localRetentionDays: [1, 3650],
 	databaseIntervalHours: [1, 168],
 	fileBackupHour: [0, 23],
+	integrityAuditDays: [1, 365],
 	hourlyRetention: [1, 8760],
 	dailyRetention: [1, 3650],
 	monthlyRetention: [1, 120],
@@ -52,6 +55,20 @@ export function normalizeStorageSettings(value) {
 	)
 		throw new Error('Invalid storage settings.');
 	const settings = { ...DEFAULT_STORAGE_SETTINGS, ...value };
+	const hours = Object.hasOwn(value, 'fullBackupHours')
+		? value.fullBackupHours
+		: Object.hasOwn(value, 'fileBackupHour')
+			? [value.fileBackupHour]
+			: DEFAULT_STORAGE_SETTINGS.fullBackupHours;
+	if (
+		!Array.isArray(hours) ||
+		hours.length < 1 ||
+		hours.length > 24 ||
+		!Array.from(hours).every((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23) ||
+		new Set(hours).size !== hours.length
+	)
+		throw new Error('Choose 1–24 unique UTC full backup hours from 0 to 23.');
+	settings.fullBackupHours = [...hours].sort((a, b) => a - b);
 	for (const field of ['enabled', 'archiveEnabled', 'backupsEnabled'])
 		if (typeof settings[field] !== 'boolean') throw new Error('Invalid storage switch.');
 	for (const [key, [min, max]] of Object.entries(limits))
@@ -104,7 +121,7 @@ export function getStorageSettings(db) {
 	const row = db
 		.prepare("SELECT value FROM application_settings WHERE key = 'storage_settings'")
 		.get();
-	if (!row) return { ...DEFAULT_STORAGE_SETTINGS };
+	if (!row) return normalizeStorageSettings({});
 	try {
 		return normalizeStorageSettings(JSON.parse(row.value));
 	} catch {
@@ -144,7 +161,13 @@ export function saveStorageSettings(db, input, password = '') {
 				.get()
 		)
 			throw new Error('Wait for the storage reset to finish before changing settings.');
+		const syncedFilesInUse = ['storage_file_objects', 'storage_file_catalog'].some(
+			(table) =>
+				db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) &&
+				db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()
+		);
 		const inUse =
+			syncedFilesInUse ||
 			db.prepare('SELECT 1 FROM storage_audio LIMIT 1').get() ||
 			db
 				.prepare(
@@ -153,7 +176,7 @@ export function saveStorageSettings(db, input, password = '') {
 				.get();
 		if (inUse && storageDestination(existing) !== storageDestination(settings))
 			throw new Error(
-				'Storage destination is in use. Migrate archived audio and recovery backups before changing it. Password and schedules can still be changed.'
+				'Storage destination is in use. Migrate synchronized files, archived audio and recovery backups before changing it. Password and schedules can still be changed.'
 			);
 		if (db.prepare("SELECT 1 FROM storage_jobs WHERE status = 'running' LIMIT 1").get())
 			throw new Error('Wait for the running storage job before changing settings.');

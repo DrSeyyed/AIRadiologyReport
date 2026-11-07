@@ -16,6 +16,36 @@ CREATE TABLE IF NOT EXISTS storage_audio (
   destination TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS storage_file_objects (
+  destination TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  remote_sha256 TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  encrypted_bytes INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  verified_at INTEGER NOT NULL,
+  backup_linked_at INTEGER,
+  PRIMARY KEY (destination, object_key)
+);
+CREATE TABLE IF NOT EXISTS storage_file_catalog (
+  path TEXT PRIMARY KEY,
+  original TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  object_key TEXT,
+  state TEXT,
+  synced_at INTEGER,
+  deleted_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS storage_file_queue (
+  path TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 1,
+  queued_at INTEGER NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS storage_file_objects_audit ON storage_file_objects(destination, verified_at);
+CREATE INDEX IF NOT EXISTS storage_file_objects_content ON storage_file_objects(destination, sha256, bytes);
+
 CREATE TABLE IF NOT EXISTS storage_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('archive', 'database', 'full', 'test', 'restore')),

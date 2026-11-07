@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getStorageSettings, getStorageConnection } from './storage-settings.js';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
-import { archiveAudio, hashLocal } from './storage-audio.js';
+import { hashLocal } from './storage-audio.js';
+import { syncStorageData } from './storage-sync.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { safeRecoveryProgress } from './recovery-progress.js';
@@ -25,7 +26,7 @@ export function queueStorageJob(
 		backupId = null
 	} = {}
 ) {
-	if (!['test', 'archive', 'database', 'full', 'restore'].includes(kind))
+	if (!['test', 'archive', 'full', 'restore'].includes(kind))
 		throw new Error('Invalid storage job.');
 	if (kind === 'restore' && (typeof backupId !== 'string' || !backupIdPattern.test(backupId)))
 		throw new Error('Select a valid recovery point.');
@@ -35,7 +36,9 @@ export function queueStorageJob(
 		if (
 			!['test', 'restore'].includes(kind) &&
 			(!settings.enabled ||
-				(kind === 'archive' ? !settings.archiveEnabled : !settings.backupsEnabled))
+				(kind === 'archive'
+					? !settings.archiveEnabled && !settings.backupsEnabled
+					: !settings.backupsEnabled))
 		)
 			throw new Error('Enable the selected storage service before requesting a job.');
 		const existing = db
@@ -176,18 +179,30 @@ function archiveBacklog(db) {
 		.get().count;
 }
 
+function retireDatabaseJobs(db, now) {
+	db.prepare(
+		"UPDATE storage_jobs SET status='failed',attempts=8,finished_at=?,retry_at=0,result=NULL,error='Legacy database snapshot retired; use full recovery backups.' WHERE kind='database' AND (status='pending' OR (status='failed' AND attempts<8))"
+	).run(now);
+}
+
+function fullBackupSlots(hours, now) {
+	const day = Math.floor(now / 86400) * 86400;
+	const slots = hours.map((hour) => day + hour * 3600);
+	return {
+		due: slots.findLast((slot) => slot <= now) ?? slots.at(-1) - 86400,
+		next: slots.find((slot) => slot > now) ?? slots[0] + 86400
+	};
+}
+
 export function scheduleStorageJobs(db, now = Math.floor(Date.now() / 1000)) {
+	retireDatabaseJobs(db, now);
 	const settings = getStorageSettings(db);
 	if (!settings.enabled) return;
-	if (settings.archiveEnabled)
+	if (settings.archiveEnabled || settings.backupsEnabled)
 		queueStorageJob(db, 'archive', { now, scheduleKey: `archive:${Math.floor(now / 60)}` });
 	if (settings.backupsEnabled) {
-		queueStorageJob(db, 'database', {
-			now,
-			scheduleKey: `database:${settings.databaseIntervalHours}:${Math.floor(now / (settings.databaseIntervalHours * 3600))}`
-		});
-		const day = Math.floor((now - settings.fileBackupHour * 3600) / 86400);
-		queueStorageJob(db, 'full', { now, scheduleKey: `full:${settings.fileBackupHour}:${day}` });
+		const { due } = fullBackupSlots(settings.fullBackupHours, now);
+		queueStorageJob(db, 'full', { now, scheduleKey: `full:${due}` });
 	}
 }
 
@@ -218,7 +233,7 @@ export async function processStorageJob(
 	db,
 	{
 		now = Math.floor(Date.now() / 1000),
-		runArchive = archiveAudio,
+		runArchive = syncStorageData,
 		runBackup = backupRecovery,
 		prepareRestore = prepareStorageRestore,
 		resetStorage = resetStorageData,
@@ -227,6 +242,7 @@ export async function processStorageJob(
 		heartbeatMs = 10_000
 	} = {}
 ) {
+	retireDatabaseJobs(db, now);
 	if (
 		!getStorageSettings(db).enabled &&
 		!db
@@ -280,12 +296,17 @@ export async function processStorageJob(
 		job = db
 			.prepare(
 				`SELECT * FROM storage_jobs WHERE (status = 'pending' OR (status = 'failed' AND attempts < 8)) AND retry_at <= ?
-			AND (kind IN ('test','restore') OR (? = 1 AND ((kind = 'archive' AND ? = 1) OR (kind IN ('database','full') AND ? = 1))))
+			AND (kind IN ('test','restore') OR (? = 1 AND ((kind = 'archive' AND ? = 1) OR (kind = 'full' AND ? = 1))))
 			ORDER BY CASE kind WHEN 'test' THEN 0 WHEN 'restore' THEN 1 ELSE 2 END,
 			COALESCE((SELECT MAX(previous.started_at) FROM storage_jobs previous WHERE previous.kind=storage_jobs.kind),0),
-			CASE kind WHEN 'full' THEN 0 WHEN 'database' THEN 1 ELSE 2 END, created_at, id LIMIT 1`
+			CASE kind WHEN 'full' THEN 0 ELSE 1 END, created_at, id LIMIT 1`
 			)
-			.get(now, +settings.enabled, +settings.archiveEnabled, +settings.backupsEnabled);
+			.get(
+				now,
+				+settings.enabled,
+				+(settings.archiveEnabled || settings.backupsEnabled),
+				+settings.backupsEnabled
+			);
 		if (!job) return false;
 		db.prepare(
 			"UPDATE storage_jobs SET status='running',started_at=?,finished_at=NULL,attempts=attempts+1,error=NULL,result=NULL WHERE id=?"
@@ -351,10 +372,10 @@ export async function processStorageJob(
 			const current = getStorageSettings(db);
 			if (
 				job.kind === 'archive' &&
-				result?.copied > 0 &&
 				current.enabled &&
-				current.archiveEnabled &&
-				archiveBacklog(db) > 0
+				(current.archiveEnabled || current.backupsEnabled) &&
+				((Number.isSafeInteger(result?.syncPending) && result.syncPending > 0) ||
+					(result?.syncPending === undefined && result?.copied > 0 && archiveBacklog(db) > 0))
 			)
 				queueStorageJob(db, 'archive', { now: finished });
 		})();
@@ -438,20 +459,20 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 					job.progress = `Copied: ${parsed.copied}; evicted: ${parsed.evicted}.`;
 					const progress = archiveProgress(parsed);
 					if (progress && job.status === 'running')
-						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Read back: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Checksum verification: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
 				}
 				if (['database', 'full'].includes(job.kind)) {
 					const progress = safeRecoveryProgress(parsed);
 					if (progress) {
-						job.progress = `Files collected: ${progress.files}/${progress.totalFiles}; bundles verified: ${progress.uploadedObjects + progress.reusedObjects}/${progress.bundles}; uploaded: ${progress.uploadedObjects}; reused: ${progress.reusedObjects}.`;
+						job.progress = `Files collected: ${progress.files}/${progress.totalFiles}; objects verified: ${progress.uploadedObjects + progress.reusedObjects}/${progress.bundles}; uploaded: ${progress.uploadedObjects}; reused: ${progress.reusedObjects}.`;
 						if (job.status === 'running')
-							job.progress += ` Phase: ${progress.phase}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Uploaded: ${(progress.uploadedBytes / (1024 * 1024)).toFixed(2)} MiB; downloaded audio: ${(progress.downloadedBytes / (1024 * 1024)).toFixed(2)} MiB; read back: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+							job.progress += ` Phase: ${progress.phase}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Uploaded: ${(progress.uploadedBytes / (1024 * 1024)).toFixed(2)} MiB; verified on storage: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} checksum MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
 					} else if (
 						['files', 'bytes', 'uploadedObjects', 'reusedObjects'].every(
 							(field) => Number.isSafeInteger(parsed?.[field]) && parsed[field] >= 0
 						)
 					) {
-						job.progress = `Files: ${parsed.files}; bundles uploaded and verified: ${parsed.uploadedObjects}; reused: ${parsed.reusedObjects}; source data: ${(parsed.bytes / (1024 * 1024)).toFixed(2)} MiB.`;
+						job.progress = `Files: ${parsed.files}; objects uploaded and verified: ${parsed.uploadedObjects}; reused: ${parsed.reusedObjects}; source data: ${(parsed.bytes / (1024 * 1024)).toFixed(2)} MiB.`;
 					}
 				}
 				if (typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id)) backupId = parsed.id;
@@ -502,18 +523,13 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			'SELECT COUNT(*) AS count, COALESCE(SUM(bytes),0) AS bytes, COALESCE(SUM(evicted_at IS NOT NULL),0) AS evicted FROM storage_audio'
 		)
 		.get();
-	const interval = settings.databaseIntervalHours * 3600;
-	const nextDatabase = (Math.floor(now / interval) + 1) * interval;
-	const nextFull =
-		(Math.floor((now - settings.fileBackupHour * 3600) / 86400) + 1) * 86400 +
-		settings.fileBackupHour * 3600;
+	const { next: nextFull } = fullBackupSlots(settings.fullBackupHours, now);
 	return {
 		last,
 		jobs,
 		preparedRestores,
 		archived,
 		backlog,
-		nextDatabase,
 		nextFull,
 		resetActive: storageResetActive(db)
 	};

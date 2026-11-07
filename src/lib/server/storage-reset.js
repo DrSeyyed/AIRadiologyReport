@@ -64,6 +64,14 @@ async function remotePlan(client, connection) {
 		await collect(['backups', 'objects'], objectName);
 		folders.push(backups);
 	}
+	const synced = storagePath(connection, 'files');
+	if (await directory(client, synced)) {
+		for (const entry of await client.list(synced))
+			if (entry.name !== 'objects' || entry.type !== 'd')
+				throw new Error('Unexpected directory in synchronized storage.');
+		await collect(['files', 'objects'], objectName);
+		folders.push(synced);
+	}
 	await collect(['audio'], audioName);
 	return { files, folders };
 }
@@ -235,6 +243,9 @@ export async function resetStorageData(
 		}
 		await assertOwned();
 		db.transaction(() => {
+			for (const table of ['storage_file_queue', 'storage_file_catalog', 'storage_file_objects'])
+				if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))
+					db.prepare(`DELETE FROM ${table}`).run();
 			db.prepare('DELETE FROM storage_jobs WHERE id<>?').run(jobId);
 			db.prepare("UPDATE storage_reset_requests SET phase='complete' WHERE job_id=?").run(jobId);
 		})();

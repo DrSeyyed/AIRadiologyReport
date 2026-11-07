@@ -101,7 +101,7 @@ async function fixture(t) {
 			);
 		}
 	};
-	const options = { cwd: app, env: {}, now: 1800000000 };
+	const options = { cwd: app, env: {}, now: 1800000000, format: 'concat-gzip-v1' };
 	async function write(relative, value) {
 		const target = path.join(app, ...relative.split('/'));
 		await fs.mkdir(path.dirname(target), { recursive: true });

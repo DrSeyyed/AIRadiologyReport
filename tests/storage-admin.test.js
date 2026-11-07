@@ -106,7 +106,14 @@ test('storage admin load and all actions reject non-admins before DB, form or ne
 
 test('admin save preserves passwords, rejects duplicate/out-of-range form fields and never echoes credentials', async (t) => {
 	const { page, submit, form, settings, db } = await fixture(t);
-	const input = form({ ...settings, enabled: true, archiveEnabled: true, backupsEnabled: true, uploadTimeoutSeconds: 120, verificationTimeoutSeconds: 90 });
+	const input = form({
+		...settings,
+		enabled: true,
+		archiveEnabled: true,
+		backupsEnabled: true,
+		uploadTimeoutSeconds: 120,
+		verificationTimeoutSeconds: 90
+	});
 	input.set('password', 'synthetic-new-secret');
 	const result = await submit('save', input);
 	assert.ok(result.message);
@@ -147,6 +154,55 @@ test('admin save preserves passwords, rejects duplicate/out-of-range form fields
 	assert.equal((await submit('save', duplicate)).status, 400);
 });
 
+test('admin saves comma-separated UTC full hours and audit cadence without deprecated schedule controls', async (t) => {
+	const { submit, form, page, db } = await fixture(t);
+	const input = form();
+	input.delete('databaseIntervalHours');
+	input.delete('fileBackupHour');
+	input.set('fullBackupHours', ' 23, 0,12 ');
+	input.set('integrityAuditDays', '14');
+	assert.ok((await submit('save', input)).message);
+	assert.deepEqual(page.load({ locals: admin }).settings.fullBackupHours, [0, 12, 23]);
+	assert.equal(page.load({ locals: admin }).settings.integrityAuditDays, 14);
+	assert.deepEqual(
+		JSON.parse(
+			db.prepare("SELECT value FROM application_settings WHERE key='storage_settings'").get().value
+		).fullBackupHours,
+		[0, 12, 23]
+	);
+	for (const value of [
+		'',
+		' ',
+		'0,',
+		',12',
+		'0,,12',
+		'0 12',
+		'0,0',
+		'-1',
+		'24',
+		'1.5',
+		'[0,12]',
+		'null'
+	]) {
+		const invalid = form();
+		invalid.set('fullBackupHours', value);
+		assert.equal((await submit('save', invalid)).status, 400, value);
+	}
+	for (const name of ['fullBackupHours', 'integrityAuditDays']) {
+		const missing = form();
+		missing.delete(name);
+		assert.equal((await submit('save', missing)).status, 400);
+		const duplicate = form();
+		duplicate.append(name, duplicate.get(name));
+		assert.equal((await submit('save', duplicate)).status, 400);
+	}
+	for (const value of ['0', '366', '1.5', '']) {
+		const invalid = form();
+		invalid.set('integrityAuditDays', value);
+		assert.equal((await submit('save', invalid)).status, 400);
+	}
+});
+
 test('fingerprint discovery does not authenticate, save or implicitly trust an observed key', async (t) => {
 	const { page, state, submit, form, db, settings } = await fixture(t);
 	const input = form();
@@ -170,6 +226,15 @@ test('manual actions queue persistent jobs, enforce service toggles and do not e
 	assert.ok((await submit('job', job)).message);
 	assert.equal(db.prepare('SELECT kind,status FROM storage_jobs').get().kind, 'full');
 	assert.equal(db.prepare('SELECT kind,status FROM storage_jobs').get().status, 'pending');
+	job.set('kind', 'archive');
+	assert.ok((await submit('job', job)).message);
+	assert.equal(
+		db.prepare("SELECT status FROM storage_jobs WHERE kind='archive'").get().status,
+		'pending'
+	);
+	job.set('kind', 'database');
+	assert.equal((await submit('job', job)).status, 400);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='database'").get().n, 0);
 	job.set('kind', 'unknown');
 	assert.equal((await submit('job', job)).status, 400);
 });
@@ -298,7 +363,13 @@ test('clearing finished log requires one exact confirmation without a key or net
 	form.set('confirmation', 'clear');
 	const result = await submit('clearLog', form);
 	assert.match(result.message, /Cleared 3 finished jobs/);
-	assert.deepEqual(page.load({ locals: admin }).status.jobs.map((job) => job.id).sort(), [3, 4]);
+	assert.deepEqual(
+		page
+			.load({ locals: admin })
+			.status.jobs.map((job) => job.id)
+			.sort(),
+		[3, 4]
+	);
 	assert.deepEqual(db.prepare('SELECT * FROM storage_jobs ORDER BY id').all(), before);
 	assert.equal(state.probes, 0);
 	assert.equal(state.lists, 0);
@@ -314,9 +385,13 @@ function resetForm() {
 test('reset requires exact single confirmation and explicit single recovery approval', async (t) => {
 	const { submit, db, state } = await fixture(t);
 	for (const [field, value] of [
-		['confirmation', undefined], ['confirmation', 'reset storage'],
-		['confirmation', 'RESET STORAGE '], ['confirmation', 'RESET STORAGE\n'],
-		['recoverAudio', undefined], ['recoverAudio', 'yes'], ['recoverAudio', 'off']
+		['confirmation', undefined],
+		['confirmation', 'reset storage'],
+		['confirmation', 'RESET STORAGE '],
+		['confirmation', 'RESET STORAGE\n'],
+		['recoverAudio', undefined],
+		['recoverAudio', 'yes'],
+		['recoverAudio', 'off']
 	]) {
 		const form = resetForm();
 		if (value === undefined) form.delete(field);
@@ -390,52 +465,126 @@ test('reset refuses running jobs without pausing or scheduling reset', async (t)
 test('pending reset UI disables settings, manual jobs and restore but retains cancellation', async (t) => {
 	const { page, submit } = await fixture(t);
 	assert.ok((await submit('reset', resetForm())).message);
-	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
-	const compiled = compile(source, { filename: '+page.svelte', generate: 'server' }).js.code.replace(
-		/from (['"])([^'"]+)\1/g,
-		(_statement, _quote, specifier) => `from ${JSON.stringify(specifier === '$app/forms'
-			? 'data:text/javascript,export function enhance(){}'
-			: specifier === '$app/navigation'
-				? 'data:text/javascript,export async function invalidateAll(){}'
-				: import.meta.resolve(specifier))}`
+	const source = readFileSync(
+		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
+		'utf8'
 	);
-	const component = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+	const compiled = compile(source, {
+		filename: '+page.svelte',
+		generate: 'server'
+	}).js.code.replace(
+		/from (['"])([^'"]+)\1/g,
+		(_statement, _quote, specifier) =>
+			`from ${JSON.stringify(
+				specifier === '$app/forms'
+					? 'data:text/javascript,export function enhance(){}'
+					: specifier === '$app/navigation'
+						? 'data:text/javascript,export async function invalidateAll(){}'
+						: import.meta.resolve(specifier)
+			)}`
+	);
+	const component = await import(
+		`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
+	);
 	const data = page.load({ locals: admin });
 	data.status.jobs.find((job) => job.kind === 'reset').progress = 'Recovering audio 1 of 2';
-	const { body } = render(component.default, { props: {
-		data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] }
-	} });
+	const { body } = render(component.default, {
+		props: {
+			data,
+			form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] }
+		}
+	});
 	assert.match(body, /<fieldset disabled/);
-	for (const label of ['Test saved connection', 'Archive audio now', 'Recovery snapshot now', 'Full recovery backup now', 'Load recovery points from storage', 'Prepare restore', 'Reset storage', 'Save settings'])
+	for (const label of [
+		'Test saved connection',
+		'Sync files now',
+		'Full recovery backup now',
+		'Load recovery points from storage',
+		'Prepare restore',
+		'Reset storage',
+		'Save settings'
+	])
 		assert.match(body, new RegExp(`<button[^>]*disabled[^>]*>${label}</button>`));
 	assert.match(body, /Recovering audio 1 of 2/);
 	assert.match(body, /Storage reset is active/);
 	assert.match(body, /action="\?\/cancel"/);
 	assert.match(body, /Clear finished log/);
 	data.status.resetActive = false;
-	data.status.jobs = [{ id: 999, kind: 'archive', status: 'running', attempts: 1, created_at: 1, canCancel: true,
-		progress: 'Copied: 97; preparing: 0; uploading: 2; verifying: 1' }];
+	data.status.jobs = [
+		{
+			id: 999,
+			kind: 'archive',
+			status: 'running',
+			attempts: 1,
+			created_at: 1,
+			canCancel: true,
+			progress: 'Copied: 97; preparing: 0; uploading: 2; verifying: 1'
+		}
+	];
 	const { body: archiveBody } = render(component.default, { props: { data } });
 	assert.match(archiveBody, /Copied: 97; preparing: 0; uploading: 2; verifying: 1/);
 	assert.match(archiveBody, /Status refreshes every 5 seconds/);
 	for (const name of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds'])
-		assert.match(archiveBody, new RegExp(`<input[^>]*name="${name}"[^>]*min="1"[^>]*max="600"[^>]*step="1"`));
+		assert.match(
+			archiveBody,
+			new RegExp(`<input[^>]*name="${name}"[^>]*min="1"[^>]*max="600"[^>]*step="1"`)
+		);
 	assert.match(archiveBody, /<td class="whitespace-nowrap">[\s\S]*?action="\?\/cancel"/);
-	assert.match(archiveBody, /<button class="[^"]*min-w-max whitespace-nowrap" name="jobId" value="999">Cancel<\/button>/);
+	assert.match(
+		archiveBody,
+		/<button class="[^"]*min-w-max whitespace-nowrap" name="jobId" value="999">Cancel<\/button>/
+	);
 });
 
 test('storage status refresh skips hidden pages and overlapping requests, preserves edits and cleans up', async () => {
-	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
+	const source = readFileSync(
+		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
+		'utf8'
+	);
 	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
-	const data = { settings: { host: 'saved.invalid' } };
+	const data = { settings: { host: 'saved.invalid', fullBackupHours: [0, 12] } };
 	const document = { visibilityState: 'hidden' };
-	let tick, cleanup, finish, calls = 0, cleared = false, reject = false;
-	const settings = new Function('onMount', 'untrack', '$props', '$state', 'invalidateAll',
-		'setInterval', 'clearInterval', 'document', `${script}\nreturn settings;`)(
-		(mount) => { cleanup = mount(); }, (read) => read(), () => ({ data }), (value) => value,
-		() => { calls++; return reject ? Promise.reject(new Error('Unavailable')) : new Promise((resolve) => { finish = resolve; }); },
-		(callback, interval) => { tick = callback; assert.equal(interval, 5_000); return 123; },
-		(timer) => { assert.equal(timer, 123); cleared = true; }, document
+	let tick,
+		cleanup,
+		finish,
+		calls = 0,
+		cleared = false,
+		reject = false;
+	const settings = new Function(
+		'onMount',
+		'untrack',
+		'$props',
+		'$state',
+		'invalidateAll',
+		'setInterval',
+		'clearInterval',
+		'document',
+		`${script}\nreturn settings;`
+	)(
+		(mount) => {
+			cleanup = mount();
+		},
+		(read) => read(),
+		() => ({ data }),
+		(value) => value,
+		() => {
+			calls++;
+			return reject
+				? Promise.reject(new Error('Unavailable'))
+				: new Promise((resolve) => {
+						finish = resolve;
+					});
+		},
+		(callback, interval) => {
+			tick = callback;
+			assert.equal(interval, 5_000);
+			return 123;
+		},
+		(timer) => {
+			assert.equal(timer, 123);
+			cleared = true;
+		},
+		document
 	);
 	settings.host = 'unsaved.invalid';
 	await tick();
@@ -466,6 +615,21 @@ test('storage settings page compiles and navigation is admin-only', () => {
 		assert.equal(result.warnings.filter((warning) => warning.code.startsWith('a11y')).length, 0);
 	}
 	assert.match(page, /type="password"/);
+	assert.match(page, /name="fullBackupHours" bind:value=\{fullBackupHours\}/);
+	assert.match(page, /fullBackupHours.join\(', '\)/);
+	assert.match(page, /integrityAuditDays/);
+	assert.match(page, /twice daily at 00:00 and 12:00 UTC/);
+	assert.match(page, /Only audio is eligible for local removal/);
+	assert.match(page, /individually encrypted objects without gzip compression/);
+	assert.match(page, /sha256sum/);
+	assert.match(page, /sudo ssh-keygen/);
+	assert.match(page, /not downloaded or read back/);
+	assert.match(page, /Storage-side hash\/link commands.*verification timeout as a hard deadline/);
+	assert.match(page, /hard deadline, not an inactivity limit/);
+	assert.doesNotMatch(
+		page,
+		/value="database"|databaseIntervalHours|fileBackupHour|nextDatabase|new\/reused bundles/
+	);
 	assert.match(page, /bind:value=\{settings\.fingerprint\}/);
 	assert.ok(!page.includes('bind:value={settings.password}'));
 	assert.match(page, /action="\?\/recoveryPoints"/);

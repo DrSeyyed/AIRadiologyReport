@@ -19,8 +19,10 @@ import {
 } from './recovery-bundles.js';
 
 /**
- * Self-contained, encrypted recovery snapshots (v2 gzip bundles; v1 restores remain supported).
- * No dependency on an earlier full backup. Bundles cap uncompressed bytes at 256 MiB.
+ * New full recovery points use immutable, individually encrypted v1 file objects assembled on storage.
+ * The explicit concat-gzip-v1 compatibility writer below retains the former v2 bundle safety checks.
+ * Both v1 and v2 restores remain supported, without depending on an earlier full backup.
+ * Legacy bundles cap uncompressed bytes at 256 MiB.
  * At most two encrypted bundle spools/transfers are active, on separate pinned sessions.
  * Every transfer settles and closes before manifest/index publication or work cleanup.
  * Database backups include every snapshot-referenced audio/report; full backups also walk uploads
@@ -201,6 +203,9 @@ function pauseRestoredStorage(db) {
 		).run('storage_settings', JSON.stringify(settings));
 	}
 	for (const table of [
+		'storage_file_queue',
+		'storage_file_catalog',
+		'storage_file_objects',
 		'storage_job_cancellations',
 		'storage_restore_requests',
 		'storage_reset_requests',
@@ -522,6 +527,29 @@ export async function listRecovery(connection, injected = {}) {
 }
 
 export async function backupRecovery(db, connection, options = {}, injected = {}) {
+	if (options.format !== 'concat-gzip-v1') {
+		const { backupFileRecovery } = await import('./recovery-file-backups.js');
+		const shell = await import('./storage-shell.js');
+		return backupFileRecovery(
+			db,
+			connection,
+			options,
+			{ ...shell, ...(await dependencies(injected)) },
+			{
+				workDirectory,
+				cleanupRecovery,
+				referencedFiles,
+				archiveRows,
+				archiveIdentity,
+				filteredEnvironment,
+				serializeEnvironment,
+				APP_ENV_KEYS,
+				validateManifest,
+				recoveryDestination,
+				within
+			}
+		);
+	}
 	let work;
 	let snapshot;
 	let collection;
