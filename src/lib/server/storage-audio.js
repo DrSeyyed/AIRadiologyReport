@@ -66,18 +66,56 @@ export async function archiveAudio(
 	connection,
 	{
 		now = Math.floor(Date.now() / 1000),
-		limit = 10,
+		limit = 100,
+		concurrency = 4,
 		roots = ['uploads', ...(process.env.VOICE_SAVE_DIR ? [process.env.VOICE_SAVE_DIR] : [])],
 		transport = withStorage,
 		owned = () => true
 	} = {}
 ) {
+	if (
+		!Number.isSafeInteger(limit) ||
+		limit < 1 ||
+		limit > 100 ||
+		!Number.isSafeInteger(concurrency) ||
+		concurrency < 1 ||
+		concurrency > 4
+	)
+		throw new Error('Invalid archive batch limits.');
 	const destination = storageDestination(connection);
 	let copied = 0;
 	let evicted = 0;
+	let failure;
+	const sessions = [];
+	const callbacks = [];
+	const clients = new WeakMap();
+	const assertActive = () => {
+		if (failure) throw failure;
+		if (!owned()) throw new Error('Storage worker lease expired.');
+	};
+	const failed = (error) => {
+		failure ||= error;
+		throw error;
+	};
+	const runSession = (action) => {
+		const session = Promise.resolve()
+			.then(() =>
+				transport(connection, (client) => {
+					const callback = Promise.resolve()
+						.then(() => action(client))
+						.catch(failed);
+					callbacks.push(callback);
+					return callback;
+				})
+			)
+			.catch(failed);
+		sessions.push(session);
+		return session;
+	};
 	const directory = await mkdtemp(join(tmpdir(), 'radiology-archive-'));
 	try {
-		await transport(connection, async (client) => {
+		await runSession(async (client) => {
+			assertActive();
 			const audioDirectory = storagePath(connection, 'audio');
 			await client.mkdir(audioDirectory, true);
 			const remoteDirectory = await client.lstat(audioDirectory);
@@ -90,92 +128,161 @@ export async function archiveAudio(
 				AND NOT EXISTS (SELECT 1 FROM recording_audio_parts p WHERE p.audio_report_path = a.path)`
 				)
 				.all()) {
-				if (!owned()) throw new Error('Storage worker lease expired.');
+				assertActive();
 				if (orphan.destination !== destination || referenced(db, orphan.path)) continue;
 				await client.delete(storagePath(connection, 'audio', orphan.object_key), true);
+				assertActive();
 				if (!referenced(db, orphan.path))
 					db.prepare('DELETE FROM storage_audio WHERE path = ?').run(orphan.path);
 			}
+			assertActive();
+			const refs = [];
+			let selected = 0;
 			for (const ref of audioReferences(db)) {
-				if (!owned()) throw new Error('Storage worker lease expired.');
-				let saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
+				const saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
 				if (saved && saved.destination !== destination)
 					throw new Error('Audio belongs to a different storage destination.');
 				if (!saved) {
-					if (copied >= limit) continue;
-					const local = await safeLocal(ref.path, roots);
-					const before = await stat(local);
-					const sha256 = await hashLocal(local);
-					const objectKey = `${randomUUID()}.enc`;
-					const encrypted = join(directory, objectKey);
-					await encryptFile(local, encrypted);
-					if ((await hashLocal(local)) !== sha256 || (await stat(local)).size !== before.size)
-						throw new Error('Audio changed during archiving; the local copy was preserved.');
-					const remote = storagePath(connection, 'audio', objectKey);
-					const remoteSha256 = await hashLocal(encrypted);
-					try {
-						await client.put(encrypted, remote);
-						if ((await hashRemote(client, remote)) !== remoteSha256)
-							throw new Error('Audio storage verification failed; the local copy was preserved.');
-						if (!owned()) throw new Error('Storage worker lease expired.');
-					} catch (error) {
-						try {
-							await client.delete(remote, true);
-						} catch {
-							/* A disconnected server may retain an unreferenced encrypted partial object. */
-						}
-						throw error;
-					}
-					await unlink(encrypted);
-					if (!referenced(db, ref.path)) {
-						await client.delete(remote, true);
-						continue;
-					}
-					db.prepare(
-						`INSERT INTO storage_audio(path,object_key,sha256,remote_sha256,bytes,archived_at,destination)
-						VALUES(?,?,?,?,?,?,?)`
-					).run(ref.path, objectKey, sha256, remoteSha256, before.size, now, destination);
-					saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
-					copied++;
+					if (selected++ < limit) refs.push(ref);
+					continue;
 				}
 				const created = Date.parse(`${ref.created_at.replace(' ', 'T')}Z`) / 1000;
 				if (
-					!Number.isFinite(created) ||
-					created > now - connection.localRetentionDays * 86400 ||
-					saved.evicted_at ||
-					processing(db, ref.path)
-				)
-					continue;
-				// Eviction requires a separately completed recovery backup taken after archiving.
-				if (
-					!db
+					Number.isFinite(created) &&
+					created <= now - connection.localRetentionDays * 86400 &&
+					!saved.evicted_at &&
+					!processing(db, ref.path) &&
+					db
 						.prepare(
-							"SELECT 1 FROM storage_jobs WHERE kind = 'full' AND status = 'succeeded' AND started_at > ? LIMIT 1"
+							"SELECT 1 FROM storage_jobs WHERE kind='full' AND status='succeeded' AND started_at>? LIMIT 1"
 						)
 						.get(saved.archived_at)
 				)
-					continue;
-				try {
-					await access(ref.path);
-				} catch {
-					continue;
-				}
-				const local = await safeLocal(ref.path, roots);
-				if ((await hashLocal(local)) !== saved.sha256)
-					throw new Error('Local audio changed after archiving; eviction was cancelled.');
-				if (
-					(await hashRemote(client, storagePath(connection, 'audio', saved.object_key))) !==
-					saved.remote_sha256
-				)
-					throw new Error('Archived audio verification failed; eviction was cancelled.');
-				if (!owned() || !referenced(db, ref.path) || processing(db, ref.path)) continue;
-				await unlink(local);
-				db.prepare('UPDATE storage_audio SET evicted_at = ? WHERE path = ?').run(now, ref.path);
-				evicted++;
+					refs.push(ref);
 			}
+			let next = 0;
+			const run = async (workerClient) => {
+				// Injected transports can share a client; never interleave its upload/verification pairs.
+				const previous = clients.get(workerClient) || Promise.resolve();
+				let release;
+				clients.set(
+					workerClient,
+					new Promise((resolve) => {
+						release = resolve;
+					})
+				);
+				await previous;
+				try {
+					assertActive();
+					const attributes = await workerClient.lstat(audioDirectory);
+					if (!attributes.isDirectory || attributes.isSymbolicLink)
+						throw new Error('Remote audio directory must not be a symbolic link.');
+					while (next < refs.length) {
+						assertActive();
+						const ref = refs[next++];
+						if (!referenced(db, ref.path)) continue;
+						let saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
+						if (saved && saved.destination !== destination)
+							throw new Error('Audio belongs to a different storage destination.');
+						if (!saved) {
+							const local = await safeLocal(ref.path, roots);
+							const before = await stat(local);
+							const sha256 = await hashLocal(local);
+							const objectKey = `${randomUUID()}.enc`;
+							const encrypted = join(directory, objectKey);
+							await encryptFile(local, encrypted);
+							if ((await hashLocal(local)) !== sha256 || (await stat(local)).size !== before.size)
+								throw new Error('Audio changed during archiving; the local copy was preserved.');
+							const remote = storagePath(connection, 'audio', objectKey);
+							const remoteSha256 = await hashLocal(encrypted);
+							try {
+								assertActive();
+								await workerClient.put(encrypted, remote);
+								assertActive();
+								if ((await hashRemote(workerClient, remote)) !== remoteSha256)
+									throw new Error(
+										'Audio storage verification failed; the local copy was preserved.'
+									);
+								assertActive();
+							} catch (error) {
+								try {
+									await workerClient.delete(remote, true);
+								} catch {
+									/* A disconnected server may retain an unreferenced encrypted partial object. */
+								}
+								throw error;
+							}
+							await unlink(encrypted);
+							assertActive();
+							if (!referenced(db, ref.path)) {
+								await workerClient.delete(remote, true);
+								continue;
+							}
+							db.prepare(
+								`INSERT INTO storage_audio(path,object_key,sha256,remote_sha256,bytes,archived_at,destination)
+						VALUES(?,?,?,?,?,?,?)`
+							).run(ref.path, objectKey, sha256, remoteSha256, before.size, now, destination);
+							saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
+							copied++;
+						}
+						const created = Date.parse(`${ref.created_at.replace(' ', 'T')}Z`) / 1000;
+						if (
+							!Number.isFinite(created) ||
+							created > now - connection.localRetentionDays * 86400 ||
+							saved.evicted_at ||
+							processing(db, ref.path)
+						)
+							continue;
+						// Eviction requires a separately completed recovery backup taken after archiving.
+						if (
+							!db
+								.prepare(
+									"SELECT 1 FROM storage_jobs WHERE kind = 'full' AND status = 'succeeded' AND started_at > ? LIMIT 1"
+								)
+								.get(saved.archived_at)
+						)
+							continue;
+						try {
+							await access(ref.path);
+						} catch {
+							continue;
+						}
+						const local = await safeLocal(ref.path, roots);
+						if ((await hashLocal(local)) !== saved.sha256)
+							throw new Error('Local audio changed after archiving; eviction was cancelled.');
+						if (
+							(await hashRemote(
+								workerClient,
+								storagePath(connection, 'audio', saved.object_key)
+							)) !== saved.remote_sha256
+						)
+							throw new Error('Archived audio verification failed; eviction was cancelled.');
+						assertActive();
+						if (!referenced(db, ref.path) || processing(db, ref.path)) continue;
+						await unlink(local);
+						db.prepare('UPDATE storage_audio SET evicted_at = ? WHERE path = ?').run(now, ref.path);
+						evicted++;
+					}
+				} catch (error) {
+					failed(error);
+				} finally {
+					release();
+				}
+			};
+			const workers = [];
+			for (let index = 1; index < Math.min(concurrency, refs.length); index++)
+				workers.push(runSession(run));
+			workers.push(run(client));
+			await Promise.allSettled(workers);
+			assertActive();
 		});
 		return { copied, evicted };
+	} catch (error) {
+		failed(error);
 	} finally {
+		// A transport timeout can settle before its callback finishes using an encrypted spool.
+		await Promise.allSettled(sessions);
+		await Promise.allSettled(callbacks);
 		await rm(directory, { recursive: true, force: true });
 	}
 }

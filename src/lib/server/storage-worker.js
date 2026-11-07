@@ -146,6 +146,17 @@ export function pauseAndCancelStorageJobs(db, { now = Math.floor(Date.now() / 10
 	})();
 }
 
+function archiveBacklog(db) {
+	return db
+		.prepare(
+			`SELECT COUNT(*) AS count FROM (
+		SELECT audio_report_path AS path FROM study_recordings WHERE audio_report_path IS NOT NULL
+		UNION SELECT audio_report_path FROM recording_audio_parts
+	) refs LEFT JOIN storage_audio a ON a.path = refs.path WHERE a.path IS NULL`
+		)
+		.get().count;
+}
+
 export function scheduleStorageJobs(db, now = Math.floor(Date.now() / 1000)) {
 	const settings = getStorageSettings(db);
 	if (!settings.enabled) return;
@@ -280,12 +291,24 @@ export async function processStorageJob(
 			await prune(connection, settings, now);
 		}
 		if (!owned()) throw new Error('Storage worker lease expired.');
-		const completed = db
-			.prepare(
-				"UPDATE storage_jobs SET status='succeeded',finished_at=?,result=?,error=NULL WHERE id=? AND status='running' AND NOT EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)"
+		db.transaction(() => {
+			const finished = Math.max(now, Math.floor(Date.now() / 1000));
+			const completed = db
+				.prepare(
+					"UPDATE storage_jobs SET status='succeeded',finished_at=?,result=?,error=NULL WHERE id=? AND status='running' AND NOT EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)"
+				)
+				.run(finished, JSON.stringify(result ?? {}), job.id);
+			if (!completed.changes) throw new Error('Storage job no longer active.');
+			const current = getStorageSettings(db);
+			if (
+				job.kind === 'archive' &&
+				result?.copied > 0 &&
+				current.enabled &&
+				current.archiveEnabled &&
+				archiveBacklog(db) > 0
 			)
-			.run(Math.floor(Date.now() / 1000), JSON.stringify(result ?? {}), job.id);
-		if (!completed.changes) throw new Error('Storage job no longer active.');
+				queueStorageJob(db, 'archive', { now: finished });
+		})();
 		db.prepare(
 			"DELETE FROM storage_jobs WHERE kind IN ('archive','test') AND status='succeeded' AND finished_at < ?"
 		).run(now - 7 * 86400);
@@ -398,14 +421,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 				return [];
 			}
 		});
-	const backlog = db
-		.prepare(
-			`SELECT COUNT(*) AS count FROM (
-		SELECT audio_report_path AS path FROM study_recordings WHERE audio_report_path IS NOT NULL
-		UNION SELECT audio_report_path FROM recording_audio_parts
-	) refs LEFT JOIN storage_audio a ON a.path = refs.path WHERE a.path IS NULL`
-		)
-		.get().count;
+	const backlog = archiveBacklog(db);
 	const archived = db
 		.prepare(
 			'SELECT COUNT(*) AS count, COALESCE(SUM(bytes),0) AS bytes, COALESCE(SUM(evicted_at IS NOT NULL),0) AS evicted FROM storage_audio'

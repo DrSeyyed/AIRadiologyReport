@@ -124,10 +124,248 @@ function fixture(t) {
 	};
 }
 
+function extraArchiveAudio(context, count) {
+	for (let index = 0; index < count; index++) {
+		const path = join(context.directory, `extra-${index}.ogg`);
+		writeFileSync(path, `synthetic extra audio ${index}`);
+		appendRecording(context.db, context.studyId, path);
+	}
+}
+
+function archiveGate() {
+	let resolve;
+	const promise = new Promise((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
 function backupCompleted(db, startedAt = now + 1) {
 	db.prepare(
 		"INSERT INTO storage_jobs(kind,status,created_at,started_at,finished_at,attempts) VALUES('full','succeeded',?,?,?,1)"
 	).run(startedAt, startedAt, startedAt + 1);
+}
+
+test('audio archives reuse four independent sessions and bound concurrent upload plus verification pairs', async (t) => {
+	const context = fixture(t);
+	extraArchiveAudio(context, 11);
+	const gate = archiveGate();
+	let sessions = 0;
+	let closed = 0;
+	let started = 0;
+	let active = 0;
+	let peak = 0;
+	const transport = async (connection, action) => {
+		sessions++;
+		let busy = false;
+		const client = {
+			...context.client,
+			async put(local, remote) {
+				assert.equal(busy, false);
+				busy = true;
+				peak = Math.max(peak, ++active);
+				if (++started === 4) gate.resolve();
+				await gate.promise;
+				await context.client.put(local, remote);
+			},
+			createReadStream(remote) {
+				assert.equal(busy, true);
+				return Readable.from(
+					(async function* () {
+						try {
+							yield context.objects.get(remote);
+						} finally {
+							busy = false;
+							active--;
+						}
+					})()
+				);
+			}
+		};
+		try {
+			return await action(client);
+		} finally {
+			closed++;
+		}
+	};
+	assert.deepEqual(
+		await archiveAudio(context.db, context.connection, {
+			...context.options,
+			transport,
+			limit: 9
+		}),
+		{ copied: 9, evicted: 0 }
+	);
+	assert.equal(peak, 4);
+	assert.equal(active, 0);
+	assert.equal(sessions, 4);
+	assert.equal(closed, 4);
+	assert.equal(storageStatus(context.db).backlog, 3);
+	assert.equal(
+		String(
+			await readStoredAudio(context.db, context.audio, {
+				transport: context.transport
+			})
+		),
+		'synthetic audio'
+	);
+});
+
+test('archive concurrency and batch sizes reject unbounded or invalid controls before connecting', async (t) => {
+	const context = fixture(t);
+	for (const invalid of [
+		{ concurrency: 0 },
+		{ concurrency: 5 },
+		{ concurrency: 1.5 },
+		{ limit: 0 },
+		{ limit: 101 }
+	])
+		await assert.rejects(
+			archiveAudio(context.db, context.connection, {
+				...context.options,
+				...invalid,
+				transport: async () => assert.fail('invalid controls must not open a connection')
+			}),
+			/batch limits/
+		);
+});
+
+test('parallel eviction still requires verified remote copies and supports subsequent archived playback', async (t) => {
+	const context = fixture(t);
+	extraArchiveAudio(context, 3);
+	context.db.prepare("UPDATE study_recordings SET created_at='2000-01-01 00:00:00'").run();
+	const transport = async (connection, action) => action({ ...context.client });
+	const options = { ...context.options, transport };
+	assert.deepEqual(await archiveAudio(context.db, context.connection, options), {
+		copied: 4,
+		evicted: 0
+	});
+	backupCompleted(context.db);
+	assert.deepEqual(
+		await archiveAudio(context.db, context.connection, { ...options, now: now + 2 }),
+		{
+			copied: 0,
+			evicted: 4
+		}
+	);
+	for (const { path } of context.db.prepare('SELECT path FROM storage_audio').all()) {
+		assert.equal(existsSync(path), false);
+		assert.ok((await readStoredAudio(context.db, path, { transport })).length > 0);
+	}
+});
+
+test('default audio archive batches process up to 100 files, retaining compatibility with shared-client transports', async (t) => {
+	const context = fixture(t);
+	extraArchiveAudio(context, 100);
+	let active = 0;
+	let peak = 0;
+	const put = context.client.put;
+	context.client.put = async (...args) => {
+		peak = Math.max(peak, ++active);
+		await new Promise(setImmediate);
+		await put(...args);
+	};
+	context.client.createReadStream = (remote) =>
+		Readable.from(
+			(async function* () {
+				try {
+					yield context.objects.get(remote);
+				} finally {
+					active--;
+				}
+			})()
+		);
+	assert.deepEqual(await archiveAudio(context.db, context.connection, context.options), {
+		copied: 100,
+		evicted: 0
+	});
+	assert.equal(peak, 1);
+	assert.equal(active, 0);
+	assert.equal(storageStatus(context.db).backlog, 1);
+	assert.deepEqual(await archiveAudio(context.db, context.connection, context.options), {
+		copied: 1,
+		evicted: 0
+	});
+	assert.equal(storageStatus(context.db).backlog, 0);
+});
+
+for (const mode of ['upload failure', 'transport timeout', 'cancellation']) {
+	test(`parallel audio ${mode} drains sessions and callbacks before removing encrypted spools`, async (t) => {
+		const context = fixture(t);
+		extraArchiveAudio(context, 7);
+		const started = archiveGate();
+		const release = archiveGate();
+		const fault = archiveGate();
+		let uploads = 0;
+		let sessions = 0;
+		let closed = 0;
+		let callbacks = 0;
+		let owned = true;
+		const spools = [];
+		const transport = async (connection, action) => {
+			const id = ++sessions;
+			const client = {
+				...context.client,
+				async put(local, remote) {
+					spools.push(local);
+					if (++uploads === 4) started.resolve();
+					await started.promise;
+					if (mode === 'upload failure' && id === 2)
+						throw new Error('Synthetic parallel upload failure');
+					await release.promise;
+					assert.ok(existsSync(local), 'spool must survive until the transfer settles');
+					await context.client.put(local, remote);
+				}
+			};
+			callbacks++;
+			const running = Promise.resolve()
+				.then(() => action(client))
+				.finally(() => {
+					callbacks--;
+				});
+			running.catch(() => {});
+			try {
+				if (mode === 'transport timeout' && id === 2) {
+					await started.promise;
+					throw new Error('Synthetic transport timeout');
+				}
+				return await running;
+			} finally {
+				closed++;
+				if (id === 2) fault.resolve();
+			}
+		};
+		const running = archiveAudio(context.db, context.connection, {
+			...context.options,
+			transport,
+			owned: () => owned
+		});
+		let settled = false;
+		running.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			}
+		);
+		const rejected = assert.rejects(running, /failure|timeout|lease/);
+		await started.promise;
+		if (mode === 'cancellation') owned = false;
+		else await fault.promise;
+		await new Promise(setImmediate);
+		assert.equal(settled, false);
+		assert.ok(spools.every((path) => existsSync(path)));
+		release.resolve();
+		await rejected;
+		assert.equal(closed, 4);
+		assert.equal(callbacks, 0);
+		assert.equal(uploads, 4);
+		assert.equal(context.objects.size, 0);
+		assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+		assert.ok(spools.every((path) => !existsSync(path)));
+		assert.ok(existsSync(context.audio));
+	});
 }
 
 test('storage settings are disabled by default, validated and credentials encrypted without password echoes', (t) => {
@@ -301,6 +539,48 @@ test('archive sources outside configured roots and lost ownership are rejected w
 	);
 	await assert.rejects(archiveAudio(db, connection, { ...options, owned: () => false }), /lease/);
 	assert.ok(existsSync(audio));
+});
+
+test('archive backlog continues within the same minute without starving newly due recovery backups', async (t) => {
+	const context = fixture(t);
+	extraArchiveAudio(context, 2);
+	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false });
+	const calls = [];
+	const options = {
+		now,
+		runArchive: async (db, connection, options) => {
+			calls.push('archive');
+			return archiveAudio(db, connection, { ...context.options, ...options, limit: 1 });
+		},
+		runBackup: async (db, connection, { kind }) => {
+			calls.push(kind);
+			return {};
+		},
+		prune: async () => {}
+	};
+	assert.equal(await processStorageJob(context.db, options), true);
+	assert.equal(
+		context.db
+			.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='archive' AND status='pending'")
+			.get().n,
+		1
+	);
+	saveStorageSettings(context.db, context.settings);
+	for (let index = 0; index < 4; index++)
+		assert.equal(await processStorageJob(context.db, options), true);
+	assert.deepEqual(calls, ['archive', 'full', 'database', 'archive', 'archive']);
+	assert.equal(storageStatus(context.db).backlog, 0);
+	assert.equal(await processStorageJob(context.db, options), false);
+});
+
+test('an archive pass making no progress does not create a continuous retry loop', async (t) => {
+	const context = fixture(t);
+	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false });
+	const options = { now, runArchive: async () => ({ copied: 0, evicted: 0 }) };
+	assert.equal(await processStorageJob(context.db, options), true);
+	assert.equal(storageStatus(context.db).backlog, 1);
+	assert.equal(await processStorageJob(context.db, options), false);
+	assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
 });
 
 test('persistent scheduling deduplicates work, honours pause and derives UTC periods', (t) => {
