@@ -146,6 +146,17 @@ export function pauseAndCancelStorageJobs(db, { now = Math.floor(Date.now() / 10
 	})();
 }
 
+function archiveProgress(progress) {
+	const fields = ['copied', 'evicted', 'preparing', 'uploading', 'verifying', 'lastActivityAt'];
+	if (
+		!progress ||
+		!fields.every((field) => Number.isSafeInteger(progress[field]) && progress[field] >= 0)
+	)
+		return null;
+	if (progress.preparing + progress.uploading + progress.verifying > 4) return null;
+	return Object.fromEntries(fields.map((field) => [field, progress[field]]));
+}
+
 function archiveBacklog(db) {
 	return db
 		.prepare(
@@ -284,7 +295,20 @@ export async function processStorageJob(
 				throw new Error('Invalid restore request.');
 			result = await prepareRestore(connection, { backupId: request.backup_id, owned });
 			if (!restoreIdPattern.test(result?.restoreId)) throw new Error('Invalid restore result.');
-		} else if (job.kind === 'archive') result = await runArchive(db, connection, { now, owned });
+		} else if (job.kind === 'archive')
+			result = await runArchive(db, connection, {
+				now,
+				owned,
+				onProgress(progress) {
+					if (!owned()) return;
+					const safe = archiveProgress(progress);
+					if (safe)
+						db.prepare("UPDATE storage_jobs SET result=? WHERE id=? AND status='running'").run(
+							JSON.stringify(safe),
+							job.id
+						);
+				}
+			});
 		else {
 			result = await runBackup(db, connection, { kind: job.kind, now, owned });
 			if (!owned()) throw new Error('Storage worker lease expired.');
@@ -379,6 +403,18 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			let restoreDirectory = null;
 			try {
 				const parsed = JSON.parse(result);
+				if (
+					job.kind === 'archive' &&
+					Number.isSafeInteger(parsed?.copied) &&
+					parsed.copied >= 0 &&
+					Number.isSafeInteger(parsed.evicted) &&
+					parsed.evicted >= 0
+				) {
+					job.progress = `Copied: ${parsed.copied}; evicted: ${parsed.evicted}.`;
+					const progress = archiveProgress(parsed);
+					if (progress && job.status === 'running')
+						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Last upload/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+				}
 				if (typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id)) backupId = parsed.id;
 				if (
 					job.kind === 'restore' &&
@@ -392,7 +428,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			}
 			return {
 				...job,
-				kind: job.progress ? 'reset' : job.kind,
+				kind: job.kind === 'restore' && job.progress ? 'reset' : job.kind,
 				status: cancelRequested
 					? job.status === 'running'
 						? 'cancelling'

@@ -1,8 +1,20 @@
 <script>
 	import { enhance } from '$app/forms';
-	import { untrack } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { onMount, untrack } from 'svelte';
 	let { data, form } = $props();
 	let settings = $state(untrack(() => ({ ...data.settings })));
+	onMount(() => {
+		let refreshing = false;
+		const timer = setInterval(async () => {
+			if (document.visibilityState !== 'visible' || refreshing) return;
+			refreshing = true;
+			try { await invalidateAll(); }
+			catch { /* Keep the last status visible if the server is temporarily unavailable. */ }
+			finally { refreshing = false; }
+		}, 5_000);
+		return () => clearInterval(timer);
+	});
 	const numberFields = [
 		['localRetentionDays', 'Keep local audio (days)', 1, 3650],
 		['databaseIntervalHours', 'Recovery snapshot interval (hours)', 1, 168],
@@ -129,10 +141,11 @@
 				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Reset storage</button>
 			</fieldset>
 		</form>
+		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Audio uploads stop after 30 seconds without data progress and retry with backoff; large files can continue while data is moving.</p>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'reset' && job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td>{#if job.canCancel}<form method="POST" action="?/cancel" use:enhance><button class="btn btn-sm btn-outline" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td>{#if job.canCancel}<form method="POST" action="?/cancel" use:enhance><button class="btn btn-sm btn-outline" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{/each}
 			</tbody></table>
 		</div>

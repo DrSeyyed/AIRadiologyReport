@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { PassThrough } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { access, lstat, mkdtemp, readFile, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, relative, isAbsolute, join, extname } from 'node:path';
@@ -61,6 +63,72 @@ function processing(db, path) {
 	);
 }
 
+class ArchiveUpload extends PassThrough {
+	constructor(activity, path) {
+		super({ autoDestroy: false, highWaterMark: 64 * 1024 });
+		this.activity = activity;
+		this.path = path;
+	}
+
+	read(size) {
+		const chunk = super.read(size);
+		// Observe consumption, not prebuffering, without putting an unread stream into flowing mode.
+		if (chunk !== null) this.activity();
+		return chunk;
+	}
+}
+
+async function uploadAudio(client, local, remote, assertActive, activity) {
+	let timer;
+	const source = createReadStream(local);
+	const upload = new ArchiveUpload(() => {
+		try {
+			assertActive();
+			activity();
+			arm();
+		} catch (error) {
+			upload.destroy(error);
+		}
+	}, local);
+	const arm = () => {
+		clearTimeout(timer);
+		timer = setTimeout(
+			() => upload.destroy(new Error('Audio upload stalled for 30 seconds.')),
+			30_000
+		);
+		timer.unref();
+	};
+	source.on('error', (error) => upload.destroy(error));
+	const sourceClosed = finished(source, { cleanup: true }).catch(() => {});
+	const uploadClosed = finished(upload, { cleanup: true }).catch(() => {});
+	try {
+		assertActive();
+		arm();
+		const pending = client.put(upload, remote);
+		source.pipe(upload);
+		await pending;
+	} finally {
+		clearTimeout(timer);
+		source.destroy();
+		upload.destroy();
+		await Promise.all([sourceClosed, uploadClosed]);
+	}
+}
+
+async function discardUpload(client, remote) {
+	let timer;
+	try {
+		await Promise.race([
+			Promise.resolve().then(() => client.delete(remote, true)),
+			new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new Error('Audio cleanup timed out.')), 5_000);
+			})
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export async function archiveAudio(
 	db,
 	connection,
@@ -70,7 +138,8 @@ export async function archiveAudio(
 		concurrency = 4,
 		roots = ['uploads', ...(process.env.VOICE_SAVE_DIR ? [process.env.VOICE_SAVE_DIR] : [])],
 		transport = withStorage,
-		owned = () => true
+		owned = () => true,
+		onProgress = () => {}
 	} = {}
 ) {
 	if (
@@ -89,6 +158,25 @@ export async function archiveAudio(
 	const sessions = [];
 	const callbacks = [];
 	const clients = new WeakMap();
+	const phases = new Map();
+	let lastActivityAt = Math.floor(Date.now() / 1000);
+	const activity = () => {
+		lastActivityAt = Math.floor(Date.now() / 1000);
+	};
+	const report = () => {
+		try {
+			onProgress({
+				copied,
+				evicted,
+				preparing: [...phases.values()].filter((phase) => phase === 'preparing').length,
+				uploading: [...phases.values()].filter((phase) => phase === 'uploading').length,
+				verifying: [...phases.values()].filter((phase) => phase === 'verifying').length,
+				lastActivityAt
+			});
+		} catch (error) {
+			failure ||= error;
+		}
+	};
 	const assertActive = () => {
 		if (failure) throw failure;
 		if (!owned()) throw new Error('Storage worker lease expired.');
@@ -113,6 +201,9 @@ export async function archiveAudio(
 		return session;
 	};
 	const directory = await mkdtemp(join(tmpdir(), 'radiology-archive-'));
+	const progressTimer = setInterval(report, 2_000);
+	progressTimer.unref();
+	report();
 	try {
 		await runSession(async (client) => {
 			assertActive();
@@ -185,6 +276,8 @@ export async function archiveAudio(
 						if (saved && saved.destination !== destination)
 							throw new Error('Audio belongs to a different storage destination.');
 						if (!saved) {
+							phases.set(workerClient, 'preparing');
+							activity();
 							const local = await safeLocal(ref.path, roots);
 							const before = await stat(local);
 							const sha256 = await hashLocal(local);
@@ -197,8 +290,11 @@ export async function archiveAudio(
 							const remoteSha256 = await hashLocal(encrypted);
 							try {
 								assertActive();
-								await workerClient.put(encrypted, remote);
+								phases.set(workerClient, 'uploading');
+								await uploadAudio(workerClient, encrypted, remote, assertActive, activity);
 								assertActive();
+								phases.set(workerClient, 'verifying');
+								activity();
 								if ((await hashRemote(workerClient, remote)) !== remoteSha256)
 									throw new Error(
 										'Audio storage verification failed; the local copy was preserved.'
@@ -206,7 +302,7 @@ export async function archiveAudio(
 								assertActive();
 							} catch (error) {
 								try {
-									await workerClient.delete(remote, true);
+									await discardUpload(workerClient, remote);
 								} catch {
 									/* A disconnected server may retain an unreferenced encrypted partial object. */
 								}
@@ -224,7 +320,9 @@ export async function archiveAudio(
 							).run(ref.path, objectKey, sha256, remoteSha256, before.size, now, destination);
 							saved = db.prepare('SELECT * FROM storage_audio WHERE path = ?').get(ref.path);
 							copied++;
+							activity();
 						}
+						phases.delete(workerClient);
 						const created = Date.parse(`${ref.created_at.replace(' ', 'T')}Z`) / 1000;
 						if (
 							!Number.isFinite(created) ||
@@ -250,6 +348,8 @@ export async function archiveAudio(
 						const local = await safeLocal(ref.path, roots);
 						if ((await hashLocal(local)) !== saved.sha256)
 							throw new Error('Local audio changed after archiving; eviction was cancelled.');
+						phases.set(workerClient, 'verifying');
+						activity();
 						if (
 							(await hashRemote(
 								workerClient,
@@ -262,10 +362,13 @@ export async function archiveAudio(
 						await unlink(local);
 						db.prepare('UPDATE storage_audio SET evicted_at = ? WHERE path = ?').run(now, ref.path);
 						evicted++;
+						phases.delete(workerClient);
+						activity();
 					}
 				} catch (error) {
 					failed(error);
 				} finally {
+					phases.delete(workerClient);
 					release();
 				}
 			};
@@ -283,6 +386,8 @@ export async function archiveAudio(
 		// A transport timeout can settle before its callback finishes using an encrypted spool.
 		await Promise.allSettled(sessions);
 		await Promise.allSettled(callbacks);
+		clearInterval(progressTimer);
+		report();
 		await rm(directory, { recursive: true, force: true });
 	}
 }

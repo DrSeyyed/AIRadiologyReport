@@ -83,7 +83,12 @@ function fixture(t) {
 	const client = {
 		async mkdir() {},
 		async put(local, remote) {
-			objects.set(remote, readFileSync(local));
+			objects.set(
+				remote,
+				typeof local === 'string'
+					? readFileSync(local)
+					: Buffer.concat(await Array.fromAsync(local))
+			);
 		},
 		async get(remote, local) {
 			if (!objects.has(remote)) throw new Error('Synthetic unavailable object');
@@ -211,6 +216,143 @@ test('audio archives reuse four independent sessions and bound concurrent upload
 	);
 });
 
+for (const afterEof of [false, true]) {
+	test(`audio upload watchdog aborts after 30 seconds idle ${afterEof ? 'waiting for remote acknowledgement' : 'before stream consumption'}`, async (t) => {
+		const context = fixture(t);
+		t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+		const ready = archiveGate();
+		const snapshots = [];
+		let upload;
+		context.client.put = async (stream) => {
+			upload = stream;
+			if (afterEof) for await (const chunk of stream) assert.ok(chunk.length);
+			return new Promise((resolve, reject) => {
+				stream.once('error', reject);
+				ready.resolve();
+			});
+		};
+		const running = archiveAudio(context.db, context.connection, {
+			...context.options,
+			onProgress(progress) {
+				snapshots.push(progress);
+			}
+		});
+		let settled = false;
+		running.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			}
+		);
+		const rejected = assert.rejects(running, /stalled for 30 seconds/);
+		await ready.promise;
+		t.mock.timers.tick(29_999);
+		assert.equal(settled, false);
+		assert.ok(snapshots.some((progress) => progress.uploading === 1));
+		t.mock.timers.tick(1);
+		await rejected;
+		assert.equal(upload.destroyed, true);
+		assert.equal(snapshots.at(-1).uploading, 0);
+		const snapshotCount = snapshots.length;
+		t.mock.timers.tick(60_000);
+		assert.equal(snapshots.length, snapshotCount);
+		assert.equal(existsSync(upload.path), false);
+		assert.ok(existsSync(context.audio));
+		assert.equal(context.objects.size, 0);
+		assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+	});
+}
+
+test('upload watchdog tracks consumed data and allows total transfer time greater than 30 seconds', async (t) => {
+	const context = fixture(t);
+	writeFileSync(context.audio, Buffer.alloc(300_000, 3));
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	let elapsed = 0;
+	context.client.put = async (stream, remote) => {
+		const chunks = [];
+		for await (const chunk of stream) {
+			chunks.push(chunk);
+			t.mock.timers.tick(20_000);
+			elapsed += 20_000;
+			await new Promise(setImmediate);
+		}
+		context.objects.set(remote, Buffer.concat(chunks));
+	};
+	assert.deepEqual(await archiveAudio(context.db, context.connection, context.options), {
+		copied: 1,
+		evicted: 0
+	});
+	assert.ok(elapsed > 30_000);
+	assert.equal(context.db.prepare('SELECT bytes FROM storage_audio').get().bytes, 300_000);
+});
+
+test('a stalled upload cannot hang indefinitely while deleting its incomplete remote object', async (t) => {
+	const context = fixture(t);
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const ready = archiveGate();
+	const cleaning = archiveGate();
+	context.client.put = (stream) =>
+		new Promise((resolve, reject) => {
+			stream.once('error', reject);
+			ready.resolve();
+		});
+	context.client.delete = () => {
+		cleaning.resolve();
+		return new Promise(() => {});
+	};
+	const rejected = assert.rejects(
+		archiveAudio(context.db, context.connection, context.options),
+		/stalled/
+	);
+	await ready.promise;
+	t.mock.timers.tick(30_000);
+	await cleaning.promise;
+	t.mock.timers.tick(5_000);
+	await rejected;
+	assert.ok(existsSync(context.audio));
+});
+
+test('running archive progress is sanitized, displayed as archive and frozen after cancellation', async (t) => {
+	const context = fixture(t);
+	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false });
+	await processStorageJob(context.db, {
+		now,
+		runArchive: async (db, connection, { onProgress }) => {
+			const progress = {
+				copied: 97,
+				evicted: 0,
+				preparing: 0,
+				uploading: 2,
+				verifying: 1,
+				lastActivityAt: now - 5
+			};
+			onProgress({ ...progress, secret: 'synthetic-private-field' });
+			const before = db.prepare("SELECT id,result FROM storage_jobs WHERE status='running'").get();
+			assert.ok(!before.result.includes('synthetic-private-field'));
+			const job = storageStatus(db, now).jobs.find((job) => job.id === before.id);
+			assert.equal(job.kind, 'archive');
+			assert.match(job.progress, /Copied: 97/);
+			assert.match(job.progress, /uploading: 2; verifying: 1/);
+			assert.match(job.progress, /5s ago/);
+			onProgress({ ...progress, uploading: 5 });
+			assert.equal(
+				db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(before.id).result,
+				before.result
+			);
+			cancelStorageJob(db, before.id, { now });
+			onProgress({ ...progress, copied: 98 });
+			assert.equal(
+				db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(before.id).result,
+				before.result
+			);
+			return { copied: 98, evicted: 0 };
+		}
+	});
+	assert.equal(storageStatus(context.db).jobs[0].status, 'cancelled');
+});
+
 test('archive concurrency and batch sizes reject unbounded or invalid controls before connecting', async (t) => {
 	const context = fixture(t);
 	for (const invalid of [
@@ -307,13 +449,13 @@ for (const mode of ['upload failure', 'transport timeout', 'cancellation']) {
 			const client = {
 				...context.client,
 				async put(local, remote) {
-					spools.push(local);
+					spools.push(local.path);
 					if (++uploads === 4) started.resolve();
 					await started.promise;
 					if (mode === 'upload failure' && id === 2)
 						throw new Error('Synthetic parallel upload failure');
 					await release.promise;
-					assert.ok(existsSync(local), 'spool must survive until the transfer settles');
+					assert.ok(existsSync(local.path), 'spool must survive until the transfer settles');
 					await context.client.put(local, remote);
 				}
 			};

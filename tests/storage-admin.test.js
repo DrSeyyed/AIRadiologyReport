@@ -381,7 +381,9 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		/from (['"])([^'"]+)\1/g,
 		(_statement, _quote, specifier) => `from ${JSON.stringify(specifier === '$app/forms'
 			? 'data:text/javascript,export function enhance(){}'
-			: import.meta.resolve(specifier))}`
+			: specifier === '$app/navigation'
+				? 'data:text/javascript,export async function invalidateAll(){}'
+				: import.meta.resolve(specifier))}`
 	);
 	const component = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 	const data = page.load({ locals: admin });
@@ -396,6 +398,44 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(body, /Storage reset is active/);
 	assert.match(body, /action="\?\/cancel"/);
 	assert.match(body, /Clear finished log/);
+	data.status.resetActive = false;
+	data.status.jobs = [{ id: 999, kind: 'archive', status: 'running', attempts: 1, created_at: 1,
+		progress: 'Copied: 97; preparing: 0; uploading: 2; verifying: 1' }];
+	const { body: archiveBody } = render(component.default, { props: { data } });
+	assert.match(archiveBody, /Copied: 97; preparing: 0; uploading: 2; verifying: 1/);
+	assert.match(archiveBody, /Status refreshes every 5 seconds/);
+});
+
+test('storage status refresh skips hidden pages and overlapping requests, preserves edits and cleans up', async () => {
+	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
+	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
+	const data = { settings: { host: 'saved.invalid' } };
+	const document = { visibilityState: 'hidden' };
+	let tick, cleanup, finish, calls = 0, cleared = false, reject = false;
+	const settings = new Function('onMount', 'untrack', '$props', '$state', 'invalidateAll',
+		'setInterval', 'clearInterval', 'document', `${script}\nreturn settings;`)(
+		(mount) => { cleanup = mount(); }, (read) => read(), () => ({ data }), (value) => value,
+		() => { calls++; return reject ? Promise.reject(new Error('Unavailable')) : new Promise((resolve) => { finish = resolve; }); },
+		(callback, interval) => { tick = callback; assert.equal(interval, 5_000); return 123; },
+		(timer) => { assert.equal(timer, 123); cleared = true; }, document
+	);
+	settings.host = 'unsaved.invalid';
+	await tick();
+	assert.equal(calls, 0);
+	document.visibilityState = 'visible';
+	const pending = tick();
+	await tick();
+	assert.equal(calls, 1);
+	data.settings.host = 'refreshed.invalid';
+	finish();
+	await pending;
+	assert.equal(settings.host, 'unsaved.invalid');
+	reject = true;
+	await tick();
+	await tick();
+	assert.equal(calls, 3);
+	cleanup();
+	assert.equal(cleared, true);
 });
 
 test('storage settings page compiles and navigation is admin-only', () => {
@@ -403,8 +443,10 @@ test('storage settings page compiles and navigation is admin-only', () => {
 		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
 		'utf8'
 	);
-	const result = compile(page, { filename: '+page.svelte', generate: 'server' });
-	assert.equal(result.warnings.filter((warning) => warning.code.startsWith('a11y')).length, 0);
+	for (const generate of ['server', 'client']) {
+		const result = compile(page, { filename: '+page.svelte', generate });
+		assert.equal(result.warnings.filter((warning) => warning.code.startsWith('a11y')).length, 0);
+	}
 	assert.match(page, /type="password"/);
 	assert.match(page, /bind:value=\{settings\.fingerprint\}/);
 	assert.ok(!page.includes('bind:value={settings.password}'));
@@ -417,7 +459,8 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /name="recoverAudio" required/);
 	assert.match(page, /adequate free SSD space/);
 	assert.match(page, /hash-verifies all archived audio locally/);
-	assert.match(page, /job.kind === 'reset' && job.progress/);
+	assert.match(page, /\{#if job.progress\}/);
+	assert.match(page, /\$state\(untrack\(/);
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
 	assert.match(page, /name="confirmation" value="prepare" required/);
 	assert.match(page, /Manual activation required/);
