@@ -406,7 +406,15 @@ test('hashRemote rejects symlink files, ancestor links and traversal before read
 test('handshake and callback timeouts are bounded and end the connection', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	for (const phase of ['connect', 'callback']) {
-		const mock = mockClient(phase === 'connect' ? { connect: () => new Promise(() => {}) } : {});
+		let disconnected = 0;
+		const mock = mockClient({
+			...(phase === 'connect' ? { connect: () => new Promise(() => {}) } : {}),
+			client: {
+				destroy() {
+					disconnected++;
+				}
+			}
+		});
 		const pending = rejectsSafely(
 			withStorage(
 				{ ...config, operationTimeoutMs: 30_000 },
@@ -417,6 +425,7 @@ test('handshake and callback timeouts are bounded and end the connection', async
 		await nextTurn();
 		t.mock.timers.tick(phase === 'connect' ? 20_000 : 30_000);
 		await pending;
+		assert.equal(disconnected, 1);
 		assert.equal(mock.calls.end, 1);
 	}
 });
@@ -542,6 +551,56 @@ test('configured read timeout permits chunks more than the old 20 seconds apart'
 	t.mock.timers.tick(25_000);
 	stream.push(null);
 	assert.equal(await pending, createHash('sha256').update('chunk').digest('hex'));
+});
+
+test('verification timeout force-closes SSH even when a stream destroy waits for remote CLOSE', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	let closeStream;
+	let disconnected = 0;
+	const stream = new Readable({
+		read() {
+			this.push(Buffer.from('data'));
+			this.push(null);
+		},
+		destroy(error, callback) {
+			closeStream = () => callback(error);
+		}
+	});
+	const mock = mockClient({
+		createReadStream: () => stream,
+		client: {
+			destroy() {
+				disconnected++;
+				closeStream?.();
+			}
+		}
+	});
+	const rejected = rejectsSafely(
+		hashRemote(mock.client, remoteFile(mock), { verificationTimeoutSeconds: 30 })
+	);
+	await nextTurn();
+	t.mock.timers.tick(30_000);
+	await rejected;
+	assert.equal(disconnected, 1);
+	assert.equal(stream.closed, true);
+});
+
+test('a stuck graceful SSH shutdown is followed by socket destruction', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	let disconnected = 0;
+	const mock = mockClient({
+		client: {
+			destroy() {
+				disconnected++;
+			}
+		},
+		end: () => new Promise(() => {})
+	});
+	const pending = withStorage(config, () => 42, mock.factory);
+	await nextTurn();
+	t.mock.timers.tick(20_000);
+	assert.equal(await pending, 42);
+	assert.equal(disconnected, 1);
 });
 
 test('probe and cleanup are time bounded even when their promises stall', async (t) => {

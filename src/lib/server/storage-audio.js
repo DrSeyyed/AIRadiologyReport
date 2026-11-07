@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { uploadStorageFile } from './storage-upload.js';
+import { assertStorageSession, storageRequest } from './storage-session.js';
 import { access, lstat, mkdtemp, readFile, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, relative, isAbsolute, join, extname } from 'node:path';
@@ -162,8 +163,8 @@ export async function archiveAudio(
 		await runSession(async (client) => {
 			assertActive();
 			const audioDirectory = storagePath(connection, 'audio');
-			await client.mkdir(audioDirectory, true);
-			const remoteDirectory = await client.lstat(audioDirectory);
+			await storageRequest(client, () => client.mkdir(audioDirectory, true));
+			const remoteDirectory = await storageRequest(client, () => client.lstat(audioDirectory));
 			if (!remoteDirectory.isDirectory || remoteDirectory.isSymbolicLink)
 				throw new Error('Remote audio directory must not be a symbolic link.');
 			for (const orphan of db
@@ -175,7 +176,9 @@ export async function archiveAudio(
 				.all()) {
 				assertActive();
 				if (orphan.destination !== destination || referenced(db, orphan.path)) continue;
-				await client.delete(storagePath(connection, 'audio', orphan.object_key), true);
+				await storageRequest(client, () =>
+					client.delete(storagePath(connection, 'audio', orphan.object_key), true)
+				);
 				assertActive();
 				if (!referenced(db, orphan.path))
 					db.prepare('DELETE FROM storage_audio WHERE path = ?').run(orphan.path);
@@ -219,7 +222,9 @@ export async function archiveAudio(
 				await previous;
 				try {
 					assertActive();
-					const attributes = await workerClient.lstat(audioDirectory);
+					const attributes = await storageRequest(workerClient, () =>
+						workerClient.lstat(audioDirectory)
+					);
 					if (!attributes.isDirectory || attributes.isSymbolicLink)
 						throw new Error('Remote audio directory must not be a symbolic link.');
 					while (next < refs.length) {
@@ -272,8 +277,9 @@ export async function archiveAudio(
 							}
 							await unlink(encrypted);
 							assertActive();
+							assertStorageSession(workerClient);
 							if (!referenced(db, ref.path)) {
-								await workerClient.delete(remote, true);
+								await storageRequest(workerClient, () => workerClient.delete(remote, true));
 								continue;
 							}
 							db.prepare(
@@ -320,6 +326,7 @@ export async function archiveAudio(
 						)
 							throw new Error('Archived audio verification failed; eviction was cancelled.');
 						assertActive();
+						assertStorageSession(workerClient);
 						if (!referenced(db, ref.path) || processing(db, ref.path)) continue;
 						await unlink(local);
 						db.prepare('UPDATE storage_audio SET evicted_at = ? WHERE path = ?').run(now, ref.path);

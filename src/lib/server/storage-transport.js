@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { once } from 'node:events';
 import { storageTimeoutMs } from './storage-settings.js';
+import { abortStorageSession, assertStorageSession } from './storage-session.js';
 
 const TIMEOUT_MS = 20_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 60 * 60 * 1000;
@@ -156,6 +158,7 @@ async function close(client) {
 	try {
 		await bounded(() => client.end());
 	} catch {
+		abortStorageSession(client);
 		// Cleanup errors must not expose connection details or mask the operation's result.
 	}
 }
@@ -210,6 +213,7 @@ export async function withStorage(config, callback, factory = defaultFactory) {
 			return callback(client);
 		}, timeoutMs);
 	} catch {
+		abortStorageSession(client);
 		throw storageError();
 	} finally {
 		await close(client);
@@ -266,12 +270,16 @@ export async function hashRemote(
 ) {
 	let stream;
 	try {
+		assertStorageSession(client);
 		const readTimeoutMs = storageTimeoutMs(
 			{ verificationTimeoutSeconds },
 			'verificationTimeoutSeconds'
 		);
 		await bounded((signal) => verifyRemotePath(client, remotePath, false, signal));
 		stream = client.createReadStream(remotePath);
+		// ssh2 disables emitClose but emits CLOSE acknowledgements manually, so finished() is insufficient.
+		const closed = once(stream, 'close');
+		closed.catch(() => {});
 		const iterator = stream[Symbol.asyncIterator]();
 		const hash = createHash('sha256');
 		while (true) {
@@ -280,8 +288,10 @@ export async function hashRemote(
 			hash.update(value);
 			if (value.length) onProgress(value.length);
 		}
+		await bounded(() => closed, readTimeoutMs);
 		return hash.digest('hex');
 	} catch {
+		abortStorageSession(client);
 		throw storageError();
 	} finally {
 		stream?.destroy();

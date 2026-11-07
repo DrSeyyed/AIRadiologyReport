@@ -37,6 +37,7 @@ import {
 } from '../src/lib/server/storage-worker.js';
 
 import { resetStorageData } from '../src/lib/server/storage-reset.js';
+import { abortStorageSession } from '../src/lib/server/storage-session.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 const now = 1800000000;
@@ -296,6 +297,86 @@ test('upload watchdog tracks consumed data and allows total transfer time greate
 	assert.ok(elapsed > 30_000);
 	assert.equal(context.db.prepare('SELECT bytes FROM storage_audio').get().bytes, 300_000);
 });
+
+test('an ignored SFTP promise after 95 archived files cannot keep the pass running', async (t) => {
+	const context = fixture(t);
+	extraArchiveAudio(context, 95);
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const ready = archiveGate();
+	const put = context.client.put;
+	let uploads = 0;
+	let disconnected = 0;
+	let stalled;
+	context.client.client = {
+		destroy() {
+			disconnected++;
+		}
+	};
+	context.client.put = async (...args) => {
+		if (++uploads !== 96) return put(...args);
+		stalled = args[0];
+		stalled.on('error', () => {});
+		ready.resolve();
+		return new Promise(() => {});
+	};
+	const rejected = assert.rejects(
+		archiveAudio(context.db, context.connection, {
+			...context.options,
+			concurrency: 1
+		}),
+		/stalled for 30 seconds/
+	);
+	await ready.promise;
+	assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 95);
+	t.mock.timers.tick(30_000);
+	await rejected;
+	assert.equal(disconnected, 1);
+	assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 95);
+	assert.ok(existsSync(context.audio));
+	for (let index = 0; index < 95; index++)
+		assert.ok(existsSync(join(context.directory, `extra-${index}.ogg`)));
+	assert.equal(existsSync(stalled.path), false);
+});
+
+test('late verification completion on an aborted session cannot register an archive', async (t) => {
+	const context = fixture(t);
+	const read = context.client.createReadStream;
+	context.client.createReadStream = (...args) => {
+		abortStorageSession(context.client);
+		return read(...args);
+	};
+	await assert.rejects(archiveAudio(context.db, context.connection, context.options), /stopped/);
+	assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+	assert.ok(existsSync(context.audio));
+});
+
+for (const method of ['mkdir', 'lstat']) {
+	test(`an unresponsive archive ${method} request cannot hold the pass indefinitely`, async (t) => {
+		const context = fixture(t);
+		t.mock.timers.enable({ apis: ['setTimeout'] });
+		const ready = archiveGate();
+		let disconnected = 0;
+		context.client.client = {
+			destroy() {
+				disconnected++;
+			}
+		};
+		context.client[method] = () => {
+			ready.resolve();
+			return new Promise(() => {});
+		};
+		const rejected = assert.rejects(
+			archiveAudio(context.db, context.connection, context.options),
+			/timed out/
+		);
+		await ready.promise;
+		t.mock.timers.tick(20_000);
+		await rejected;
+		assert.equal(disconnected, 1);
+		assert.ok(existsSync(context.audio));
+		assert.equal(context.db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+	});
+}
 
 test('a stalled upload cannot hang indefinitely while deleting its incomplete remote object', async (t) => {
 	const context = fixture(t);

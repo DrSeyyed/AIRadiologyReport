@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { storageTimeoutMs } from './storage-settings.js';
+import { abortStorageSession, assertStorageSession } from './storage-session.js';
 
 class StorageUpload extends PassThrough {
 	constructor(activity, path) {
@@ -25,7 +26,12 @@ export async function uploadStorageFile(
 	settings = {},
 	{ assertActive = () => {}, onProgress = () => {} } = {}
 ) {
+	assertStorageSession(client);
 	const timeoutMs = storageTimeoutMs(settings, 'uploadTimeoutSeconds');
+	let rejectStalled;
+	const stalled = new Promise((_, reject) => {
+		rejectStalled = reject;
+	});
 	let timer;
 	const source = createReadStream(local);
 	const upload = new StorageUpload(() => {
@@ -39,10 +45,12 @@ export async function uploadStorageFile(
 	}, local);
 	const arm = () => {
 		clearTimeout(timer);
-		timer = setTimeout(
-			() => upload.destroy(new Error(`Storage upload stalled for ${timeoutMs / 1000} seconds.`)),
-			timeoutMs
-		);
+		timer = setTimeout(() => {
+			const error = new Error(`Storage upload stalled for ${timeoutMs / 1000} seconds.`);
+			rejectStalled(error);
+			upload.destroy(error);
+			abortStorageSession(client);
+		}, timeoutMs);
 		timer.unref();
 	};
 	source.on('error', (error) => upload.destroy(error));
@@ -53,7 +61,7 @@ export async function uploadStorageFile(
 		arm();
 		const pending = client.put(upload, remote);
 		source.pipe(upload);
-		await pending;
+		await Promise.race([pending, stalled]);
 	} finally {
 		clearTimeout(timer);
 		source.destroy();
