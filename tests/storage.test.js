@@ -2057,41 +2057,103 @@ test('reset refuses unexpected remote files before deleting anything or forgetti
 	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
 });
 
-test('reset identifies unfinished indexes after audio recovery without deleting anything and retries safely', async (t) => {
+test('reset removes unfinished indexes only after verified audio recovery and retries safely', async (t) => {
 	const { db, connection, options, audio, objects, client, run } = resetFixture(t);
 	await archiveAudio(db, connection, options);
 	unlinkSync(audio);
 	await client.mkdir('/radiology/backups/indexes');
 	const pending = `/radiology/backups/indexes/${now}-${randomUUID()}.pending`;
 	objects.set(pending, Buffer.from('unfinished backup'));
+	writeFileSync(audio, 'changed local audio');
+	const remove = client.delete;
+	client.delete = async (...args) => {
+		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		assert.equal(db.prepare('SELECT phase FROM storage_reset_requests').get().phase, 'cleaning');
+		return remove(...args);
+	};
 	const before = new Map(objects);
 	const id = queueStorageReset(db, { now });
 	await run();
 	const job = storageStatus(db, now).jobs.find((row) => row.id === id);
 	assert.equal(job.status, 'failed');
-	assert.match(
-		job.error,
-		/Inspecting remote backups\/indexes: Unexpected entry in backups\/indexes: unfinished backup index \(\.pending\)/
-	);
-	assert.match(job.progress, /audio 1\/1, remote files removed 0/);
-	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.match(job.error, /Recovering local audio 1\/1: Local audio differs/);
+	assert.match(job.progress, /audio 0\/1, remote files removed 0/);
+	assert.equal(readFileSync(audio, 'utf8'), 'changed local audio');
 	assert.deepEqual(objects, before);
 	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
 	assert.equal(
 		db.prepare('SELECT phase FROM storage_reset_requests WHERE job_id=?').get(id).phase,
 		'recovering'
 	);
-	objects.delete(pending);
+	unlinkSync(audio);
 	const retry = db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at;
 	await run(retry);
 	const completed = storageStatus(db, retry).jobs.find((row) => row.id === id);
 	assert.equal(completed.status, 'succeeded');
 	assert.equal(completed.error, null);
 	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.equal(objects.size, 0);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
 });
 
-for (const pending of [true, false]) {
-	test(`reset preserves ${pending ? 'unfinished index' : 'SFTP permission'} diagnostics through the real sanitizing transport`, async (t) => {
+for (const invalid of [
+	'malformed name',
+	'wrong namespace',
+	'listed symlink',
+	'listed directory',
+	'changed symlink',
+	'changed directory'
+]) {
+	test(`reset refuses ${invalid} pending indexes without deleting remote data`, async (t) => {
+		const { db, connection, options, audio, objects, client, run } = resetFixture(t);
+		await archiveAudio(db, connection, options);
+		unlinkSync(audio);
+		const name = `${now}-${randomUUID()}${invalid === 'malformed name' ? '.full' : ''}.pending`;
+		const folder =
+			invalid === 'wrong namespace' ? '/radiology/files/objects' : '/radiology/backups/indexes';
+		await client.mkdir(folder);
+		const pending = `${folder}/${name}`;
+		objects.set(pending, Buffer.from('unfinished backup'));
+		if (invalid.startsWith('listed')) {
+			const list = client.list;
+			client.list = async (path) =>
+				(await list(path)).map((entry) =>
+					path === folder && entry.name === name
+						? { ...entry, type: invalid === 'listed symlink' ? 'l' : 'd' }
+						: entry
+				);
+		} else if (invalid.startsWith('changed')) {
+			const attributes = client.lstat;
+			client.lstat = async (path) =>
+				path === pending
+					? {
+							isFile: false,
+							isSymbolicLink: invalid === 'changed symlink',
+							isDirectory: invalid === 'changed directory'
+						}
+					: attributes(path);
+		}
+		const before = new Map(objects);
+		queueStorageReset(db, { now });
+		await run();
+		const job = storageStatus(db, now).jobs[0];
+		assert.equal(job.status, 'failed');
+		assert.match(
+			job.error,
+			invalid.startsWith('changed') ? /Remote storage changed/ : /Unexpected entry/
+		);
+		assert.match(job.progress, /audio 1\/1, remote files removed 0/);
+		assert.deepEqual(objects, before);
+		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		assert.equal(
+			db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n,
+			invalid.startsWith('changed') ? 0 : 1
+		);
+	});
+}
+
+for (const scenario of ['pending', 'unexpected', 'permission']) {
+	test(`reset handles ${scenario} indexes through the real sanitizing transport`, async (t) => {
 		const { db, settings, options, audio, objects, client, directory } = resetFixture(t);
 		const hostKey = Buffer.from('synthetic reset SSH host key');
 		const fingerprint = `SHA256:${createHash('sha256').update(hostKey).digest('base64').replace(/=$/, '')}`;
@@ -2100,9 +2162,9 @@ for (const pending of [true, false]) {
 		await archiveAudio(db, connection, options);
 		unlinkSync(audio);
 		await client.mkdir('/radiology/backups/indexes');
-		if (pending)
+		if (scenario !== 'permission')
 			objects.set(
-				`/radiology/backups/indexes/${now}-${randomUUID()}.pending`,
+				`/radiology/backups/indexes/${scenario === 'pending' ? `${now}-${randomUUID()}.pending` : 'unknown.pending'}`,
 				Buffer.from('unfinished')
 			);
 		else {
@@ -2138,21 +2200,28 @@ for (const pending of [true, false]) {
 				})
 		});
 		const job = storageStatus(db, now).jobs.find((row) => row.id === id);
-		assert.equal(job.status, 'failed');
-		assert.match(job.error, /Inspecting remote backups\/indexes:/);
-		assert.match(
-			job.error,
-			pending
-				? /unfinished backup index \(\.pending\)/
-				: /Remote permission denied \(SFTP status 3\)/
-		);
-		assert.doesNotMatch(job.error, /synthetic-password|private-patient-path|storage.invalid/);
-		assert.match(job.progress, /audio 1\/1, remote files removed 0/);
 		assert.equal(connected, 1);
 		assert.equal(closed, 1);
 		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
-		assert.deepEqual(objects, before);
-		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+		if (scenario === 'pending') {
+			assert.equal(job.status, 'succeeded');
+			assert.equal(job.error, null);
+			assert.equal(objects.size, 0);
+			assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 0);
+		} else {
+			assert.equal(job.status, 'failed');
+			assert.match(job.error, /Inspecting remote backups\/indexes:/);
+			assert.match(
+				job.error,
+				scenario === 'unexpected'
+					? /unrecognized file name or entry type/
+					: /Remote permission denied \(SFTP status 3\)/
+			);
+			assert.doesNotMatch(job.error, /synthetic-password|private-patient-path|storage.invalid/);
+			assert.match(job.progress, /audio 1\/1, remote files removed 0/);
+			assert.deepEqual(objects, before);
+			assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+		}
 	});
 }
 

@@ -10,10 +10,9 @@ import { storagePath, withStorage } from './storage-transport.js';
 const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const audioName = new RegExp(`^${uuid}\\.enc$`);
 const manifestName = new RegExp(`^\\d{1,16}-${uuid}\\.enc$`);
-const indexName = new RegExp(`^\\d{1,16}-${uuid}\\.(database|full)\\.json$`);
+const indexName = new RegExp(`^\\d{1,16}-${uuid}(?:\\.(database|full)\\.json|\\.pending)$`);
 const objectName = /^[a-f0-9]{64}\.enc$/;
 const digest = /^[a-f0-9]{64}$/;
-const pendingIndexName = new RegExp(`^\\d{1,16}-${uuid}\\.pending$`);
 
 class StorageResetFailure extends Error {}
 
@@ -88,9 +87,7 @@ async function remotePlan(client, connection, setStage) {
 				const reason =
 					entry.type === 'l'
 						? 'symbolic links are not allowed'
-						: segments.join('/') === 'backups/indexes' && pendingIndexName.test(entry.name)
-							? 'unfinished backup index (.pending); inspect it before retrying'
-							: 'unrecognized file name or entry type';
+						: 'unrecognized file name or entry type';
 				throw new StorageResetFailure(`Unexpected entry in ${segments.join('/')}: ${reason}.`);
 			}
 			files.push(storagePath(connection, ...segments, entry.name));
@@ -105,7 +102,7 @@ async function remotePlan(client, connection, setStage) {
 				throw new StorageResetFailure(
 					'Unexpected entry in backups; only real indexes, manifests and objects directories are allowed.'
 				);
-		// Remove completed-point indexes before the objects they reference.
+		// Remove completed and unfinished indexes before the objects they reference.
 		await collect(['backups', 'indexes'], indexName);
 		await collect(['backups', 'manifests'], manifestName);
 		await collect(['backups', 'objects'], objectName);
