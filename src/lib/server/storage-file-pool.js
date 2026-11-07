@@ -1,3 +1,5 @@
+import { storageParallelConnections } from './storage-settings.js';
+
 export async function storageFilePool(
 	deps,
 	connection,
@@ -6,6 +8,7 @@ export async function storageFilePool(
 	assertActive,
 	coordinator
 ) {
+	const concurrency = storageParallelConnections(connection);
 	if (!items.length) return;
 	await assertActive();
 	let cursor = 0;
@@ -54,7 +57,7 @@ export async function storageFilePool(
 		}
 	}
 	await Promise.all(
-		Array.from({ length: Math.min(4, items.length) }, (_, index) =>
+		Array.from({ length: Math.min(concurrency, items.length) }, (_, index) =>
 			session(index === 0 ? coordinator : null)
 		)
 	);

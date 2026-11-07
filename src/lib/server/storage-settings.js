@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { assertStorageKey, encryptSecret, decryptSecret } from './storage-crypto.js';
 
+export const MAX_STORAGE_PARALLEL_CONNECTIONS = 16;
+
 export const DEFAULT_STORAGE_SETTINGS = Object.freeze({
 	enabled: false,
 	archiveEnabled: false,
@@ -15,6 +17,7 @@ export const DEFAULT_STORAGE_SETTINGS = Object.freeze({
 	fileBackupHour: 2,
 	fullBackupHours: Object.freeze([0, 12]),
 	integrityAuditDays: 7,
+	parallelConnections: 4,
 	hourlyRetention: 48,
 	dailyRetention: 30,
 	monthlyRetention: 12,
@@ -28,12 +31,23 @@ const limits = {
 	databaseIntervalHours: [1, 168],
 	fileBackupHour: [0, 23],
 	integrityAuditDays: [1, 365],
+	parallelConnections: [1, MAX_STORAGE_PARALLEL_CONNECTIONS],
 	hourlyRetention: [1, 8760],
 	dailyRetention: [1, 3650],
 	monthlyRetention: [1, 120],
 	uploadTimeoutSeconds: [1, 600],
 	verificationTimeoutSeconds: [1, 600]
 };
+
+export function storageParallelConnections(settings) {
+	const value =
+		settings?.parallelConnections === undefined
+			? DEFAULT_STORAGE_SETTINGS.parallelConnections
+			: settings.parallelConnections;
+	if (!Number.isInteger(value) || value < 1 || value > MAX_STORAGE_PARALLEL_CONNECTIONS)
+		throw new Error('Choose 1–16 parallel storage connections.');
+	return value;
+}
 
 export function storageTimeoutMs(settings, field) {
 	if (!['uploadTimeoutSeconds', 'verificationTimeoutSeconds'].includes(field))
@@ -73,7 +87,7 @@ export function normalizeStorageSettings(value) {
 		if (typeof settings[field] !== 'boolean') throw new Error('Invalid storage switch.');
 	for (const [key, [min, max]] of Object.entries(limits))
 		if (!Number.isInteger(settings[key]) || settings[key] < min || settings[key] > max)
-			throw new Error('Invalid storage timeout, backup period or retention.');
+			throw new Error('Invalid storage connection limit, timeout, backup period or retention.');
 	for (const field of ['host', 'username', 'root', 'fingerprint'])
 		if (
 			typeof settings[field] !== 'string' ||

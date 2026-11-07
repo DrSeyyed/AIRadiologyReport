@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os';
 import { resolve, relative, isAbsolute, join, extname } from 'node:path';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { encryptFile, decryptFile } from './storage-crypto.js';
-import { getStorageConnection, storageDestination } from './storage-settings.js';
+import {
+	getStorageConnection,
+	storageDestination,
+	storageParallelConnections,
+	MAX_STORAGE_PARALLEL_CONNECTIONS
+} from './storage-settings.js';
 
 export async function hashLocal(path) {
 	const hash = createHash('sha256');
@@ -83,7 +88,7 @@ export async function archiveAudio(
 	{
 		now = Math.floor(Date.now() / 1000),
 		limit = 100,
-		concurrency = 4,
+		concurrency = storageParallelConnections(connection),
 		roots = ['uploads', ...(process.env.VOICE_SAVE_DIR ? [process.env.VOICE_SAVE_DIR] : [])],
 		transport = withStorage,
 		verify = hashRemote,
@@ -97,7 +102,7 @@ export async function archiveAudio(
 		limit > 100 ||
 		!Number.isSafeInteger(concurrency) ||
 		concurrency < 1 ||
-		concurrency > 4
+		concurrency > MAX_STORAGE_PARALLEL_CONNECTIONS
 	)
 		throw new Error('Invalid archive batch limits.');
 	const destination = storageDestination(connection);

@@ -26,7 +26,7 @@ const connection = {
 const digest = (data) => createHash('sha256').update(data).digest('hex');
 const failed = /Recovery backup failed\./;
 
-async function fixture(t) {
+async function fixture(t, settings = connection) {
 	const root = path.join(process.cwd(), 'tests', `.recovery-files-${randomUUID()}`);
 	const app = path.join(root, 'app');
 	const remote = path.join(root, 'remote');
@@ -129,7 +129,7 @@ async function fixture(t) {
 		}
 	};
 	const options = { cwd: app, env: {}, now: 1800000000, kind: 'full', owned: () => true };
-	const run = (extra = {}) => backupRecovery(db, connection, { ...options, ...extra }, deps);
+	const run = (extra = {}) => backupRecovery(db, settings, { ...options, ...extra }, deps);
 	const write = async (relative, data) => {
 		const target = path.join(app, ...relative.split('/'));
 		await fs.mkdir(path.dirname(target), { recursive: true });
@@ -618,54 +618,74 @@ test('a coordinator transport rejecting early drains its callback before cleanup
 	await f.unpublished();
 });
 
-test('every full recovery progress event survives sanitization with four concurrent sync uploads and verifications', async (t) => {
-	const f = await fixture(t);
-	for (let i = 0; i < 4; i++) await f.write(`uploads/progress-${i}.txt`, `progress payload ${i}`);
-	f.deps.withStorage = async (_settings, callback) => callback(Object.create(f.client));
-	t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: f.options.now * 1000 });
-	const snapshots = [];
-	let concurrentUploads = 0;
-	let uploadArrivals = 0;
-	let verificationArrivals = 0;
-	let releaseUploads;
-	let releaseVerifications;
-	const uploadsReady = new Promise((resolve) => {
-		releaseUploads = resolve;
+for (const concurrency of [1, 4, 8, 16]) {
+	test(`full recovery respects ${concurrency} connections and its progress survives sanitization`, async (t) => {
+		const f = await fixture(t, { ...connection, parallelConnections: concurrency });
+		for (let i = 0; i < concurrency; i++)
+			await f.write(`uploads/progress-${i}.txt`, `progress payload ${i}`);
+		let sessions = 0;
+		let peakSessions = 0;
+		f.deps.withStorage = async (settings, callback) => {
+			assert.equal(settings.parallelConnections, concurrency);
+			peakSessions = Math.max(peakSessions, ++sessions);
+			try {
+				return await callback(Object.create(f.client));
+			} finally {
+				sessions--;
+			}
+		};
+		t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: f.options.now * 1000 });
+		const snapshots = [];
+		let concurrentUploads = 0;
+		let uploadArrivals = 0;
+		let verificationArrivals = 0;
+		let releaseUploads;
+		let releaseVerifications;
+		const uploadsReady = new Promise((resolve) => {
+			releaseUploads = resolve;
+		});
+		const verificationsReady = new Promise((resolve) => {
+			releaseVerifications = resolve;
+		});
+		f.hooks.beforePut = async (target) => {
+			if (!target.includes('/files/objects/') || uploadArrivals >= concurrency) return;
+			uploadArrivals++;
+			concurrentUploads++;
+			if (uploadArrivals === concurrency) {
+				assert.equal(concurrentUploads, concurrency);
+				t.mock.timers.tick(2000);
+				releaseUploads();
+			}
+			await uploadsReady;
+			concurrentUploads--;
+		};
+		f.hooks.hash = async (target) => {
+			if (!target.includes('/files/objects/') || verificationArrivals >= concurrency) return;
+			verificationArrivals++;
+			if (verificationArrivals === concurrency) {
+				t.mock.timers.tick(2000);
+				releaseVerifications();
+			}
+			await verificationsReady;
+		};
+		const result = await f.run({ onProgress: (state) => snapshots.push(state) });
+		assert.equal(uploadArrivals, concurrency);
+		assert.equal(verificationArrivals, concurrency);
+		assert.equal(peakSessions, concurrency);
+		assert.equal(sessions, 0);
+		assert.ok(snapshots.filter((state) => state.phase === 'collecting').length >= 2);
+		for (const state of snapshots) assert.deepEqual(safeRecoveryProgress(state), state);
+		const complete = snapshots.at(-1);
+		assert.equal(complete.phase, 'cleanup');
+		assert.equal(complete.files, result.files);
+		assert.equal(complete.totalFiles, result.files);
+		assert.equal(complete.uploading + complete.verifying, 0);
+		assert.equal(complete.uploadedObjects + complete.reusedObjects, complete.bundles);
+		assert.equal(f.calls.gets + f.calls.reads + f.calls.remoteHashes, 0);
+		const restored = await f.restore(result);
+		assert.equal(
+			await fs.readFile(path.join(restored, 'uploads', 'progress-0.txt'), 'utf8'),
+			'progress payload 0'
+		);
 	});
-	const verificationsReady = new Promise((resolve) => {
-		releaseVerifications = resolve;
-	});
-	f.hooks.beforePut = async (target) => {
-		if (!target.includes('/files/objects/') || uploadArrivals >= 4) return;
-		uploadArrivals++;
-		concurrentUploads++;
-		if (uploadArrivals === 4) {
-			assert.equal(concurrentUploads, 4);
-			t.mock.timers.tick(2000);
-			releaseUploads();
-		}
-		await uploadsReady;
-		concurrentUploads--;
-	};
-	f.hooks.hash = async (target) => {
-		if (!target.includes('/files/objects/') || verificationArrivals >= 4) return;
-		verificationArrivals++;
-		if (verificationArrivals === 4) {
-			t.mock.timers.tick(2000);
-			releaseVerifications();
-		}
-		await verificationsReady;
-	};
-	const result = await f.run({ onProgress: (state) => snapshots.push(state) });
-	assert.equal(uploadArrivals, 4);
-	assert.equal(verificationArrivals, 4);
-	assert.ok(snapshots.filter((state) => state.phase === 'collecting').length >= 2);
-	for (const state of snapshots) assert.deepEqual(safeRecoveryProgress(state), state);
-	const complete = snapshots.at(-1);
-	assert.equal(complete.phase, 'cleanup');
-	assert.equal(complete.files, result.files);
-	assert.equal(complete.totalFiles, result.files);
-	assert.equal(complete.uploading + complete.verifying, 0);
-	assert.equal(complete.uploadedObjects + complete.reusedObjects, complete.bundles);
-	assert.equal(f.calls.gets + f.calls.reads + f.calls.remoteHashes, 0);
-});
+}

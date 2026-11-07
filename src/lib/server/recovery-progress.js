@@ -1,3 +1,5 @@
+import { MAX_STORAGE_PARALLEL_CONNECTIONS } from './storage-settings.js';
+
 const phases = [
 	'preparing',
 	'snapshotting',
@@ -34,8 +36,7 @@ export function safeRecoveryProgress(progress) {
 	if (
 		progress.files > progress.totalFiles ||
 		progress.uploadedObjects + progress.reusedObjects > progress.bundles ||
-		progress.uploading > 2 ||
-		progress.uploading + progress.verifying > 4
+		progress.uploading + progress.verifying > MAX_STORAGE_PARALLEL_CONNECTIONS
 	)
 		return null;
 	return {

@@ -21,6 +21,7 @@
 		['verificationTimeoutSeconds', 'Verification/read and command timeout (seconds)']
 	];
 	const numberFields = [
+		['parallelConnections', 'Parallel storage connections (default 4)', 1, 16],
 		['localRetentionDays', 'Keep local audio (days)', 1, 3650],
 		['integrityAuditDays', 'Remote integrity audit cadence (days)', 1, 365],
 		['hourlyRetention', 'Recent recovery points to keep', 1, 8760],
@@ -90,6 +91,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 				<label class="form-control">{label}<input class="input input-bordered" type="number" {name} {min} {max} bind:value={settings[name]} required /></label>
 			{/each}
 		</div>
+		<p class="text-sm">Parallel storage connections: 1–16, default 4. Applies to file synchronization, audio archiving, integrity audits and full-backup linking. More connections use more memory, temporary disk space and remote SSH slots; respect your storage server's limits. Finish or cancel running work before saving; changes apply to subsequent jobs.</p>
 		<p class="text-sm">Background file synchronization runs whenever either service is enabled. Files are immutable, individually encrypted objects without gzip compression; unchanged objects are reused. Audio is removed from SSD only when eviction is enabled, after verified synchronization and a successful subsequent full recovery backup. Keep backups enabled for eviction. Reports and other managed files stay local. Pausing jobs does not disable archived-audio playback. Remote SHA256 integrity audits run in bounded batches at the configured cadence (default 7 days). Full backups capture the database, managed files and server configuration.</p>
 		<p class="text-sm">Retention prunes recovery manifests, not shared encrypted file objects. Storage space is not fully reclaimed automatically. One storage server is not an independent disaster-proof copy; keep another offsite backup.</p>
 		<div><button class="btn btn-primary" type="submit" disabled={!data.keyConfigured || data.status.resetActive}>Save settings</button></div>

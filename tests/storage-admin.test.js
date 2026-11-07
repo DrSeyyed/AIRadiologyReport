@@ -154,6 +154,29 @@ test('admin save preserves passwords, rejects duplicate/out-of-range form fields
 	assert.equal((await submit('save', duplicate)).status, 400);
 });
 
+test('admin persists parallel connection limits and rejects malformed, missing and duplicate controls', async (t) => {
+	const { submit, form, page, db } = await fixture(t);
+	for (const parallelConnections of [1, 16]) {
+		const input = form();
+		input.set('parallelConnections', String(parallelConnections));
+		assert.ok((await submit('save', input)).message);
+		assert.equal(page.load({ locals: admin }).settings.parallelConnections, parallelConnections);
+		assert.equal(getStorageConnection(db).parallelConnections, parallelConnections);
+	}
+	for (const value of ['0', '17', '-1', '1.5', '4x', '', 'NaN', 'Infinity']) {
+		const input = form();
+		input.set('parallelConnections', value);
+		assert.equal((await submit('save', input)).status, 400);
+	}
+	const missing = form();
+	missing.delete('parallelConnections');
+	assert.equal((await submit('save', missing)).status, 400);
+	const repeated = form();
+	repeated.append('parallelConnections', '4');
+	assert.equal((await submit('save', repeated)).status, 400);
+	assert.equal(getStorageConnection(db).parallelConnections, 16);
+});
+
 test('admin saves comma-separated UTC full hours and audit cadence without deprecated schedule controls', async (t) => {
 	const { submit, form, page, db } = await fixture(t);
 	const input = form();
@@ -524,6 +547,8 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	const { body: archiveBody } = render(component.default, { props: { data } });
 	assert.match(archiveBody, /Copied: 97; preparing: 0; uploading: 2; verifying: 1/);
 	assert.match(archiveBody, /Status refreshes every 5 seconds/);
+	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
+	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);
 	for (const name of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds'])
 		assert.match(
 			archiveBody,

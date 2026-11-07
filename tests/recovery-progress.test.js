@@ -77,16 +77,17 @@ test('only valid numeric counters and known phases are exposed by the progress s
 	progress.finish();
 	const safe = safeRecoveryProgress(snapshot);
 	assert.deepEqual(safeRecoveryProgress({ ...safe, secret: 'not for the browser' }), safe);
-	assert.equal(safeRecoveryProgress({ ...safe, phase: 'verifying', verifying: 4 }).verifying, 4);
+	assert.equal(safeRecoveryProgress({ ...safe, phase: 'verifying', verifying: 16 }).verifying, 16);
+	assert.equal(safeRecoveryProgress({ ...safe, uploading: 8, verifying: 8 }).uploading, 8);
 	for (const invalid of [
 		null,
 		{},
 		{ ...safe, phase: 'private path/password' },
 		{ ...safe, files: -1 },
 		{ ...safe, files: 1 },
-		{ ...safe, uploading: 4 },
-		{ ...safe, uploading: 2, verifying: 3 },
-		{ ...safe, verifying: 5 },
+		{ ...safe, uploading: 17 },
+		{ ...safe, uploading: 8, verifying: 9 },
+		{ ...safe, verifying: 17 },
 		{ ...safe, uploadedObjects: 1 },
 		{ ...safe, reusedObjects: 1 },
 		{ ...safe, uploadedBytes: Infinity },

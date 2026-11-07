@@ -16,6 +16,7 @@ import {
 	getStorageConnection,
 	saveStorageSettings,
 	storageDestination,
+	storageParallelConnections,
 	storageTimeoutMs
 } from '../src/lib/server/storage-settings.js';
 import {
@@ -152,70 +153,74 @@ function backupCompleted(db, startedAt = now + 1) {
 	).run(startedAt, startedAt, startedAt + 1);
 }
 
-test('audio archives reuse four independent sessions and bound concurrent upload plus verification pairs', async (t) => {
-	const context = fixture(t);
-	extraArchiveAudio(context, 11);
-	const gate = archiveGate();
-	let sessions = 0;
-	let closed = 0;
-	let started = 0;
-	let active = 0;
-	let peak = 0;
-	const transport = async (connection, action) => {
-		sessions++;
-		let busy = false;
-		const client = {
-			...context.client,
-			async put(local, remote) {
-				assert.equal(busy, false);
-				busy = true;
-				peak = Math.max(peak, ++active);
-				if (++started === 4) gate.resolve();
-				await gate.promise;
-				await context.client.put(local, remote);
-			},
-			createReadStream(remote) {
-				assert.equal(busy, true);
-				return Readable.from(
-					(async function* () {
-						try {
-							yield context.objects.get(remote);
-						} finally {
-							busy = false;
-							active--;
-						}
-					})()
-				);
+for (const selected of [undefined, 1, 8, 16]) {
+	test(`audio archives respect ${selected ?? 'default 4'} configured connections for upload and verification`, async (t) => {
+		const concurrency = selected ?? 4;
+		const context = fixture(t);
+		if (selected !== undefined) context.connection.parallelConnections = selected;
+		extraArchiveAudio(context, 19);
+		const gate = archiveGate();
+		let sessions = 0;
+		let closed = 0;
+		let started = 0;
+		let active = 0;
+		let peak = 0;
+		const transport = async (connection, action) => {
+			sessions++;
+			let busy = false;
+			const client = {
+				...context.client,
+				async put(local, remote) {
+					assert.equal(busy, false);
+					busy = true;
+					peak = Math.max(peak, ++active);
+					if (++started === concurrency) gate.resolve();
+					await gate.promise;
+					await context.client.put(local, remote);
+				},
+				createReadStream(remote) {
+					assert.equal(busy, true);
+					return Readable.from(
+						(async function* () {
+							try {
+								yield context.objects.get(remote);
+							} finally {
+								busy = false;
+								active--;
+							}
+						})()
+					);
+				}
+			};
+			try {
+				return await action(client);
+			} finally {
+				closed++;
 			}
 		};
-		try {
-			return await action(client);
-		} finally {
-			closed++;
-		}
-	};
-	assert.deepEqual(
-		await archiveAudio(context.db, context.connection, {
-			...context.options,
-			transport,
-			limit: 9
-		}),
-		{ copied: 9, evicted: 0 }
-	);
-	assert.equal(peak, 4);
-	assert.equal(active, 0);
-	assert.equal(sessions, 4);
-	assert.equal(closed, 4);
-	assert.equal(storageStatus(context.db).backlog, 3);
-	assert.equal(
-		String(
-			await readStoredAudio(context.db, context.audio, {
-				transport: context.transport
-			})
-		),
-		'synthetic audio'
-	);
-});
+		assert.deepEqual(
+			await archiveAudio(context.db, context.connection, {
+				...context.options,
+				transport,
+				limit: 17
+			}),
+			{ copied: 17, evicted: 0 }
+		);
+		assert.equal(peak, concurrency);
+		assert.equal(active, 0);
+		assert.equal(sessions, concurrency);
+		assert.equal(closed, concurrency);
+		assert.equal(storageStatus(context.db).backlog, 3);
+		assert.equal(
+			String(
+				await readStoredAudio(context.db, context.audio, {
+					transport: context.transport
+				})
+			),
+			'synthetic audio'
+		);
+	});
+}
 
 for (const [afterEof, configuredSeconds] of [
 	[false, undefined],
@@ -452,7 +457,7 @@ test('slow verification updates read-back bytes and activity instead of appearin
 
 test('running archive progress is sanitized, displayed as archive and frozen after cancellation', async (t) => {
 	const context = fixture(t);
-	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false });
+	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false, parallelConnections: 16 });
 	await processStorageJob(context.db, {
 		now,
 		runArchive: async (db, connection, { onProgress }) => {
@@ -461,7 +466,7 @@ test('running archive progress is sanitized, displayed as archive and frozen aft
 				evicted: 0,
 				preparing: 0,
 				uploading: 2,
-				verifying: 1,
+				verifying: 14,
 				verificationBytes: 2 * 1024 * 1024,
 				lastActivityAt: now - 5
 			};
@@ -471,7 +476,7 @@ test('running archive progress is sanitized, displayed as archive and frozen aft
 			const job = storageStatus(db, now).jobs.find((job) => job.id === before.id);
 			assert.equal(job.kind, 'archive');
 			assert.match(job.progress, /Copied: 97/);
-			assert.match(job.progress, /uploading: 2; verifying: 1/);
+			assert.match(job.progress, /uploading: 2; verifying: 14/);
 			assert.match(job.progress, /Checksum verification: 2.00 MiB/);
 			assert.match(job.progress, /Last transfer\/file activity: 5s ago/);
 			onProgress({ ...progress, verificationBytes: 'synthetic-private-path' });
@@ -500,7 +505,7 @@ test('archive concurrency and batch sizes reject unbounded or invalid controls b
 	const context = fixture(t);
 	for (const invalid of [
 		{ concurrency: 0 },
-		{ concurrency: 5 },
+		{ concurrency: 17 },
 		{ concurrency: 1.5 },
 		{ limit: 0 },
 		{ limit: 101 }
@@ -772,6 +777,29 @@ test('inactivity timeout settings default for legacy rows, validate and persist 
 		now
 	);
 	assert.throws(() => saveStorageSettings(db, { ...settings, uploadTimeoutSeconds: 1 }), /running/);
+});
+
+test('parallel connections default for legacy settings, validate and persist without changing destination', (t) => {
+	const { db, settings } = fixture(t);
+	const legacy = { ...settings };
+	delete legacy.parallelConnections;
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(JSON.stringify(legacy));
+	assert.equal(getStorageSettings(db).parallelConnections, 4);
+	assert.equal(storageParallelConnections({}), 4);
+	for (const invalid of [0, -1, 17, 1.5, '4', null, NaN, Infinity]) {
+		assert.throws(() => normalizeStorageSettings({ ...settings, parallelConnections: invalid }));
+		assert.throws(() => storageParallelConnections({ parallelConnections: invalid }));
+	}
+	const destination = storageDestination(getStorageConnection(db));
+	for (const parallelConnections of [1, 16]) {
+		saveStorageSettings(db, { ...settings, parallelConnections });
+		const saved = getStorageConnection(db);
+		assert.equal(saved.parallelConnections, parallelConnections);
+		assert.equal(storageDestination(saved), destination);
+		assert.equal(saved.password, 'synthetic-password');
+	}
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('archive','running',?)").run(now);
+	assert.throws(() => saveStorageSettings(db, { ...settings, parallelConnections: 1 }), /running/);
 });
 
 test('schema is repeatable and schedules/password can change but an in-use destination cannot', (t) => {
@@ -1245,7 +1273,7 @@ for (const kind of ['full']) {
 				for (const bad of [
 					{ ...progress, phase: 'private-progress-data' },
 					{ ...progress, files: -1 },
-					{ ...progress, uploading: 5 }
+					{ ...progress, uploading: 17 }
 				])
 					report(bad);
 				assert.equal(
@@ -1258,7 +1286,7 @@ for (const kind of ['full']) {
 				assert.match(display, /Uploaded: 1.00 MiB; verified on storage: 3.00 checksum MiB/);
 				assert.match(display, /activity: 7s ago/);
 				assert.doesNotMatch(display, /private-progress-data/);
-				const parallel = { ...progress, phase: 'verifying', uploading: 0, verifying: 4 };
+				const parallel = { ...progress, phase: 'verifying', uploading: 0, verifying: 16 };
 				report(parallel);
 				assert.deepEqual(
 					JSON.parse(
@@ -1268,7 +1296,7 @@ for (const kind of ['full']) {
 				);
 				assert.match(
 					storageStatus(database, now).jobs.find((job) => job.id === jobId).progress,
-					/Phase: verifying; uploading: 0; verifying: 4/
+					/Phase: verifying; uploading: 0; verifying: 16/
 				);
 				report({ ...parallel, verifying: 0 });
 				return result;
@@ -1997,6 +2025,7 @@ test('reset refuses changed local audio instead of overwriting it or deleting it
 	queueStorageReset(db, { now });
 	await run();
 	assert.equal(readFileSync(audio, 'utf8'), 'new local audio');
+	assert.match(storageStatus(db, now).jobs[0].error, /Recovering local audio 1\/1: Local audio differs/);
 	assert.equal(objects.size, 1);
 	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
 	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
@@ -2025,6 +2054,93 @@ test('reset refuses unexpected remote files before deleting anything or forgetti
 	assert.equal(objects.size, 2);
 	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
 	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+});
+
+test('reset identifies unfinished indexes after audio recovery without deleting anything and retries safely', async (t) => {
+	const { db, connection, options, audio, objects, client, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	await client.mkdir('/radiology/backups/indexes');
+	const pending = `/radiology/backups/indexes/${now}-${randomUUID()}.pending`;
+	objects.set(pending, Buffer.from('unfinished backup'));
+	const before = new Map(objects);
+	const id = queueStorageReset(db, { now });
+	await run();
+	const job = storageStatus(db, now).jobs.find((row) => row.id === id);
+	assert.equal(job.status, 'failed');
+	assert.match(
+		job.error,
+		/Inspecting remote backups\/indexes: Unexpected entry in backups\/indexes: unfinished backup index \(\.pending\)/
+	);
+	assert.match(job.progress, /audio 1\/1, remote files removed 0/);
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.deepEqual(objects, before);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+	assert.equal(
+		db.prepare('SELECT phase FROM storage_reset_requests WHERE job_id=?').get(id).phase,
+		'recovering'
+	);
+	objects.delete(pending);
+	const retry = db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at;
+	await run(retry);
+	const completed = storageStatus(db, retry).jobs.find((row) => row.id === id);
+	assert.equal(completed.status, 'succeeded');
+	assert.equal(completed.error, null);
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+});
+
+for (const [code, expected] of [
+	[3, /Remote permission denied \(SFTP status 3\)/],
+	['EACCES', /Permission denied \(EACCES\)/],
+	['ENOSPC', /Insufficient local disk space \(ENOSPC\)/],
+	['ETIMEDOUT', /Storage operation timed out \(ETIMEDOUT\)/],
+	[undefined, /sensitive error details were withheld/],
+	['synthetic-secret-code', /sensitive error details were withheld/]
+]) {
+	test(`reset reports inspection failure ${code ?? 'without a code'} without leaking transport details`, async (t) => {
+		const { db, connection, options, objects, client, run } = resetFixture(t);
+		await archiveAudio(db, connection, options);
+		const before = new Map(objects);
+		client.list = async () => {
+			throw Object.assign(new Error('synthetic-password private-patient-path'), { code });
+		};
+		queueStorageReset(db, { now });
+		await run();
+		const job = storageStatus(db, now).jobs[0];
+		assert.equal(job.status, 'failed');
+		assert.match(job.error, /Inspecting remote audio:/);
+		assert.match(job.error, expected);
+		assert.doesNotMatch(
+			job.error,
+			/synthetic-password|private-patient-path|synthetic-secret-code|storage.invalid/
+		);
+		assert.deepEqual(objects, before);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+	});
+}
+
+test('reset identifies final local audio recheck failures without deleting remote data', async (t) => {
+	const { db, connection, options, audio, objects, resetOptions } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	const id = queueStorageReset(db, { now });
+	let ownershipChecks = 0;
+	await assert.rejects(
+		resetStorageData(db, connection, {
+			...resetOptions,
+			jobId: id,
+			owned() {
+				if (++ownershipChecks === 3) writeFileSync(audio, 'changed after recovery');
+				return true;
+			}
+		}),
+		/Rechecking recovered local audio 1\/1: Local audio differs/
+	);
+	assert.equal(objects.size, 1);
+	assert.equal(
+		db.prepare('SELECT restored FROM storage_reset_requests WHERE job_id=?').get(id).restored,
+		1
+	);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
 });
 
 test('reset cancellation during recovery preserves remote objects and archive metadata', async (t) => {

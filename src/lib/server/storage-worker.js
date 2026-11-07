@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { getStorageSettings, getStorageConnection } from './storage-settings.js';
+import {
+	getStorageSettings,
+	getStorageConnection,
+	MAX_STORAGE_PARALLEL_CONNECTIONS
+} from './storage-settings.js';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { hashLocal } from './storage-audio.js';
 import { syncStorageData } from './storage-sync.js';
@@ -10,7 +14,7 @@ import { uploadStorageFile } from './storage-upload.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { safeRecoveryProgress } from './recovery-progress.js';
 import { prepareStorageRestore } from './storage-restore.js';
-import { resetStorageData } from './storage-reset.js';
+import { resetStorageData, storageResetFailureMessage } from './storage-reset.js';
 
 const uuidPattern = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const backupIdPattern = new RegExp(`^\\d{1,16}-${uuidPattern}$`);
@@ -158,7 +162,8 @@ function archiveProgress(progress) {
 		!fields.every((field) => Number.isSafeInteger(progress[field]) && progress[field] >= 0)
 	)
 		return null;
-	if (progress.preparing + progress.uploading + progress.verifying > 4) return null;
+	if (progress.preparing + progress.uploading + progress.verifying > MAX_STORAGE_PARALLEL_CONNECTIONS)
+		return null;
 	const verificationBytes =
 		progress.verificationBytes === undefined ? 0 : progress.verificationBytes;
 	if (!Number.isSafeInteger(verificationBytes) || verificationBytes < 0) return null;
@@ -383,7 +388,7 @@ export async function processStorageJob(
 			"DELETE FROM storage_jobs WHERE kind IN ('archive','test') AND status='succeeded' AND finished_at < ?"
 		).run(now - 7 * 86400);
 		return true;
-	} catch {
+	} catch (error) {
 		if (job && owned()) {
 			const finished = Math.max(now, Math.floor(Date.now() / 1000));
 			db.prepare(
@@ -392,7 +397,7 @@ export async function processStorageJob(
 				finished,
 				finished + Math.min(3600, 60 * 2 ** Math.min(job.attempts, 6)),
 				db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)
-					? 'Storage reset stopped. Check free local disk space, unchanged audio, encryption key, connection and unexpected or symbolic-link files in the app storage directories. Recovered local files were preserved; remote cleanup may be partial if it had already started. Retry or cancel this reset before starting another.'
+					? `Storage reset stopped. ${storageResetFailureMessage(error)} Recovered local files were preserved; remote cleanup may be partial if it had already started. Retry or cancel this reset before starting another.`
 					: job.kind === 'restore'
 						? 'Restore preparation failed. Check the encryption key, storage connection, selected recovery point and available disk space. The live database, audio and recovery points were not replaced.'
 						: 'Storage job failed. Check credentials, pinned host fingerprint, connectivity, free space and source availability. Local audio and existing recovery points were preserved.',
