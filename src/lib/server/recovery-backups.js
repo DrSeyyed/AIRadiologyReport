@@ -4,6 +4,8 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { bundleTransfers } from './recovery-bundle-transfers.js';
+import { uploadStorageFile } from './storage-upload.js';
+import { downloadStorageFile } from './storage-download.js';
 import {
 	BUNDLE_BYTES,
 	MAX_RECOVERY_BYTES,
@@ -457,9 +459,11 @@ async function readManifest(client, connection, snapshot, work, deps) {
 	const encrypted = path.join(work, `${randomUUID()}.enc`);
 	const plain = path.join(work, `${randomUUID()}.json`);
 	try {
-		await client.get(
+		await downloadStorageFile(
+			client,
 			deps.storagePath(connection, 'backups', 'manifests', `${snapshot.id}.enc`),
-			encrypted
+			encrypted,
+			connection
 		);
 		if ((await fs.stat(encrypted)).size > MAX_MANIFEST_BYTES + 35)
 			throw new Error('Recovery manifest limit exceeded.');
@@ -664,7 +668,8 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 									existing.bytes !== info.bytes ||
 									(await deps.hashRemote(
 										client,
-										deps.storagePath(connection, 'backups', 'objects', existing.object)
+										deps.storagePath(connection, 'backups', 'objects', existing.object),
+										connection
 									)) !== existing.remoteSha256
 								)
 									throw new Error('Recovery bundle changed.');
@@ -721,7 +726,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 							const archived = path.join(work, `${randomUUID()}.archive`);
 							const plain = path.join(work, `${randomUUID()}.audio`);
 							const remote = deps.storagePath(connection, 'audio', archive.object_key);
-							await client.get(remote, archived);
+							await downloadStorageFile(client, remote, archived, connection);
 							if ((await sha256(archived)) !== archive.remote_sha256) throw new Error();
 							await deps.decryptFile(archived, plain);
 							await addFile(plain, relative, entry.role, archive);
@@ -772,7 +777,8 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 							if (
 								(await deps.hashRemote(
 									client,
-									deps.storagePath(connection, 'audio', archive.object_key)
+									deps.storagePath(connection, 'audio', archive.object_key),
+									connection
 								)) !== archive.remote_sha256
 							) {
 								throw new Error('Recovery archive changed.');
@@ -793,8 +799,8 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 					await fs.writeFile(json, serialized, { mode: 0o600 });
 					await deps.encryptFile(json, encrypted);
 					const target = deps.storagePath(connection, 'backups', 'manifests', `${id}.enc`);
-					await client.put(encrypted, target);
-					if ((await deps.hashRemote(client, target)) !== (await sha256(encrypted)))
+					await uploadStorageFile(client, encrypted, target, connection);
+					if ((await deps.hashRemote(client, target, connection)) !== (await sha256(encrypted)))
 						throw new Error();
 					// Publication is last and atomic: an index is the sole completed-snapshot marker.
 					const publicIndex = path.join(work, 'index.json');
@@ -802,7 +808,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						mode: 0o600
 					});
 					const pending = deps.storagePath(connection, 'backups', 'indexes', `${id}.pending`);
-					await client.put(publicIndex, pending);
+					await uploadStorageFile(client, publicIndex, pending, connection);
 					await verifyCollection();
 					await client.rename(
 						pending,

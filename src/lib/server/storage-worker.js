@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { getStorageSettings, getStorageConnection } from './storage-settings.js';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { archiveAudio, hashLocal } from './storage-audio.js';
+import { uploadStorageFile } from './storage-upload.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { prepareStorageRestore } from './storage-restore.js';
 import { resetStorageData } from './storage-reset.js';
@@ -154,7 +155,13 @@ function archiveProgress(progress) {
 	)
 		return null;
 	if (progress.preparing + progress.uploading + progress.verifying > 4) return null;
-	return Object.fromEntries(fields.map((field) => [field, progress[field]]));
+	const verificationBytes =
+		progress.verificationBytes === undefined ? 0 : progress.verificationBytes;
+	if (!Number.isSafeInteger(verificationBytes) || verificationBytes < 0) return null;
+	return {
+		...Object.fromEntries(fields.map((field) => [field, progress[field]])),
+		verificationBytes
+	};
 }
 
 function archiveBacklog(db) {
@@ -193,8 +200,8 @@ export async function testStorageConnection(connection, transport = withStorage)
 			await client.mkdir(connection.root, true);
 			const remote = storagePath(connection, name);
 			try {
-				await client.put(local, remote);
-				if ((await hashRemote(client, remote)) !== (await hashLocal(local)))
+				await uploadStorageFile(client, local, remote, connection);
+				if ((await hashRemote(client, remote, connection)) !== (await hashLocal(local)))
 					throw new Error('Storage read/write verification failed.');
 				return { verified: true };
 			} finally {
@@ -413,7 +420,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 					job.progress = `Copied: ${parsed.copied}; evicted: ${parsed.evicted}.`;
 					const progress = archiveProgress(parsed);
 					if (progress && job.status === 'running')
-						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Last upload/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Read back: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
 				}
 				if (typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id)) backupId = parsed.id;
 				if (

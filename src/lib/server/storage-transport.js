@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { storageTimeoutMs } from './storage-settings.js';
 
 const TIMEOUT_MS = 20_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 60 * 60 * 1000;
@@ -252,21 +253,32 @@ export async function probeStorageHost(config, factory = defaultFactory) {
 
 /**
  * Stream the remote file over SFTP and return its lowercase SHA256 hex digest.
- * Path checks and each read have a 20-second bound, not a 20-second total-transfer limit.
+ * Path checks have a 20-second bound; each read uses the configured inactivity timeout.
+ * The read bound defaults to 20 seconds, not a total-transfer limit.
+ * onProgress receives the byte count of each nonempty chunk read for verification.
  * Best-effort lstat checks reject symlinks in the absolute file path before opening it.
  * SFTP cannot make the check/open sequence atomic against concurrent remote replacement.
  */
-export async function hashRemote(client, remotePath) {
+export async function hashRemote(
+	client,
+	remotePath,
+	{ onProgress = () => {}, verificationTimeoutSeconds } = {}
+) {
 	let stream;
 	try {
+		const readTimeoutMs = storageTimeoutMs(
+			{ verificationTimeoutSeconds },
+			'verificationTimeoutSeconds'
+		);
 		await bounded((signal) => verifyRemotePath(client, remotePath, false, signal));
 		stream = client.createReadStream(remotePath);
 		const iterator = stream[Symbol.asyncIterator]();
 		const hash = createHash('sha256');
 		while (true) {
-			const { done, value } = await bounded(() => iterator.next());
+			const { done, value } = await bounded(() => iterator.next(), readTimeoutMs);
 			if (done) break;
 			hash.update(value);
+			if (value.length) onProgress(value.length);
 		}
 		return hash.digest('hex');
 	} catch {

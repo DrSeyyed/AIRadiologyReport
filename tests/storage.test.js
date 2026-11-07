@@ -16,7 +16,8 @@ import {
 	getStorageSettings,
 	getStorageConnection,
 	saveStorageSettings,
-	storageDestination
+	storageDestination,
+	storageTimeoutMs
 } from '../src/lib/server/storage-settings.js';
 import {
 	archiveAudio,
@@ -216,9 +217,17 @@ test('audio archives reuse four independent sessions and bound concurrent upload
 	);
 });
 
-for (const afterEof of [false, true]) {
-	test(`audio upload watchdog aborts after 30 seconds idle ${afterEof ? 'waiting for remote acknowledgement' : 'before stream consumption'}`, async (t) => {
+for (const [afterEof, configuredSeconds] of [
+	[false, undefined],
+	[true, undefined],
+	[false, 2],
+	[true, 45]
+]) {
+	const seconds = configuredSeconds ?? 30;
+	test(`audio upload watchdog aborts after ${seconds} seconds idle ${afterEof ? 'waiting for remote acknowledgement' : 'before stream consumption'}`, async (t) => {
 		const context = fixture(t);
+		if (configuredSeconds !== undefined)
+			context.connection.uploadTimeoutSeconds = configuredSeconds;
 		t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
 		const ready = archiveGate();
 		const snapshots = [];
@@ -246,11 +255,11 @@ for (const afterEof of [false, true]) {
 				settled = true;
 			}
 		);
-		const rejected = assert.rejects(running, /stalled for 30 seconds/);
+		const rejected = assert.rejects(running, new RegExp(`stalled for ${seconds} seconds`));
 		await ready.promise;
-		t.mock.timers.tick(29_999);
+		t.mock.timers.tick(seconds * 1000 - 1);
 		assert.equal(settled, false);
-		assert.ok(snapshots.some((progress) => progress.uploading === 1));
+		if (seconds >= 5) assert.ok(snapshots.some((progress) => progress.uploading === 1));
 		t.mock.timers.tick(1);
 		await rejected;
 		assert.equal(upload.destroyed, true);
@@ -314,6 +323,53 @@ test('a stalled upload cannot hang indefinitely while deleting its incomplete re
 	assert.ok(existsSync(context.audio));
 });
 
+test('slow verification updates read-back bytes and activity instead of appearing idle', async (t) => {
+	const context = fixture(t);
+	t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: now * 1000 });
+	const started = archiveGate();
+	const first = archiveGate();
+	const second = archiveGate();
+	const finish = archiveGate();
+	const progress = [];
+	let total;
+	context.client.createReadStream = (remote) => {
+		const bytes = context.objects.get(remote);
+		total = bytes.length;
+		started.resolve();
+		return Readable.from(
+			(async function* () {
+				await first.promise;
+				yield bytes.subarray(0, 8);
+				await second.promise;
+				yield bytes.subarray(8);
+				await finish.promise;
+			})()
+		);
+	};
+	const running = archiveAudio(context.db, context.connection, {
+		...context.options,
+		onProgress: (snapshot) => progress.push(snapshot)
+	});
+	await started.promise;
+	await new Promise(setImmediate);
+	t.mock.timers.tick(15_000);
+	first.resolve();
+	await new Promise(setImmediate);
+	t.mock.timers.tick(2_000);
+	assert.equal(progress.at(-1).verificationBytes, 8);
+	assert.equal(progress.at(-1).verifying, 1);
+	assert.equal(progress.at(-1).lastActivityAt, now + 15);
+	t.mock.timers.tick(15_000);
+	second.resolve();
+	await new Promise(setImmediate);
+	t.mock.timers.tick(2_000);
+	assert.equal(progress.at(-1).verificationBytes, total);
+	assert.equal(progress.at(-1).lastActivityAt, now + 32);
+	assert.equal(progress.at(-1).verifying, 1);
+	finish.resolve();
+	assert.deepEqual(await running, { copied: 1, evicted: 0 });
+});
+
 test('running archive progress is sanitized, displayed as archive and frozen after cancellation', async (t) => {
 	const context = fixture(t);
 	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false });
@@ -326,6 +382,7 @@ test('running archive progress is sanitized, displayed as archive and frozen aft
 				preparing: 0,
 				uploading: 2,
 				verifying: 1,
+				verificationBytes: 2 * 1024 * 1024,
 				lastActivityAt: now - 5
 			};
 			onProgress({ ...progress, secret: 'synthetic-private-field' });
@@ -335,7 +392,13 @@ test('running archive progress is sanitized, displayed as archive and frozen aft
 			assert.equal(job.kind, 'archive');
 			assert.match(job.progress, /Copied: 97/);
 			assert.match(job.progress, /uploading: 2; verifying: 1/);
-			assert.match(job.progress, /5s ago/);
+			assert.match(job.progress, /Read back: 2.00 MiB/);
+			assert.match(job.progress, /Last transfer\/file activity: 5s ago/);
+			onProgress({ ...progress, verificationBytes: 'synthetic-private-path' });
+			assert.equal(
+				db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(before.id).result,
+				before.result
+			);
 			onProgress({ ...progress, uploading: 5 });
 			assert.equal(
 				db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(before.id).result,
@@ -540,6 +603,42 @@ test('storage settings are disabled by default, validated and credentials encryp
 		normalizeStorageSettings({ ...settings, fingerprint: `${settings.fingerprint}=` }).fingerprint,
 		settings.fingerprint
 	);
+});
+
+test('inactivity timeout settings default for legacy rows, validate and persist without changing destination', (t) => {
+	const { db, settings } = fixture(t);
+	const legacy = { ...settings };
+	delete legacy.uploadTimeoutSeconds;
+	delete legacy.verificationTimeoutSeconds;
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(
+		JSON.stringify(legacy)
+	);
+	assert.equal(getStorageSettings(db).uploadTimeoutSeconds, 30);
+	assert.equal(getStorageSettings(db).verificationTimeoutSeconds, 20);
+	assert.equal(storageTimeoutMs({}, 'uploadTimeoutSeconds'), 30_000);
+	assert.equal(storageTimeoutMs({}, 'verificationTimeoutSeconds'), 20_000);
+	for (const field of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds']) {
+		for (const invalid of [0, -1, 601, 1.5, '20', null, NaN]) {
+			assert.throws(() => normalizeStorageSettings({ ...settings, [field]: invalid }));
+			assert.throws(() => storageTimeoutMs({ [field]: invalid }, field));
+		}
+		assert.equal(storageTimeoutMs({ [field]: 600 }, field), 600_000);
+	}
+	const original = storageDestination(getStorageConnection(db));
+	saveStorageSettings(db, {
+		...settings,
+		uploadTimeoutSeconds: 90,
+		verificationTimeoutSeconds: 60
+	});
+	const saved = getStorageConnection(db);
+	assert.equal(saved.uploadTimeoutSeconds, 90);
+	assert.equal(saved.verificationTimeoutSeconds, 60);
+	assert.equal(saved.password, 'synthetic-password');
+	assert.equal(storageDestination(saved), original);
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('archive','running',?)").run(
+		now
+	);
+	assert.throws(() => saveStorageSettings(db, { ...settings, uploadTimeoutSeconds: 1 }), /running/);
 });
 
 test('schema is repeatable and schedules/password can change but an in-use destination cannot', (t) => {

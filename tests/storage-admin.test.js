@@ -106,13 +106,15 @@ test('storage admin load and all actions reject non-admins before DB, form or ne
 
 test('admin save preserves passwords, rejects duplicate/out-of-range form fields and never echoes credentials', async (t) => {
 	const { page, submit, form, settings, db } = await fixture(t);
-	const input = form({ ...settings, enabled: true, archiveEnabled: true, backupsEnabled: true });
+	const input = form({ ...settings, enabled: true, archiveEnabled: true, backupsEnabled: true, uploadTimeoutSeconds: 120, verificationTimeoutSeconds: 90 });
 	input.set('password', 'synthetic-new-secret');
 	const result = await submit('save', input);
 	assert.ok(result.message);
 	const loaded = page.load({ locals: admin });
 	assert.equal(loaded.passwordConfigured, true);
 	assert.equal(loaded.settings.enabled, true);
+	assert.equal(loaded.settings.uploadTimeoutSeconds, 120);
+	assert.equal(loaded.settings.verificationTimeoutSeconds, 90);
 	assert.equal(loaded.keyConfigured, true);
 	assert.ok(!JSON.stringify([result, loaded]).includes('synthetic-new-secret'));
 	assert.equal(getStorageConnection(db).password, 'synthetic-new-secret');
@@ -122,11 +124,23 @@ test('admin save preserves passwords, rejects duplicate/out-of-range form fields
 		['port', '0'],
 		['hourlyRetention', '0'],
 		['databaseIntervalHours', '1.5'],
-		['enabled', 'yes']
+		['enabled', 'yes'],
+		['uploadTimeoutSeconds', '0'],
+		['uploadTimeoutSeconds', '601'],
+		['verificationTimeoutSeconds', '1.5'],
+		['verificationTimeoutSeconds', '']
 	]) {
 		const invalid = form();
 		invalid.set(name, value);
 		assert.equal((await submit('save', invalid)).status, 400);
+	}
+	for (const name of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds']) {
+		const missing = form();
+		missing.delete(name);
+		assert.equal((await submit('save', missing)).status, 400);
+		const repeated = form();
+		repeated.append(name, '30');
+		assert.equal((await submit('save', repeated)).status, 400);
 	}
 	const duplicate = form();
 	duplicate.append('username', 'duplicate');
@@ -399,11 +413,15 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(body, /action="\?\/cancel"/);
 	assert.match(body, /Clear finished log/);
 	data.status.resetActive = false;
-	data.status.jobs = [{ id: 999, kind: 'archive', status: 'running', attempts: 1, created_at: 1,
+	data.status.jobs = [{ id: 999, kind: 'archive', status: 'running', attempts: 1, created_at: 1, canCancel: true,
 		progress: 'Copied: 97; preparing: 0; uploading: 2; verifying: 1' }];
 	const { body: archiveBody } = render(component.default, { props: { data } });
 	assert.match(archiveBody, /Copied: 97; preparing: 0; uploading: 2; verifying: 1/);
 	assert.match(archiveBody, /Status refreshes every 5 seconds/);
+	for (const name of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds'])
+		assert.match(archiveBody, new RegExp(`<input[^>]*name="${name}"[^>]*min="1"[^>]*max="600"[^>]*step="1"`));
+	assert.match(archiveBody, /<td class="whitespace-nowrap">[\s\S]*?action="\?\/cancel"/);
+	assert.match(archiveBody, /<button class="[^"]*min-w-max whitespace-nowrap" name="jobId" value="999">Cancel<\/button>/);
 });
 
 test('storage status refresh skips hidden pages and overlapping requests, preserves edits and cleans up', async () => {

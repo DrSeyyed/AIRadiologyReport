@@ -15,6 +15,10 @@
 		}, 5_000);
 		return () => clearInterval(timer);
 	});
+	const timeoutFields = [
+		['uploadTimeoutSeconds', 'Upload inactivity timeout (seconds)'],
+		['verificationTimeoutSeconds', 'Verification/read inactivity timeout (seconds)']
+	];
 	const numberFields = [
 		['localRetentionDays', 'Keep local audio (days)', 1, 3650],
 		['databaseIntervalHours', 'Recovery snapshot interval (hours)', 1, 168],
@@ -61,6 +65,13 @@
 			<label class="form-control">Trusted SHA256 host fingerprint<input class="input input-bordered font-mono" name="fingerprint" bind:value={settings.fingerprint} placeholder="SHA256:…" maxlength="64" /></label>
 		</div>
 		<div><button class="btn btn-outline" type="submit" formaction="?/probe" formnovalidate>Observe fingerprint (no login)</button></div>
+		<h3 class="text-lg font-semibold">Transfer timeouts</h3>
+		<div class="grid gap-4 md:grid-cols-2">
+			{#each timeoutFields as [name, label] (name)}
+				<label class="form-control">{label}<input class="input input-bordered" type="number" {name} min="1" max="600" step="1" bind:value={settings[name]} required /></label>
+			{/each}
+		</div>
+		<p class="text-sm">Whole seconds, 1–600. Defaults: upload 30; verification/read 20. Applies to audio archiving, backups and restore downloads. These limit inactivity, not total transfer duration. Pause scheduling, cancel or finish running work, and wait for cleanup before saving; new values apply to subsequent jobs.</p>
 		<h3 class="text-lg font-semibold">Services, schedule and retention</h3>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="enabled" bind:checked={settings.enabled} /> Enable background storage jobs</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Copy audio in background and evict eligible local copies</label>
@@ -141,11 +152,11 @@
 				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Reset storage</button>
 			</fieldset>
 		</form>
-		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Audio uploads stop after 30 seconds without data progress and retry with backoff; large files can continue while data is moving.</p>
+		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Read-back bytes accumulate across the current archive pass; verification reads also update the activity timer. Uploads and verification/download reads use the saved inactivity timeouts above; large files can continue while data is moving. Connection, metadata and overall job limits are unchanged.</p>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td>{#if job.canCancel}<form method="POST" action="?/cancel" use:enhance><button class="btn btn-sm btn-outline" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action="?/cancel" use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{/each}
 			</tbody></table>
 		</div>

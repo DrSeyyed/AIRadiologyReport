@@ -15,7 +15,9 @@ export const DEFAULT_STORAGE_SETTINGS = Object.freeze({
 	fileBackupHour: 2,
 	hourlyRetention: 48,
 	dailyRetention: 30,
-	monthlyRetention: 12
+	monthlyRetention: 12,
+	uploadTimeoutSeconds: 30,
+	verificationTimeoutSeconds: 20
 });
 const fields = Object.keys(DEFAULT_STORAGE_SETTINGS);
 const limits = {
@@ -25,8 +27,21 @@ const limits = {
 	fileBackupHour: [0, 23],
 	hourlyRetention: [1, 8760],
 	dailyRetention: [1, 3650],
-	monthlyRetention: [1, 120]
+	monthlyRetention: [1, 120],
+	uploadTimeoutSeconds: [1, 600],
+	verificationTimeoutSeconds: [1, 600]
 };
+
+export function storageTimeoutMs(settings, field) {
+	if (!['uploadTimeoutSeconds', 'verificationTimeoutSeconds'].includes(field))
+		throw new Error('Invalid storage inactivity timeout.');
+	const seconds =
+		settings?.[field] === undefined ? DEFAULT_STORAGE_SETTINGS[field] : settings[field];
+	const [min, max] = limits[field];
+	if (!Number.isInteger(seconds) || seconds < min || seconds > max)
+		throw new Error('Invalid storage inactivity timeout.');
+	return seconds * 1000;
+}
 
 export function normalizeStorageSettings(value) {
 	if (
@@ -41,7 +56,7 @@ export function normalizeStorageSettings(value) {
 		if (typeof settings[field] !== 'boolean') throw new Error('Invalid storage switch.');
 	for (const [key, [min, max]] of Object.entries(limits))
 		if (!Number.isInteger(settings[key]) || settings[key] < min || settings[key] > max)
-			throw new Error('Invalid backup period or retention.');
+			throw new Error('Invalid storage timeout, backup period or retention.');
 	for (const field of ['host', 'username', 'root', 'fingerprint'])
 		if (
 			typeof settings[field] !== 'string' ||

@@ -339,7 +339,11 @@ test('hashRemote streams bytes and returns exactly lowercase SHA256 hex without 
 			assert.fail('must not execute shell commands');
 		}
 	});
-	const digest = await hashRemote(mock.client, remoteFile(mock));
+	const progress = [];
+	const digest = await hashRemote(mock.client, remoteFile(mock), {
+		onProgress: (bytes) => progress.push(bytes)
+	});
+	assert.deepEqual(progress, Array(128).fill(chunk.length));
 	assert.equal(digest, expected.digest('hex'));
 	assert.match(digest, /^[a-f0-9]{64}$/);
 	assert.equal(stream.destroyed, true);
@@ -368,6 +372,19 @@ test('hashRemote handles empty files and sanitizes stream/stat errors', async ()
 		}
 	});
 	await rejectsSafely(hashRemote(stat.client, '/object'));
+});
+
+test('hashRemote destroys its stream and sanitizes a rejected progress callback', async () => {
+	const stream = Readable.from([Buffer.from('synthetic bytes')]);
+	const mock = mockClient({ createReadStream: () => stream });
+	await rejectsSafely(
+		hashRemote(mock.client, remoteFile(mock), {
+			onProgress() {
+				throw rawError;
+			}
+		})
+	);
+	assert.equal(stream.destroyed, true);
 });
 
 test('hashRemote rejects symlink files, ancestor links and traversal before reading', async () => {
@@ -492,15 +509,39 @@ test('hashRemote permits transfers longer than 20 seconds while reads keep progr
 	assert.equal(await pending, createHash('sha256').update('chunkchunkchunk').digest('hex'));
 });
 
-test('hashRemote times out stalled I/O and destroys its stream', async (t) => {
+for (const seconds of [undefined, 2, 45]) {
+	test(`hashRemote bounds stalled reads at ${seconds ?? 20} seconds and destroys its stream`, async (t) => {
+		t.mock.timers.enable({ apis: ['setTimeout'] });
+		const stream = new Readable({ read() {} });
+		const mock = mockClient({ createReadStream: () => stream });
+		let settled = false;
+		const pending = rejectsSafely(
+			hashRemote(mock.client, remoteFile(mock), { verificationTimeoutSeconds: seconds })
+		).then(() => {
+			settled = true;
+		});
+		await nextTurn();
+		t.mock.timers.tick((seconds ?? 20) * 1000 - 1);
+		await nextTurn();
+		assert.equal(settled, false);
+		t.mock.timers.tick(1);
+		await pending;
+		assert.equal(stream.destroyed, true);
+	});
+}
+
+test('configured read timeout permits chunks more than the old 20 seconds apart', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const stream = new Readable({ read() {} });
 	const mock = mockClient({ createReadStream: () => stream });
-	const pending = rejectsSafely(hashRemote(mock.client, remoteFile(mock)));
+	const pending = hashRemote(mock.client, remoteFile(mock), { verificationTimeoutSeconds: 45 });
 	await nextTurn();
-	t.mock.timers.tick(20_000);
-	await pending;
-	assert.equal(stream.destroyed, true);
+	t.mock.timers.tick(25_000);
+	stream.push(Buffer.from('chunk'));
+	await nextTurn();
+	t.mock.timers.tick(25_000);
+	stream.push(null);
+	assert.equal(await pending, createHash('sha256').update('chunk').digest('hex'));
 });
 
 test('probe and cleanup are time bounded even when their promises stall', async (t) => {

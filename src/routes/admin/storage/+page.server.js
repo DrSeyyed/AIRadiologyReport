@@ -27,7 +27,7 @@ function requireAdmin(locals) {
 
 function field(form, name) {
 	if (form.getAll(name).length !== 1 || typeof form.get(name) !== 'string')
-		throw new Error('Complete each connection, schedule and retention field once.');
+		throw new Error('Complete each connection, timeout, schedule and retention field once.');
 	return form.get(name);
 }
 
@@ -40,7 +40,7 @@ function storageFormSettings(form) {
 			values[key] = form.has(key);
 		} else if (typeof defaultValue === 'number') {
 			const value = field(form, key);
-			if (!/^\d+$/.test(value)) throw new Error('Enter whole numbers for schedules and retention.');
+			if (!/^\d+$/.test(value)) throw new Error('Enter whole numbers for timeouts, schedules and retention.');
 			values[key] = Number(value);
 		} else values[key] = field(form, key).trim();
 	}
@@ -77,7 +77,7 @@ export const actions = {
 		} catch {
 			return fail(400, {
 				error:
-					'Invalid storage settings. Complete the connection, SHA256 fingerprint and schedule fields with valid values.'
+					'Invalid storage settings. Complete the connection, SHA256 fingerprint, timeout and schedule fields with valid values. Inactivity timeouts must be whole seconds from 1 to 600.'
 			});
 		}
 		try {

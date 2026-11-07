@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { Transform } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import Database from 'better-sqlite3';
 import { backupRecovery } from '../src/lib/server/recovery-backups.js';
 import { decryptFile, encryptFile } from '../src/lib/server/storage-crypto.js';
@@ -79,7 +80,8 @@ async function fixture(t) {
 			await fs.mkdir(local(p), { recursive: true });
 		},
 		async put(source, p) {
-			await fs.copyFile(source, local(p));
+			if (typeof source === 'string') await fs.copyFile(source, local(p));
+			else await pipeline(source, createWriteStream(local(p)));
 		},
 		async get(p, target) {
 			await fs.copyFile(local(p), target);
@@ -390,6 +392,53 @@ test('lost lease before download, during restore, and after publication never re
 			assert.ok(checks > 0);
 			assert.equal(f.db.prepare('SELECT count(*) AS n FROM storage_jobs').get().n, 1);
 		});
+});
+
+test('restore hash and download streams respect configured read inactivity and clean staging', async (t) => {
+	for (const readNumber of [1, 2])
+		for (const seconds of [2, 45]) {
+			await t.test(`manifest read ${readNumber}, ${seconds} seconds`, async (t) => {
+				const f = await fixture(t);
+				t.mock.timers.enable({ apis: ['setTimeout'] });
+				const original = f.client.createReadStream;
+				let reads = 0;
+				let ready;
+				const started = new Promise((resolve) => {
+					ready = resolve;
+				});
+				let stalled;
+				f.client.createReadStream = (remote) => {
+					if (remote.includes('/manifests/') && ++reads === readNumber) {
+						stalled = new Readable({ read() {} });
+						ready();
+						return stalled;
+					}
+					return original(remote);
+				};
+				let settled = false;
+				const rejected = assert
+					.rejects(
+						prepareStorageRestore(
+							{ ...connection, verificationTimeoutSeconds: seconds },
+							{ backupId: f.backup.id },
+							f.deps
+						),
+						{ message: 'Storage restore preparation failed.' }
+					)
+					.then(() => {
+						settled = true;
+					});
+				await started;
+				await new Promise(setImmediate);
+				t.mock.timers.tick(seconds * 1000 - 1);
+				await new Promise(setImmediate);
+				assert.equal(settled, false);
+				t.mock.timers.tick(1);
+				await rejected;
+				assert.equal(stalled.destroyed, true);
+				await f.clean();
+			});
+		}
 });
 
 test('transport errors are sanitized and partial encrypted downloads are removed', async (t) => {

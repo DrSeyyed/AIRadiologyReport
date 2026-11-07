@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { BUNDLE_BYTES } from '../src/lib/server/recovery-bundles.js';
@@ -53,7 +55,11 @@ async function fixture(t) {
 			await fs.mkdir(local(p), { recursive: true });
 		},
 		async put(source, p) {
-			await fs.copyFile(source, local(p));
+			if (typeof source === 'string') await fs.copyFile(source, local(p));
+			else await pipeline(source, createWriteStream(local(p)));
+		},
+		createReadStream(p) {
+			return createReadStream(local(p));
 		},
 		async get(p, target) {
 			await fs.copyFile(local(p), target);
@@ -1075,6 +1081,48 @@ test('backup transport defaults to six hours while preserving an explicit shorte
 	);
 });
 
+test('backup uses saved upload inactivity for bundles, manifests and publication indexes', async (t) => {
+	for (const stage of ['/objects/', '/manifests/', '/indexes/']) {
+		await t.test(stage, async (t) => {
+			const f = await ordinary(t);
+			const put = f.client.put;
+			const keepAlive = setInterval(() => {}, 1000);
+			t.after(() => clearInterval(keepAlive));
+			let stalled;
+			f.client.put = (source, target) => {
+				if (!target.includes(stage)) return put(source, target);
+				stalled = source;
+				return new Promise((resolve, reject) => source.once('error', reject));
+			};
+			await assert.rejects(
+				backupRecovery(f.db, { ...connection, uploadTimeoutSeconds: 1 }, f.options, f.deps),
+				{ message: 'Recovery backup failed.' }
+			);
+			assert.equal(stalled.destroyed, true);
+			assert.deepEqual(await listRecovery(connection, f.deps), []);
+			assert.ok(!(await fs.readdir(f.app)).some((name) => name.startsWith('.recovery-work-')));
+		});
+	}
+});
+
+test('backup propagates configured verification inactivity to new and reused remote objects', async (t) => {
+	const f = await ordinary(t);
+	const checked = [];
+	const deps = {
+		...f.deps,
+		async hashRemote(client, target, settings) {
+			assert.equal(settings.verificationTimeoutSeconds, 75);
+			checked.push(target);
+			return f.deps.hashRemote(client, target);
+		}
+	};
+	const configured = { ...connection, uploadTimeoutSeconds: 60, verificationTimeoutSeconds: 75 };
+	await backupRecovery(f.db, configured, f.options, deps);
+	await backupRecovery(f.db, configured, { ...f.options, now: f.options.now + 1 }, deps);
+	assert.ok(checked.some((target) => target.includes('/objects/')));
+	assert.ok(checked.some((target) => target.includes('/manifests/')));
+});
+
 test('parallel bundle transfers use at most two separate pinned sessions and settle before cleanup/publication', async (t) => {
 	for (const mode of [
 		'success',
@@ -1149,7 +1197,7 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 									assert.equal(worker, true);
 									const ordinal = ++started;
 									ordinals.set(client, ordinal);
-									const work = path.dirname(args[0]);
+									const work = path.dirname(args[0].path);
 									const spools = (await fs.readdir(work)).filter((name) =>
 										name.endsWith('.bundle.enc')
 									).length;
@@ -1164,7 +1212,7 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 									if (ordinal === 2) {
 										pairReady();
 										await sibling;
-										await fs.access(args[0]);
+										await fs.access(args[0].path);
 									}
 								} else if (method === 'put' || method === 'rename') {
 									assert.equal(workers, 0, 'publication must wait for verified session closure');

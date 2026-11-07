@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { PassThrough } from 'node:stream';
-import { finished } from 'node:stream/promises';
+import { uploadStorageFile } from './storage-upload.js';
 import { access, lstat, mkdtemp, readFile, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, relative, isAbsolute, join, extname } from 'node:path';
@@ -63,58 +62,6 @@ function processing(db, path) {
 	);
 }
 
-class ArchiveUpload extends PassThrough {
-	constructor(activity, path) {
-		super({ autoDestroy: false, highWaterMark: 64 * 1024 });
-		this.activity = activity;
-		this.path = path;
-	}
-
-	read(size) {
-		const chunk = super.read(size);
-		// Observe consumption, not prebuffering, without putting an unread stream into flowing mode.
-		if (chunk !== null) this.activity();
-		return chunk;
-	}
-}
-
-async function uploadAudio(client, local, remote, assertActive, activity) {
-	let timer;
-	const source = createReadStream(local);
-	const upload = new ArchiveUpload(() => {
-		try {
-			assertActive();
-			activity();
-			arm();
-		} catch (error) {
-			upload.destroy(error);
-		}
-	}, local);
-	const arm = () => {
-		clearTimeout(timer);
-		timer = setTimeout(
-			() => upload.destroy(new Error('Audio upload stalled for 30 seconds.')),
-			30_000
-		);
-		timer.unref();
-	};
-	source.on('error', (error) => upload.destroy(error));
-	const sourceClosed = finished(source, { cleanup: true }).catch(() => {});
-	const uploadClosed = finished(upload, { cleanup: true }).catch(() => {});
-	try {
-		assertActive();
-		arm();
-		const pending = client.put(upload, remote);
-		source.pipe(upload);
-		await pending;
-	} finally {
-		clearTimeout(timer);
-		source.destroy();
-		upload.destroy();
-		await Promise.all([sourceClosed, uploadClosed]);
-	}
-}
-
 async function discardUpload(client, remote) {
 	let timer;
 	try {
@@ -154,6 +101,7 @@ export async function archiveAudio(
 	const destination = storageDestination(connection);
 	let copied = 0;
 	let evicted = 0;
+	let verificationBytes = 0;
 	let failure;
 	const sessions = [];
 	const callbacks = [];
@@ -168,6 +116,7 @@ export async function archiveAudio(
 			onProgress({
 				copied,
 				evicted,
+				verificationBytes,
 				preparing: [...phases.values()].filter((phase) => phase === 'preparing').length,
 				uploading: [...phases.values()].filter((phase) => phase === 'uploading').length,
 				verifying: [...phases.values()].filter((phase) => phase === 'verifying').length,
@@ -180,6 +129,11 @@ export async function archiveAudio(
 	const assertActive = () => {
 		if (failure) throw failure;
 		if (!owned()) throw new Error('Storage worker lease expired.');
+	};
+	const verificationProgress = (bytes) => {
+		assertActive();
+		verificationBytes += bytes;
+		activity();
 	};
 	const failed = (error) => {
 		failure ||= error;
@@ -291,11 +245,19 @@ export async function archiveAudio(
 							try {
 								assertActive();
 								phases.set(workerClient, 'uploading');
-								await uploadAudio(workerClient, encrypted, remote, assertActive, activity);
+								await uploadStorageFile(workerClient, encrypted, remote, connection, {
+									assertActive,
+									onProgress: activity
+								});
 								assertActive();
 								phases.set(workerClient, 'verifying');
 								activity();
-								if ((await hashRemote(workerClient, remote)) !== remoteSha256)
+								if (
+									(await hashRemote(workerClient, remote, {
+										...connection,
+										onProgress: verificationProgress
+									})) !== remoteSha256
+								)
 									throw new Error(
 										'Audio storage verification failed; the local copy was preserved.'
 									);
@@ -351,10 +313,10 @@ export async function archiveAudio(
 						phases.set(workerClient, 'verifying');
 						activity();
 						if (
-							(await hashRemote(
-								workerClient,
-								storagePath(connection, 'audio', saved.object_key)
-							)) !== saved.remote_sha256
+							(await hashRemote(workerClient, storagePath(connection, 'audio', saved.object_key), {
+								...connection,
+								onProgress: verificationProgress
+							})) !== saved.remote_sha256
 						)
 							throw new Error('Archived audio verification failed; eviction was cancelled.');
 						assertActive();

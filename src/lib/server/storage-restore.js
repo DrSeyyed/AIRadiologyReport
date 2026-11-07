@@ -3,6 +3,7 @@ import { createWriteStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
+import { storageTimeoutMs } from './storage-settings.js';
 import { pipeline } from 'node:stream/promises';
 import { listRecovery, restoreRecovery, validateRecoveryManifest } from './recovery-backups.js';
 import * as crypto from './storage-crypto.js';
@@ -147,7 +148,7 @@ async function remotePath(client, remote, directory, signal, maxBytes = 0) {
 	}
 }
 
-function limitedStream(client, remote, maxBytes, signal) {
+function limitedStream(client, remote, maxBytes, signal, readTimeoutMs) {
 	signal.throwIfAborted();
 	const source = client.createReadStream(remote);
 	let bytes = 0;
@@ -156,13 +157,13 @@ function limitedStream(client, remote, maxBytes, signal) {
 		transform(chunk, _encoding, callback) {
 			bytes += chunk.length;
 			clearTimeout(timer);
-			timer = setTimeout(() => limited.destroy(failure()), IDLE_MS);
+			timer = setTimeout(() => limited.destroy(failure()), readTimeoutMs);
 			callback(bytes > maxBytes ? failure() : null, chunk);
 		}
 	});
 	const abort = () => limited.destroy(failure());
 	signal.addEventListener('abort', abort, { once: true });
-	timer = setTimeout(abort, IDLE_MS);
+	timer = setTimeout(abort, readTimeoutMs);
 	source.on('error', abort);
 	limited.once('close', () => {
 		clearTimeout(timer);
@@ -172,13 +173,14 @@ function limitedStream(client, remote, maxBytes, signal) {
 	return source.pipe(limited);
 }
 
-async function download(client, remote, target, maxBytes, signal, deps, expected) {
+async function download(client, remote, target, maxBytes, signal, deps, connection, expected) {
+	const readTimeoutMs = storageTimeoutMs(connection, 'verificationTimeoutSeconds');
 	await remotePath(client, remote, false, signal, maxBytes);
 	const guarded = {
 		lstat: (...args) => client.lstat(...args),
-		createReadStream: (file) => limitedStream(client, file, maxBytes, signal)
+		createReadStream: (file) => limitedStream(client, file, maxBytes, signal, readTimeoutMs)
 	};
-	const remoteDigest = await deps.hashRemote(guarded, remote);
+	const remoteDigest = await deps.hashRemote(guarded, remote, connection);
 	if (expected !== undefined && remoteDigest !== expected) throw failure();
 	const hash = createHash('sha256');
 	const digestStream = new Transform({
@@ -188,7 +190,7 @@ async function download(client, remote, target, maxBytes, signal, deps, expected
 		}
 	});
 	await pipeline(
-		limitedStream(client, remote, maxBytes, signal),
+		limitedStream(client, remote, maxBytes, signal, readTimeoutMs),
 		digestStream,
 		createWriteStream(target, { flags: 'wx', mode: 0o600 }),
 		{ signal }
@@ -266,7 +268,8 @@ export async function prepareStorageRestore(
 					manifestFile,
 					MAX_MANIFEST_BYTES + ENCRYPTION_OVERHEAD,
 					signal,
-					deps
+					deps,
+					connection
 				);
 				const plain = path.join(work, 'manifest.json');
 				await deps.decryptFile(manifestFile, plain);
@@ -297,6 +300,7 @@ export async function prepareStorageRestore(
 						objectDownloadBytes(parsed, entry),
 						signal,
 						deps,
+						connection,
 						entry.remoteSha256
 					);
 				}

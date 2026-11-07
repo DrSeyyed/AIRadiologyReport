@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileDigest } from './recovery-bundles.js';
+import { uploadStorageFile } from './storage-upload.js';
 
 /** Two encrypted spools maximum. Each transfer gets its own pinned transport session.
  * Legacy injected transports may return the coordinator client; those transfers are awaited
@@ -57,9 +58,9 @@ export function bundleTransfers(deps, connection, coordinator, work, assertOwned
 								try {
 									assertHealthy();
 									await assertOwned();
-									await client.put(encrypted, target);
+									await uploadStorageFile(client, encrypted, target, connection);
 									await assertOwned();
-									if ((await deps.hashRemote(client, target)) !== remoteSha256)
+									if ((await deps.hashRemote(client, target, connection)) !== remoteSha256)
 										throw new Error('Recovery bundle verification failed.');
 									await assertOwned();
 								} finally {
