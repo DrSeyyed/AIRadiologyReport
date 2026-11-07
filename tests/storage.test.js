@@ -2190,13 +2190,20 @@ test('reset identifies final local audio recheck failures without deleting remot
 	const { db, connection, options, audio, objects, resetOptions } = resetFixture(t);
 	await archiveAudio(db, connection, options);
 	const id = queueStorageReset(db, { now });
-	let ownershipChecks = 0;
+	let changed = false;
 	await assert.rejects(
 		resetStorageData(db, connection, {
 			...resetOptions,
 			jobId: id,
 			owned() {
-				if (++ownershipChecks === 3) writeFileSync(audio, 'changed after recovery');
+				if (
+					!changed &&
+					db.prepare('SELECT restored FROM storage_reset_requests WHERE job_id=?').get(id)
+						.restored === 1
+				) {
+					writeFileSync(audio, 'changed after recovery');
+					changed = true;
+				}
 				return true;
 			}
 		}),
@@ -2226,6 +2233,92 @@ test('reset cancellation during recovery preserves remote objects and archive me
 	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
 	assert.equal(getStorageSettings(db).enabled, false);
 });
+
+for (const stage of ['connect', 'root', 'list', 'get', 'delete', 'rmdir']) {
+	test(
+		`reset cancellation aborts stalled ${stage} and prevents late cleanup`,
+		{ timeout: 5_000 },
+		async (t) => {
+			const { db, settings, options, audio, objects, client, directory } = resetFixture(t);
+			const hostKey = Buffer.from('synthetic cancellable reset host key');
+			const fingerprint = `SHA256:${createHash('sha256').update(hostKey).digest('base64').replace(/=$/, '')}`;
+			saveStorageSettings(db, { ...settings, fingerprint });
+			await archiveAudio(db, getStorageConnection(db), options);
+			unlinkSync(audio);
+			await client.mkdir('/radiology/backups/indexes');
+			const entered = Promise.withResolvers();
+			const blocked = Promise.withResolvers();
+			t.after(() => blocked.resolve());
+			let destroyed = 0;
+			let ended = 0;
+			const session = {
+				...client,
+				async connect(config) {
+					assert.equal(config.hostVerifier(hostKey), true);
+					if (stage === 'connect') {
+						entered.resolve();
+						await blocked.promise;
+					}
+				},
+				destroy() {
+					destroyed++;
+				},
+				end() {
+					ended++;
+					return blocked.promise;
+				}
+			};
+			const method = stage === 'root' ? 'lstat' : stage;
+			if (stage !== 'connect') {
+				const original = session[method];
+				session[method] = async (...args) => {
+					if (
+						(stage === 'root' && args[0] !== '/') ||
+						(stage === 'list' && args[0] !== '/radiology/backups/indexes')
+					)
+						return original(...args);
+					entered.resolve();
+					await blocked.promise;
+					return stage === 'root' ? { isDirectory: true } : stage === 'list' ? [] : undefined;
+				};
+			}
+			const id = queueStorageReset(db, { now });
+			const running = processStorageJob(db, {
+				now,
+				resetStorage: (database, config, resetOptions) =>
+					resetStorageData(database, config, {
+						...resetOptions,
+						roots: [directory],
+						transport: (config, action) => withStorage(config, action, () => session)
+					})
+			});
+			await entered.promise;
+			const before = new Map(objects);
+			const metadata = db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(id);
+			cancelStorageJob(db, id, { now });
+			await running;
+			assert.equal(destroyed, 1);
+			assert.equal(ended, 0);
+			assert.equal(storageStatus(db, now).jobs.find((job) => job.id === id).status, 'cancelled');
+			assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_worker_lock').get().n, 0);
+			assert.deepEqual(objects, before);
+			assert.deepEqual(
+				db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(id),
+				metadata
+			);
+			blocked.resolve();
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.deepEqual(objects, before);
+			assert.deepEqual(
+				db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(id),
+				metadata
+			);
+			assert.equal(getStorageSettings(db).enabled, false);
+			if (!['connect', 'root', 'get'].includes(stage))
+				assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		}
+	);
+}
 
 test('reset rejects remote symlink directories and unsafe local paths without remote deletion', async (t) => {
 	const { db, connection, options, objects, client, run, directory } = resetFixture(t);

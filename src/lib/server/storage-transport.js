@@ -134,29 +134,37 @@ async function defaultFactory() {
 	return new SftpClient();
 }
 
-async function bounded(operation, timeoutMs = TIMEOUT_MS) {
+async function bounded(operation, timeoutMs = TIMEOUT_MS, signal) {
 	let timer;
+	let stop;
 	const controller = new AbortController();
 	try {
 		return await Promise.race([
-			Promise.resolve().then(() => operation(controller.signal)),
+			Promise.resolve().then(() => {
+				controller.signal.throwIfAborted();
+				return operation(controller.signal);
+			}),
 			new Promise((_, reject) => {
-				timer = setTimeout(() => {
+				stop = () => {
 					controller.abort();
 					reject(storageError());
-				}, timeoutMs);
+				};
+				timer = setTimeout(stop, timeoutMs);
+				if (signal?.aborted) stop();
+				else signal?.addEventListener('abort', stop, { once: true });
 			})
 		]);
 	} finally {
 		clearTimeout(timer);
+		if (stop) signal?.removeEventListener('abort', stop);
 		controller.abort();
 	}
 }
 
-async function close(client) {
+async function close(client, signal) {
 	if (!client) return;
 	try {
-		await bounded(() => client.end());
+		await bounded(() => client.end(), TIMEOUT_MS, signal);
 	} catch {
 		abortStorageSession(client);
 		// Cleanup errors must not expose connection details or mask the operation's result.
@@ -166,9 +174,10 @@ async function close(client) {
 /**
  * Run callback(client) on a password-only, explicitly pinned SFTP connection.
  * factory, when supplied, is an async or sync () => standard SftpClient for testing.
- * Connection/cleanup are bounded to 20 seconds each; the client is always ended.
+ * Connection/cleanup are bounded to 20 seconds each; the client is closed or force-aborted.
  * config.operationTimeoutMs bounds root checks plus callback: integer 1..21,600,000 ms,
- * default 3,600,000 ms (one hour).
+ * default 3,600,000 ms (one hour). Optional config.signal aborts the active connection
+ * without waiting for a stalled request or graceful close; callers must guard late callback work.
  * root and every ancestor must already exist as real directories (checked with lstat).
  * Resolves to the callback result; failures are sanitized, including callback errors.
  */
@@ -190,33 +199,44 @@ export async function withStorage(config, callback, factory = defaultFactory) {
 			throw storageError();
 		}
 		let verified = false;
+		config.signal?.throwIfAborted();
 		client = await factory();
-		await bounded(() =>
-			client.connect({
-				...options,
-				username: config.username,
-				password: config.password,
-				authHandler: ['password'],
-				hostVerifier(key) {
-					try {
-						verified = timingSafeEqual(pin, hostDigest(key));
-						return verified;
-					} catch {
-						return false;
+		config.signal?.throwIfAborted();
+		await bounded(
+			() =>
+				client.connect({
+					...options,
+					username: config.username,
+					password: config.password,
+					authHandler: ['password'],
+					hostVerifier(key) {
+						try {
+							verified = timingSafeEqual(pin, hostDigest(key));
+							return verified;
+						} catch {
+							return false;
+						}
 					}
-				}
-			})
+				}),
+			TIMEOUT_MS,
+			config.signal
 		);
 		if (!verified) throw storageError();
-		return await bounded(async (signal) => {
-			await verifyRemotePath(client, config.root, true, signal);
-			return callback(client);
-		}, timeoutMs);
+		return await bounded(
+			async (signal) => {
+				await verifyRemotePath(client, config.root, true, signal);
+				signal.throwIfAborted();
+				return callback(client);
+			},
+			timeoutMs,
+			config.signal
+		);
 	} catch {
 		abortStorageSession(client);
 		throw storageError();
 	} finally {
-		await close(client);
+		if (config?.signal?.aborted) abortStorageSession(client);
+		else await close(client, config?.signal);
 	}
 }
 

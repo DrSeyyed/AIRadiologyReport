@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import { Readable } from 'node:stream';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import {
@@ -90,6 +91,92 @@ test('withStorage pins the raw key, uses password auth only, returns the callbac
 		assert.equal(options[field], undefined);
 	}
 	assert.deepEqual(mock.calls.lstat, ['/', '/backups', '/backups/reports']);
+	assert.equal(mock.calls.end, 1);
+});
+
+test('withStorage rejects an already cancelled operation before creating a connection', async () => {
+	const controller = new AbortController();
+	controller.abort();
+	let created = false;
+	await rejectsSafely(
+		withStorage(
+			{ ...config, signal: controller.signal },
+			() => {},
+			() => {
+				created = true;
+				return mockClient().client;
+			}
+		)
+	);
+	assert.equal(created, false);
+});
+
+for (const stage of ['connect', 'root', 'callback']) {
+	test(
+		`withStorage aborts stalled ${stage} without waiting for graceful close`,
+		{ timeout: 3_000 },
+		async (t) => {
+			const controller = new AbortController();
+			const entered = Promise.withResolvers();
+			const blocked = Promise.withResolvers();
+			t.after(() => blocked.resolve());
+			let destroyed = 0;
+			const mock = mockClient({
+				async connect(options) {
+					assert.equal(options.hostVerifier(hostKey), true);
+					if (stage === 'connect') {
+						entered.resolve();
+						await blocked.promise;
+					}
+				},
+				async lstat() {
+					if (stage === 'root') {
+						entered.resolve();
+						await blocked.promise;
+					}
+					return { isDirectory: true };
+				},
+				destroy() {
+					destroyed++;
+				},
+				end() {
+					return blocked.promise;
+				}
+			});
+			let called = false;
+			const running = rejectsSafely(
+				withStorage(
+					{ ...config, signal: controller.signal },
+					async () => {
+						called = true;
+						entered.resolve();
+						await blocked.promise;
+					},
+					mock.factory
+				)
+			);
+			await entered.promise;
+			controller.abort();
+			await running;
+			assert.equal(destroyed, 1);
+			assert.equal(called, stage === 'callback');
+			assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+			blocked.resolve();
+			await nextTurn();
+			assert.equal(called, stage === 'callback');
+		}
+	);
+}
+
+test('withStorage removes cancellation listeners after success and still closes normally', async () => {
+	const controller = new AbortController();
+	const mock = mockClient();
+	assert.equal(
+		await withStorage({ ...config, signal: controller.signal }, () => 42, mock.factory),
+		42
+	);
+	assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+	controller.abort();
 	assert.equal(mock.calls.end, 1);
 });
 

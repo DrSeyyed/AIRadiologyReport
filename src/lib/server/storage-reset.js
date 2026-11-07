@@ -3,6 +3,7 @@ import { link, lstat, mkdir, mkdtemp, open, realpath, rm, statfs } from 'node:fs
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hashLocal } from './storage-audio.js';
 import { decryptFile } from './storage-crypto.js';
+import { abortStorageSession } from './storage-session.js';
 import { storageDestination } from './storage-settings.js';
 import { storagePath, withStorage } from './storage-transport.js';
 
@@ -194,8 +195,11 @@ export async function resetStorageData(
 		roots = ['uploads', ...(process.env.VOICE_SAVE_DIR ? [process.env.VOICE_SAVE_DIR] : [])]
 	} = {}
 ) {
+	const controller = new AbortController();
 	async function assertOwned() {
-		if (!(await owned())) throw new StorageResetFailure('Storage reset no longer owns the worker.');
+		const active = !controller.signal.aborted && (await owned());
+		if (!active || controller.signal.aborted)
+			throw new StorageResetFailure('Storage reset no longer owns the worker.');
 	}
 	const request = db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(jobId);
 	if (!request) throw new StorageResetFailure('Missing storage reset request.');
@@ -207,16 +211,45 @@ export async function resetStorageData(
 	};
 	// The transport sanitizes callback errors, so capture safe reset diagnostics before that boundary.
 	const captureFailure = (operation) => async (client) => {
+		const abort = () => abortStorageSession(client);
+		controller.signal.addEventListener('abort', abort, { once: true });
+		// Guard late completions too: an aborted request must never resume reset cleanup.
+		const guarded = Object.fromEntries(
+			['lstat', 'list', 'get', 'delete', 'rmdir'].map((method) => [
+				method,
+				async (...args) => {
+					await assertOwned();
+					const result = await client[method](...args);
+					await assertOwned();
+					return result;
+				}
+			])
+		);
 		try {
-			return await operation(client);
+			await assertOwned();
+			return await operation(guarded);
 		} catch (error) {
 			callbackFailure = resetFailure(error, stage);
 			throw error;
+		} finally {
+			controller.signal.removeEventListener('abort', abort);
 		}
 	};
+	let checking = false;
+	const cancellation = setInterval(async () => {
+		if (checking) return;
+		checking = true;
+		try {
+			await assertOwned();
+		} catch {
+			controller.abort();
+		} finally {
+			checking = false;
+		}
+	}, 250);
 	try {
 		return await transport(
-			{ ...connection, operationTimeoutMs: 6 * 60 * 60 * 1000 },
+			{ ...connection, operationTimeoutMs: 6 * 60 * 60 * 1000, signal: controller.signal },
 			captureFailure(async (client) => {
 				await assertOwned();
 				if (request.phase === 'recovering') {
@@ -282,6 +315,7 @@ export async function resetStorageData(
 							}
 						}
 						await syncFile(target);
+						await assertOwned();
 						db.prepare('UPDATE storage_reset_requests SET restored=? WHERE job_id=?').run(
 							++recovered,
 							jobId
@@ -347,5 +381,7 @@ export async function resetStorageData(
 		);
 	} catch (error) {
 		throw callbackFailure || resetFailure(error, stage);
+	} finally {
+		clearInterval(cancellation);
 	}
 }
