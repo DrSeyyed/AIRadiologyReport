@@ -201,13 +201,23 @@ export async function resetStorageData(
 	if (!request) throw new StorageResetFailure('Missing storage reset request.');
 	const destination = storageDestination(connection);
 	let stage = 'Connecting to storage';
+	let callbackFailure;
 	const setStage = (value) => {
 		stage = value;
+	};
+	// The transport sanitizes callback errors, so capture safe reset diagnostics before that boundary.
+	const captureFailure = (operation) => async (client) => {
+		try {
+			return await operation(client);
+		} catch (error) {
+			callbackFailure = resetFailure(error, stage);
+			throw error;
+		}
 	};
 	try {
 		return await transport(
 			{ ...connection, operationTimeoutMs: 6 * 60 * 60 * 1000 },
-			async (client) => {
+			captureFailure(async (client) => {
 				await assertOwned();
 				if (request.phase === 'recovering') {
 					stage = 'Checking remote audio directory';
@@ -333,9 +343,9 @@ export async function resetStorageData(
 					.prepare('SELECT restored,total,deleted FROM storage_reset_requests WHERE job_id=?')
 					.get(jobId);
 				return { reset: true, ...result };
-			}
+			})
 		);
 	} catch (error) {
-		throw resetFailure(error, stage);
+		throw callbackFailure || resetFailure(error, stage);
 	}
 }

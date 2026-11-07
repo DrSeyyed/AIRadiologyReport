@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
@@ -37,6 +37,7 @@ import {
 } from '../src/lib/server/storage-worker.js';
 
 import { resetStorageData } from '../src/lib/server/storage-reset.js';
+import { withStorage } from '../src/lib/server/storage-transport.js';
 import { abortStorageSession } from '../src/lib/server/storage-session.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
@@ -2088,6 +2089,72 @@ test('reset identifies unfinished indexes after audio recovery without deleting 
 	assert.equal(completed.error, null);
 	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
 });
+
+for (const pending of [true, false]) {
+	test(`reset preserves ${pending ? 'unfinished index' : 'SFTP permission'} diagnostics through the real sanitizing transport`, async (t) => {
+		const { db, settings, options, audio, objects, client, directory } = resetFixture(t);
+		const hostKey = Buffer.from('synthetic reset SSH host key');
+		const fingerprint = `SHA256:${createHash('sha256').update(hostKey).digest('base64').replace(/=$/, '')}`;
+		saveStorageSettings(db, { ...settings, fingerprint });
+		const connection = getStorageConnection(db);
+		await archiveAudio(db, connection, options);
+		unlinkSync(audio);
+		await client.mkdir('/radiology/backups/indexes');
+		if (pending)
+			objects.set(
+				`/radiology/backups/indexes/${now}-${randomUUID()}.pending`,
+				Buffer.from('unfinished')
+			);
+		else {
+			const list = client.list;
+			client.list = async (path) => {
+				if (path === '/radiology/backups/indexes')
+					throw Object.assign(new Error('synthetic-password private-patient-path'), { code: 3 });
+				return list(path);
+			};
+		}
+		const before = new Map(objects);
+		let connected = 0;
+		let closed = 0;
+		const transport = (config, action) =>
+			withStorage(config, action, () => ({
+				...client,
+				async connect(config) {
+					assert.equal(config.hostVerifier(hostKey), true);
+					connected++;
+				},
+				async end() {
+					closed++;
+				}
+			}));
+		const id = queueStorageReset(db, { now });
+		await processStorageJob(db, {
+			now,
+			resetStorage: (database, config, resetOptions) =>
+				resetStorageData(database, config, {
+					...resetOptions,
+					roots: [directory],
+					transport
+				})
+		});
+		const job = storageStatus(db, now).jobs.find((row) => row.id === id);
+		assert.equal(job.status, 'failed');
+		assert.match(job.error, /Inspecting remote backups\/indexes:/);
+		assert.match(
+			job.error,
+			pending
+				? /unfinished backup index \(\.pending\)/
+				: /Remote permission denied \(SFTP status 3\)/
+		);
+		assert.doesNotMatch(job.error, /synthetic-password|private-patient-path|storage.invalid/);
+		assert.match(job.progress, /audio 1\/1, remote files removed 0/);
+		assert.equal(connected, 1);
+		assert.equal(closed, 1);
+		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+		assert.deepEqual(objects, before);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_audio').get().n, 1);
+	});
+}
 
 for (const [code, expected] of [
 	[3, /Remote permission denied \(SFTP status 3\)/],
