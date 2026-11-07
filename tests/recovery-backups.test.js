@@ -134,6 +134,109 @@ async function ordinary(t) {
 	return f;
 }
 
+for (const kind of ['database', 'full']) {
+	test(`${kind} backup reports live file, verified bundle and transfer progress through publication`, async (t) => {
+		const f = await ordinary(t);
+		await f.write('.env', 'ORIGIN=https://example.invalid\nOPENAI_API_KEY=not-for-progress\n');
+		t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: f.options.now * 1000 });
+		const snapshots = [];
+		let uploadedBytes = 0;
+		let verificationBytes = 0;
+		const remoteFile = (target) =>
+			path.join(f.remote, ...target.slice('/vault/'.length).split('/'));
+		const put = f.client.put;
+		f.client.put = async (...args) => {
+			await put(...args);
+			uploadedBytes += (await fs.stat(remoteFile(args[1]))).size;
+			t.mock.timers.tick(2_000);
+			assert.equal(snapshots.at(-1).uploading, 1);
+		};
+		const hashRemote = f.deps.hashRemote;
+		f.deps.hashRemote = async (client, target, settings) => {
+			const bytes = (await fs.stat(remoteFile(target))).size;
+			settings.onProgress(bytes);
+			verificationBytes += bytes;
+			t.mock.timers.tick(2_000);
+			assert.equal(snapshots.at(-1).verifying, 1);
+			return hashRemote(client, target);
+		};
+		const rename = f.client.rename;
+		f.client.rename = async (...args) => {
+			t.mock.timers.tick(2_000);
+			const live = snapshots.at(-1);
+			assert.equal(live.phase, 'publishing');
+			assert.equal(live.files, live.totalFiles);
+			assert.equal(live.uploadedObjects + live.reusedObjects, live.bundles);
+			return rename(...args);
+		};
+		const result = await backupRecovery(
+			f.db,
+			connection,
+			{ ...f.options, kind, onProgress: (value) => snapshots.push(value) },
+			f.deps
+		);
+		const final = snapshots.at(-1);
+		assert.equal(final.files, result.files);
+		assert.equal(final.totalFiles, result.files);
+		assert.equal(final.uploadedObjects, result.uploadedObjects);
+		assert.equal(final.reusedObjects, result.reusedObjects);
+		assert.equal(final.uploadedBytes, uploadedBytes);
+		assert.equal(final.verificationBytes, verificationBytes);
+		assert.equal(final.uploading + final.verifying, 0);
+		assert.equal(final.phase, 'cleanup');
+		assert.ok(snapshots.some((value) => value.phase === 'collecting'));
+		assert.doesNotMatch(
+			JSON.stringify(snapshots),
+			/not-for-progress|private-password|uploads\/audio|example\.invalid/
+		);
+		const count = snapshots.length;
+		t.mock.timers.tick(60_000);
+		assert.equal(snapshots.length, count);
+		await restoreRecovery(f.restoreOptions(result), f.deps);
+	});
+}
+
+test('reused backup bundles count as verified without counting their bytes as new uploads', async (t) => {
+	const f = await ordinary(t);
+	await backupRecovery(f.db, connection, f.options, f.deps);
+	const snapshots = [];
+	const result = await backupRecovery(
+		f.db,
+		connection,
+		{ ...f.options, now: f.options.now + 1, onProgress: (value) => snapshots.push(value) },
+		f.deps
+	);
+	const final = snapshots.at(-1);
+	assert.equal(final.uploadedObjects, 0);
+	assert.equal(final.reusedObjects, result.reusedObjects);
+	assert.equal(final.bundles, result.reusedObjects);
+	assert.ok(final.reusedObjects > 0);
+	assert.ok(final.uploadedBytes > 0, 'the manifest and publication index still need uploading');
+});
+
+test('a failing progress observer cannot publish a recovery point or leak its error', async (t) => {
+	const f = await ordinary(t);
+	await assert.rejects(
+		backupRecovery(
+			f.db,
+			connection,
+			{
+				...f.options,
+				onProgress() {
+					throw new Error('private observer detail');
+				}
+			},
+			f.deps
+		),
+		{ message: 'Recovery backup failed.' }
+	);
+	assert.deepEqual(await listRecovery(connection, f.deps), []);
+	assert.equal(
+		await fs.readFile(path.join(f.app, 'uploads', 'audio', 'part.ogg'), 'utf8'),
+		'audio payload'
+	);
+});
+
 test('full encrypted snapshot restores SQLite, reports, uploads extras and filtered private environment', async (t) => {
 	const f = await ordinary(t);
 	await f.write('uploads/templates/custom.txt', 'template payload');
@@ -255,7 +358,14 @@ test('archive-only audio is authenticated and copied into an independent backup 
 			recoveryDestination(connection)
 		);
 	await fs.unlink(source);
-	const result = await backupRecovery(f.db, connection, { ...f.options, kind: 'full' }, f.deps);
+	const progress = [];
+	const result = await backupRecovery(
+		f.db,
+		connection,
+		{ ...f.options, kind: 'full', onProgress: (value) => progress.push(value) },
+		f.deps
+	);
+	assert.equal(progress.at(-1).downloadedBytes, (await fs.stat(archive)).size);
 	const entry = (await f.manifest(result)).files.find((e) => e.path === original);
 	assert.notEqual(entry.object, object);
 	await fs.rm(path.join(f.remote, 'audio'), { recursive: true });
@@ -645,6 +755,96 @@ test('database snapshots include archived referenced audio and full snapshots in
 	assert.equal(full.archivedFiles, 2);
 	assert.ok((await f.manifest(full)).files.some((file) => file.path === unreferenced.original));
 });
+
+for (const kind of ['database', 'full']) {
+	for (const corrupt of [false, true]) {
+		test(
+			`${kind} backup verifies archives four at a time in both publication passes${corrupt ? ' and rejects late corruption' : ''}`,
+			{ timeout: 5000 },
+			async (t) => {
+				const f = await fixture(t);
+				const archives = [];
+				for (let i = 0; i < 4; i++) archives.push(await savedArchive(f, { keepLocal: true }));
+				t.mock.timers.enable({ apis: ['setInterval'] });
+				const snapshots = [];
+				const reads = new Map();
+				let coordinator;
+				let workers = 0;
+				let active = 0;
+				let passes = 0;
+				let gate;
+				let release;
+				const deps = {
+					...f.deps,
+					async withStorage(_settings, callback) {
+						const client = {
+							...f.client,
+							async put(source, target) {
+								await f.client.put(source, target);
+								if (corrupt && target.endsWith('.pending'))
+									await fs.appendFile(archives[0].encrypted, 'changed');
+							},
+							async rename(source, target) {
+								assert.equal(workers, 0, 'close every verification worker before publication');
+								assert.equal(active, 0);
+								assert.equal(passes, 2, 'retain both complete verification passes');
+								return f.client.rename(source, target);
+							}
+						};
+						const extra = !!coordinator;
+						if (extra) workers++;
+						else coordinator = client;
+						try {
+							return await callback(client);
+						} finally {
+							if (extra) workers--;
+						}
+					},
+					async hashRemote(client, target, settings) {
+						if (!target.startsWith('/vault/audio/'))
+							return f.deps.hashRemote(client, target, settings);
+						reads.set(target, (reads.get(target) || 0) + 1);
+						if (active++ === 0)
+							gate = new Promise((resolve) => {
+								release = resolve;
+							});
+						const current = gate;
+						if (active === 4) {
+							passes++;
+							t.mock.timers.tick(2000);
+							release();
+						}
+						try {
+							await current;
+							return await f.deps.hashRemote(client, target, settings);
+						} finally {
+							active--;
+						}
+					}
+				};
+				const operation = backupRecovery(
+					f.db,
+					connection,
+					{ ...f.options, kind, onProgress: (value) => snapshots.push(value) },
+					deps
+				);
+				if (corrupt) {
+					await assert.rejects(operation, /Recovery backup failed/);
+					assert.deepEqual(await listRecovery(connection, f.deps), []);
+				} else {
+					assert.equal((await operation).archivedFiles, 4);
+				}
+				assert.equal(passes, 2);
+				assert.equal(reads.size, 4);
+				for (const count of reads.values()) assert.equal(count, 2);
+				assert.equal(workers, 0);
+				assert.equal(active, 0);
+				assert.ok(snapshots.some((value) => value.phase === 'verifying' && value.verifying === 4));
+				assert.equal(snapshots.at(-1).verifying, 0);
+			}
+		);
+	}
+}
 
 test('full backup rejects archive metadata changed after collection, including during pending-index upload', async (t) => {
 	for (const change of ['sha256', 'object_key', 'archived_at', 'deleted']) {
@@ -1134,6 +1334,8 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 	]) {
 		await t.test(mode, { timeout: 15000 }, async (t) => {
 			const f = await ordinary(t);
+			t.mock.timers.enable({ apis: ['setInterval'] });
+			const progress = [];
 			await f.write('uploads/parallel.bin', Buffer.alloc(12000, 65));
 			let pairReady;
 			const paired = new Promise((resolve) => {
@@ -1210,6 +1412,8 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 											await sibling;
 									}
 									if (ordinal === 2) {
+										t.mock.timers.tick(2_000);
+										assert.equal(progress.at(-1).uploading, 2);
 										pairReady();
 										await sibling;
 										await fs.access(args[0].path);
@@ -1241,7 +1445,13 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 					}
 				}
 			};
-			const options = { ...f.options, kind: 'full', bundleBytes: 1024, owned: () => owned };
+			const options = {
+				...f.options,
+				kind: 'full',
+				bundleBytes: 1024,
+				owned: () => owned,
+				onProgress: (value) => progress.push(value)
+			};
 			const backup = backupRecovery(f.db, connection, options, deps).finally(() => {
 				returned = true;
 			});
@@ -1269,6 +1479,14 @@ test('parallel bundle transfers use at most two separate pinned sessions and set
 				);
 				await restoreRecovery(f.restoreOptions(retry), f.deps);
 			}
+			assert.equal(progress.at(-1).uploading + progress.at(-1).verifying, 0);
+			const reports = progress.length;
+			t.mock.timers.tick(60_000);
+			assert.equal(
+				progress.length,
+				reports,
+				'progress reporting must stop after success or failure'
+			);
 			assert.equal(workers, 0);
 			assert.equal(busy.size, 0);
 			assert.equal(peakWorkers, 2);

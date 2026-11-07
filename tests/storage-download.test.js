@@ -41,9 +41,16 @@ test('backup download resets inactivity on data and permits transfers longer tha
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const source = new Readable({ read() {} });
 	const target = join(work, 'file');
-	const pending = downloadStorageFile({ createReadStream: () => source }, '/vault/file', target, {
-		verificationTimeoutSeconds: 45
-	});
+	const chunks = [];
+	const pending = downloadStorageFile(
+		{ createReadStream: () => source },
+		'/vault/file',
+		target,
+		{
+			verificationTimeoutSeconds: 45
+		},
+		{ onProgress: (bytes) => chunks.push(bytes) }
+	);
 	await nextTurn();
 	for (let index = 0; index < 3; index++) {
 		t.mock.timers.tick(25_000);
@@ -53,4 +60,5 @@ test('backup download resets inactivity on data and permits transfers longer tha
 	source.push(null);
 	await pending;
 	assert.equal(await readFile(target, 'utf8'), 'chunkchunkchunk');
+	assert.deepEqual(chunks, [5, 5, 5]);
 });

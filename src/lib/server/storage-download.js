@@ -3,7 +3,13 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { storageTimeoutMs } from './storage-settings.js';
 
-export async function downloadStorageFile(client, remote, local, settings = {}) {
+export async function downloadStorageFile(
+	client,
+	remote,
+	local,
+	settings = {},
+	{ onProgress = () => {} } = {}
+) {
 	const timeoutMs = storageTimeoutMs(settings, 'verificationTimeoutSeconds');
 	const source = client.createReadStream(remote);
 	let timer;
@@ -17,8 +23,13 @@ export async function downloadStorageFile(client, remote, local, settings = {}) 
 	};
 	const progress = new Transform({
 		transform(chunk, _encoding, callback) {
-			arm();
-			callback(null, chunk);
+			try {
+				arm();
+				onProgress(chunk.length);
+				callback(null, chunk);
+			} catch (error) {
+				callback(error);
+			}
 		}
 	});
 	try {

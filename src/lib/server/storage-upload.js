@@ -11,11 +11,10 @@ class StorageUpload extends PassThrough {
 		this.path = path;
 	}
 
-	read(size) {
-		const chunk = super.read(size);
-		// Observe consumption, not prebuffering, without putting an unread stream into flowing mode.
-		if (chunk !== null) this.activity();
-		return chunk;
+	emit(event, ...args) {
+		// Observe consumption without enabling flowing mode; pipe() can bypass read() entirely.
+		if (event === 'data') this.activity(args[0].length);
+		return super.emit(event, ...args);
 	}
 }
 
@@ -34,10 +33,10 @@ export async function uploadStorageFile(
 	});
 	let timer;
 	const source = createReadStream(local);
-	const upload = new StorageUpload(() => {
+	const upload = new StorageUpload((bytes) => {
 		try {
 			assertActive();
-			onProgress();
+			onProgress(bytes);
 			arm();
 		} catch (error) {
 			upload.destroy(error);

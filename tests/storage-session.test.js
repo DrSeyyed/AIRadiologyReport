@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { storageRequest, assertStorageSession } from '../src/lib/server/storage-session.js';
 import { uploadStorageFile } from '../src/lib/server/storage-upload.js';
 
@@ -55,6 +57,74 @@ for (const afterEof of [false, true]) {
 		assert.throws(() => assertStorageSession(client), /stopped/);
 	});
 }
+
+test('upload progress reports consumed bytes without dropping or duplicating stream content', async (t) => {
+	const work = await mkdtemp(join(tmpdir(), 'storage-progress-'));
+	t.after(() => rm(work, { recursive: true, force: true }));
+	const local = join(work, 'audio.enc');
+	const data = Buffer.alloc(300_000, 7);
+	await writeFile(local, data);
+	const progress = [];
+	const client = {
+		async put(stream) {
+			assert.deepEqual(Buffer.concat(await Array.fromAsync(stream)), data);
+		}
+	};
+	await uploadStorageFile(
+		client,
+		local,
+		'/audio.enc',
+		{},
+		{ onProgress: (bytes) => progress.push(bytes) }
+	);
+	assert.ok(progress.length > 1);
+	assert.ok(progress.every((bytes) => Number.isInteger(bytes) && bytes > 0));
+	assert.equal(
+		progress.reduce((sum, bytes) => sum + bytes, 0),
+		data.length
+	);
+});
+
+test('pipe consumption updates upload progress and keeps a moving transfer alive beyond its timeout', async (t) => {
+	const work = await mkdtemp(join(tmpdir(), 'storage-progress-'));
+	t.after(() => rm(work, { recursive: true, force: true }));
+	const local = join(work, 'audio.enc');
+	const data = Buffer.alloc(300_000, 7);
+	await writeFile(local, data);
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const received = [];
+	let bytes = 0;
+	let elapsed = 0;
+	const client = {
+		put(stream) {
+			return pipeline(
+				stream,
+				new Writable({
+					write(chunk, encoding, callback) {
+						received.push(Buffer.from(chunk));
+						t.mock.timers.tick(20_000);
+						elapsed += 20_000;
+						setImmediate(callback);
+					}
+				})
+			);
+		}
+	};
+	await uploadStorageFile(
+		client,
+		local,
+		'/audio.enc',
+		{ uploadTimeoutSeconds: 30 },
+		{
+			onProgress: (count) => {
+				bytes += count;
+			}
+		}
+	);
+	assert.deepEqual(Buffer.concat(received), data);
+	assert.equal(bytes, data.length);
+	assert.ok(elapsed > 30_000);
+});
 
 test('an upload promise rejecting after its deadline remains safely handled', async (t) => {
 	const work = await mkdtemp(join(tmpdir(), 'storage-stall-'));

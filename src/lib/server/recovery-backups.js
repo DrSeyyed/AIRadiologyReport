@@ -4,6 +4,8 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { bundleTransfers } from './recovery-bundle-transfers.js';
+import { verifyRecoveryArchives } from './recovery-archive-verification.js';
+import { recoveryProgress } from './recovery-progress.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { downloadStorageFile } from './storage-download.js';
 import {
@@ -24,6 +26,7 @@ import {
  * Database backups include every snapshot-referenced audio/report; full backups also walk uploads
  * and include EVERY storage_audio row captured by the SQLite snapshot, even unreferenced archives.
  * Archive plaintext, encrypted remote bytes, and live archive metadata are rechecked at publication.
+ * Each source-archive checksum pass uses up to four reused sessions and drains before continuing.
  * Full publication rejects new live archive rows with archived_at <= now that were not captured.
  * options.owned is an optional sync/async boolean lease callback; false/throw aborts publication.
  * Parent must maintain/renew the lease across the final SFTP rename and recording job success.
@@ -98,9 +101,12 @@ async function dependencies(injected = {}, remote = true) {
 	return { ...crypto, ...transport, ...injected };
 }
 
-async function sha256(file) {
+async function sha256(file, onActivity = () => {}) {
 	const hash = createHash('sha256');
-	for await (const chunk of createReadStream(file)) hash.update(chunk);
+	for await (const chunk of createReadStream(file)) {
+		hash.update(chunk);
+		onActivity();
+	}
 	return hash.digest('hex');
 }
 
@@ -246,7 +252,7 @@ function referencedFiles(db) {
 	return files;
 }
 
-async function walk(directory) {
+async function walk(directory, onActivity = () => {}) {
 	await noLinks(directory, true);
 	let entries;
 	try {
@@ -259,9 +265,10 @@ async function walk(directory) {
 	for (const entry of entries) {
 		const file = path.join(directory, entry.name);
 		if (entry.isSymbolicLink()) throw new Error('Unsafe recovery source.');
-		if (entry.isDirectory()) files.push(...(await walk(file)));
+		if (entry.isDirectory()) files.push(...(await walk(file, onActivity)));
 		else if (entry.isFile()) files.push(file);
 		else throw new Error('Unsafe recovery source.');
+		onActivity();
 	}
 	return files;
 }
@@ -270,16 +277,16 @@ function sameFileState(a, b) {
 	return a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.ino === b.ino;
 }
 
-async function copyStable(source, target, initial) {
+async function copyStable(source, target, initial, onActivity = () => {}) {
 	await noLinks(source);
 	const before = await fs.stat(source, { bigint: true });
 	if (!before.isFile() || (initial && !sameFileState(initial, before)))
 		throw new Error('Unsafe recovery source.');
 	await fs.copyFile(source, target);
 	await fs.chmod(target, 0o600);
-	const digest = await sha256(target);
+	const digest = await sha256(target, onActivity);
 	const after = await fs.stat(source, { bigint: true });
-	if (!sameFileState(before, after) || digest !== (await sha256(source)))
+	if (!sameFileState(before, after) || digest !== (await sha256(source, onActivity)))
 		throw new Error('Recovery source changed.');
 	await noLinks(source);
 	return { sha256: digest, bytes: Number(before.size) };
@@ -520,10 +527,29 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 	let collection;
 	let activeTransfers;
 	let aborted = false;
+	const progress = recoveryProgress(options.onProgress);
 	try {
-		const deps = await dependencies(injected);
+		const base = await dependencies(injected);
+		const deps = {
+			...base,
+			hashRemote(client, target, settings) {
+				return progress.track('verifying', () =>
+					base.hashRemote(client, target, {
+						...settings,
+						onProgress: (bytes) => progress.add('verificationBytes', bytes)
+					})
+				);
+			}
+		};
+		const upload = (client, source, target) =>
+			progress.track('uploading', () =>
+				uploadStorageFile(client, source, target, connection, {
+					onProgress: (bytes) => progress.add('uploadedBytes', bytes)
+				})
+			);
 		await deps.assertStorageKey();
 		async function assertOwned() {
+			progress.assertHealthy();
 			if (aborted) throw new Error('Recovery backup aborted.');
 			if (
 				options.owned !== undefined &&
@@ -549,10 +575,12 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		const id = `${now}-${randomUUID()}`;
 		work = await workDirectory(cwd);
 		const databaseFile = path.join(work, 'database.sqlite');
+		progress.set({ phase: 'snapshotting' });
 		await db.backup(databaseFile);
 		await fs.chmod(databaseFile, 0o600);
 		snapshot = new Database(databaseFile, { readonly: true });
 		if (snapshot.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
+		progress.set({ phase: 'discovering' });
 		const references = referencedFiles(snapshot);
 		const snapshotArchives = new Map(archiveRows(snapshot).map((row) => [row.path, row]));
 		const archivesUsed = new Map();
@@ -576,13 +604,15 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 				const { absolute, relative } = locate(archive.path);
 				catalog.set(relative, { source: absolute, original: archive.path, role: 'audio' });
 			}
-			const extras = [...(await walk(uploads))];
-			if (!within(uploads, voice) && voice !== uploads) extras.push(...(await walk(voice)));
+			const extras = [...(await walk(uploads, progress.activity))];
+			if (!within(uploads, voice) && voice !== uploads)
+				extras.push(...(await walk(voice, progress.activity)));
 			for (const source of extras) {
 				const { relative } = locate(source);
 				if (!catalog.has(relative)) catalog.set(relative, { source, role: 'attachment' });
 			}
 		}
+		progress.set({ totalFiles: catalog.size + 2 });
 		const initialSources = new Map();
 		for (const entry of catalog.values()) {
 			const archive = snapshotArchives.get(entry.original);
@@ -644,11 +674,19 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		};
 		await deps.withStorage(transferConnection, (client) => {
 			collection = (async () => {
-				const transfers = bundleTransfers(deps, transferConnection, client, work, assertOwned);
+				const transfers = bundleTransfers(
+					deps,
+					transferConnection,
+					client,
+					work,
+					assertOwned,
+					progress
+				);
 				activeTransfers = transfers;
 				try {
 					for (const folder of ['objects', 'manifests', 'indexes'])
 						await client.mkdir(deps.storagePath(connection, 'backups', folder), true);
+					progress.set({ phase: 'checking' });
 					const reusable = new Map();
 					for (const previous of await indexes(client, connection, deps)) {
 						const old = await readManifest(client, connection, previous, work, deps);
@@ -660,6 +698,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						work,
 						manifest,
 						async (compressed, info) => {
+							progress.add('bundles');
 							await assertOwned();
 							const existing = reusable.get(info.sha256);
 							if (existing) {
@@ -674,6 +713,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 								)
 									throw new Error('Recovery bundle changed.');
 								reusedObjects++;
+								progress.add('reusedObjects');
 								return {
 									object: existing.object,
 									remoteSha256: existing.remoteSha256,
@@ -692,7 +732,12 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						const plain = path.join(work, `${randomUUID()}.plain`);
 						try {
 							await assertOwned();
-							const info = await copyStable(source, plain, initialSources.get(source));
+							const info = await copyStable(
+								source,
+								plain,
+								initialSources.get(source),
+								progress.activity
+							);
 							collectedBytes += info.bytes;
 							if (
 								manifest.files.length >= MAX_RECOVERY_FILES ||
@@ -703,10 +748,12 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 							const entry = { path: relative, role, ...info };
 							await writer.add(plain, entry);
 							manifest.files.push(entry);
+							progress.add('files');
 						} finally {
 							await fs.rm(plain, { force: true });
 						}
 					}
+					progress.set({ phase: 'collecting' });
 					await addFile(databaseFile, 'db/pacs.db', 'database');
 					// Keep frequently changing database bytes out of reusable payload bundles.
 					await writer.flush();
@@ -726,7 +773,9 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 							const archived = path.join(work, `${randomUUID()}.archive`);
 							const plain = path.join(work, `${randomUUID()}.audio`);
 							const remote = deps.storagePath(connection, 'audio', archive.object_key);
-							await downloadStorageFile(client, remote, archived, connection);
+							await downloadStorageFile(client, remote, archived, connection, {
+								onProgress: (bytes) => progress.add('downloadedBytes', bytes)
+							});
 							if ((await sha256(archived)) !== archive.remote_sha256) throw new Error();
 							await deps.decryptFile(archived, plain);
 							await addFile(plain, relative, entry.role, archive);
@@ -751,6 +800,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						if (error.code !== 'ENOENT') throw error;
 					}
 					if (envContent !== undefined) {
+						progress.add('totalFiles');
 						const local = path.join(work, 'app.env');
 						await fs.writeFile(local, serializeEnvironment(filteredEnvironment(envContent)), {
 							mode: 0o600
@@ -758,6 +808,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						await addFile(local, '.env', 'environment');
 					}
 					async function verifyCollection() {
+						progress.set({ phase: 'verifying' });
 						await assertOwned();
 						const capturedFiles = new Map(manifest.files.map((file) => [file.path, file]));
 						for (const [relative, entry] of catalog)
@@ -769,28 +820,27 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 										initialSources.get(entry.source),
 										await fs.stat(entry.source, { bigint: true })
 									) ||
-									(await sha256(entry.source)) !== captured.sha256
+									(await sha256(entry.source, progress.activity)) !== captured.sha256
 								)
 									throw new Error('Recovery source changed.');
+								progress.activity();
 							}
-						for (const archive of archivesUsed.values()) {
-							if (
-								(await deps.hashRemote(
-									client,
-									deps.storagePath(connection, 'audio', archive.object_key),
-									connection
-								)) !== archive.remote_sha256
-							) {
-								throw new Error('Recovery archive changed.');
-							}
-						}
+						await verifyRecoveryArchives(
+							deps,
+							transferConnection,
+							client,
+							archivesUsed.values(),
+							assertOwned
+						);
 						await assertOwned();
 						assertArchiveCatalog();
 					}
 					await writer.flush();
+					progress.set({ phase: 'transferring' });
 					await transfers.finish();
 					await verifyCollection();
 					validateManifest(manifest);
+					progress.set({ phase: 'publishing' });
 					const json = path.join(work, 'manifest.json');
 					const encrypted = path.join(work, 'manifest.enc');
 					const serialized = JSON.stringify(manifest);
@@ -799,7 +849,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 					await fs.writeFile(json, serialized, { mode: 0o600 });
 					await deps.encryptFile(json, encrypted);
 					const target = deps.storagePath(connection, 'backups', 'manifests', `${id}.enc`);
-					await uploadStorageFile(client, encrypted, target, connection);
+					await upload(client, encrypted, target);
 					if ((await deps.hashRemote(client, target, connection)) !== (await sha256(encrypted)))
 						throw new Error();
 					// Publication is last and atomic: an index is the sole completed-snapshot marker.
@@ -808,8 +858,9 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						mode: 0o600
 					});
 					const pending = deps.storagePath(connection, 'backups', 'indexes', `${id}.pending`);
-					await uploadStorageFile(client, publicIndex, pending, connection);
+					await upload(client, publicIndex, pending);
 					await verifyCollection();
+					progress.set({ phase: 'publishing' });
 					await client.rename(
 						pending,
 						deps.storagePath(connection, 'backups', 'indexes', `${id}.${kind}.json`)
@@ -834,9 +885,14 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		aborted = true;
 		throw new Error('Recovery backup failed.');
 	} finally {
-		await activeTransfers?.settle();
-		await collection?.catch(() => {});
-		await cleanupRecovery(snapshot, work);
+		progress.set({ phase: 'cleanup' });
+		try {
+			await activeTransfers?.settle();
+			await collection?.catch(() => {});
+			await cleanupRecovery(snapshot, work);
+		} finally {
+			progress.finish();
+		}
 	}
 }
 

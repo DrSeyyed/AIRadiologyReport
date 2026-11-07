@@ -8,7 +8,7 @@ import { uploadStorageFile } from './storage-upload.js';
  * Legacy injected transports may return the coordinator client; those transfers are awaited
  * synchronously. Repeated injected worker clients are serialized for the entire put/hash pair.
  */
-export function bundleTransfers(deps, connection, coordinator, work, assertOwned) {
+export function bundleTransfers(deps, connection, coordinator, work, assertOwned, progress) {
 	const pending = new Set();
 	const byDigest = new Map();
 	const clients = new WeakMap();
@@ -58,11 +58,16 @@ export function bundleTransfers(deps, connection, coordinator, work, assertOwned
 								try {
 									assertHealthy();
 									await assertOwned();
-									await uploadStorageFile(client, encrypted, target, connection);
+									await progress.track('uploading', () =>
+										uploadStorageFile(client, encrypted, target, connection, {
+											onProgress: (bytes) => progress.add('uploadedBytes', bytes)
+										})
+									);
 									await assertOwned();
 									if ((await deps.hashRemote(client, target, connection)) !== remoteSha256)
 										throw new Error('Recovery bundle verification failed.');
 									await assertOwned();
+									progress.add('uploadedObjects');
 								} finally {
 									release();
 								}

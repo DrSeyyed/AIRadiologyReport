@@ -152,7 +152,7 @@
 				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Reset storage</button>
 			</fieldset>
 		</form>
-		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Read-back bytes accumulate across the current archive pass; verification reads also update the activity timer. Uploads and verification/download reads use the saved inactivity timeouts above; large files can continue while data is moving. Connection, metadata and overall job limits are unchanged.</p>
+		<p class="text-sm">Status refreshes every 5 seconds while this page is visible. Snapshots and full backups show collected files, verified new/reused bundles, transfer MiB and the current phase; totals can grow during collection. Read-back bytes accumulate across the current job; verification reads also update the activity timer. Uploads and verification/download reads use the saved inactivity timeouts above; large files can continue while data is moving. Connection, metadata and overall job limits are unchanged.</p>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs as job (job.id)}

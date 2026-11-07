@@ -7,6 +7,7 @@ import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { archiveAudio, hashLocal } from './storage-audio.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
+import { safeRecoveryProgress } from './recovery-progress.js';
 import { prepareStorageRestore } from './storage-restore.js';
 import { resetStorageData } from './storage-reset.js';
 
@@ -287,7 +288,7 @@ export async function processStorageJob(
 			.get(now, +settings.enabled, +settings.archiveEnabled, +settings.backupsEnabled);
 		if (!job) return false;
 		db.prepare(
-			"UPDATE storage_jobs SET status='running',started_at=?,finished_at=NULL,attempts=attempts+1,error=NULL WHERE id=?"
+			"UPDATE storage_jobs SET status='running',started_at=?,finished_at=NULL,attempts=attempts+1,error=NULL,result=NULL WHERE id=?"
 		).run(now, job.id);
 		const connection = getStorageConnection(db);
 		let result;
@@ -317,8 +318,25 @@ export async function processStorageJob(
 				}
 			});
 		else {
-			result = await runBackup(db, connection, { kind: job.kind, now, owned });
+			let latestProgress;
+			const onProgress = (progress) => {
+				if (!owned()) return;
+				const safe = safeRecoveryProgress(progress);
+				if (!safe) return;
+				latestProgress = safe;
+				db.prepare("UPDATE storage_jobs SET result=? WHERE id=? AND status='running'").run(
+					JSON.stringify(safe),
+					job.id
+				);
+			};
+			result = await runBackup(db, connection, { kind: job.kind, now, owned, onProgress });
 			if (!owned()) throw new Error('Storage worker lease expired.');
+			if (latestProgress)
+				onProgress({
+					...latestProgress,
+					phase: 'pruning',
+					lastActivityAt: Math.floor(Date.now() / 1000)
+				});
 			await prune(connection, settings, now);
 		}
 		if (!owned()) throw new Error('Storage worker lease expired.');
@@ -421,6 +439,20 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 					const progress = archiveProgress(parsed);
 					if (progress && job.status === 'running')
 						job.progress += ` Preparing: ${progress.preparing}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Read back: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+				}
+				if (['database', 'full'].includes(job.kind)) {
+					const progress = safeRecoveryProgress(parsed);
+					if (progress) {
+						job.progress = `Files collected: ${progress.files}/${progress.totalFiles}; bundles verified: ${progress.uploadedObjects + progress.reusedObjects}/${progress.bundles}; uploaded: ${progress.uploadedObjects}; reused: ${progress.reusedObjects}.`;
+						if (job.status === 'running')
+							job.progress += ` Phase: ${progress.phase}; uploading: ${progress.uploading}; verifying: ${progress.verifying}. Uploaded: ${(progress.uploadedBytes / (1024 * 1024)).toFixed(2)} MiB; downloaded audio: ${(progress.downloadedBytes / (1024 * 1024)).toFixed(2)} MiB; read back: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+					} else if (
+						['files', 'bytes', 'uploadedObjects', 'reusedObjects'].every(
+							(field) => Number.isSafeInteger(parsed?.[field]) && parsed[field] >= 0
+						)
+					) {
+						job.progress = `Files: ${parsed.files}; bundles uploaded and verified: ${parsed.uploadedObjects}; reused: ${parsed.reusedObjects}; source data: ${(parsed.bytes / (1024 * 1024)).toFixed(2)} MiB.`;
+					}
 				}
 				if (typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id)) backupId = parsed.id;
 				if (

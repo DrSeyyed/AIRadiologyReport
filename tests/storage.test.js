@@ -925,6 +925,163 @@ test('persistent scheduling deduplicates work, honours pause and derives UTC per
 	assert.ok(!JSON.stringify(status).includes('synthetic-password'));
 });
 
+for (const kind of ['database', 'full']) {
+	test(`${kind} worker persists safe live progress and displays a completed backup summary`, async (t) => {
+		const { db, settings } = fixture(t);
+		saveStorageSettings(db, { ...settings, archiveEnabled: false });
+		db.prepare(
+			"INSERT INTO storage_jobs(kind,status,created_at,started_at,finished_at) VALUES(?,'succeeded',?,?,?)"
+		).run(kind === 'full' ? 'database' : 'full', now, now, now);
+		const jobId = queueStorageJob(db, kind, { now });
+		db.prepare('UPDATE storage_jobs SET result=? WHERE id=?').run(
+			JSON.stringify({ oldAttempt: true }),
+			jobId
+		);
+		const progress = {
+			phase: 'collecting',
+			files: 2,
+			totalFiles: 4,
+			bundles: 2,
+			uploadedObjects: 1,
+			reusedObjects: 0,
+			uploading: 1,
+			verifying: 0,
+			uploadedBytes: 1024 * 1024,
+			downloadedBytes: 2 * 1024 * 1024,
+			verificationBytes: 3 * 1024 * 1024,
+			lastActivityAt: now - 7
+		};
+		let report;
+		const result = {
+			id: `${now}-${randomUUID()}`,
+			files: 4,
+			bytes: 1024 * 1024,
+			uploadedObjects: 1,
+			reusedObjects: 1
+		};
+		await processStorageJob(db, {
+			now,
+			async runBackup(database, connection, options) {
+				assert.equal(options.kind, kind);
+				assert.equal(
+					database.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result,
+					null
+				);
+				report = options.onProgress;
+				report({ ...progress, privatePath: 'private-progress-data' });
+				const saved = database
+					.prepare('SELECT result FROM storage_jobs WHERE id=?')
+					.get(jobId).result;
+				assert.deepEqual(JSON.parse(saved), progress);
+				for (const bad of [
+					{ ...progress, phase: 'private-progress-data' },
+					{ ...progress, files: -1 },
+					{ ...progress, uploading: 5 }
+				])
+					report(bad);
+				assert.equal(
+					database.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result,
+					saved
+				);
+				const display = storageStatus(database, now).jobs.find((job) => job.id === jobId).progress;
+				assert.match(display, /Files collected: 2\/4; bundles verified: 1\/2/);
+				assert.match(display, /Phase: collecting; uploading: 1; verifying: 0/);
+				assert.match(
+					display,
+					/Uploaded: 1.00 MiB; downloaded audio: 2.00 MiB; read back: 3.00 MiB/
+				);
+				assert.match(display, /activity: 7s ago/);
+				assert.doesNotMatch(display, /private-progress-data/);
+				const parallel = { ...progress, phase: 'verifying', uploading: 0, verifying: 4 };
+				report(parallel);
+				assert.deepEqual(
+					JSON.parse(
+						database.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result
+					),
+					parallel
+				);
+				assert.match(
+					storageStatus(database, now).jobs.find((job) => job.id === jobId).progress,
+					/Phase: verifying; uploading: 0; verifying: 4/
+				);
+				report({ ...parallel, verifying: 0 });
+				return result;
+			},
+			async prune() {
+				assert.match(
+					storageStatus(db, now).jobs.find((job) => job.id === jobId).progress,
+					/Phase: pruning/
+				);
+			}
+		});
+		assert.deepEqual(
+			JSON.parse(db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result),
+			result
+		);
+		report({ ...progress, files: 3 });
+		assert.deepEqual(
+			JSON.parse(db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result),
+			result
+		);
+		const completed = storageStatus(db, now + 100).jobs.find((job) => job.id === jobId);
+		assert.equal(completed.status, 'succeeded');
+		assert.match(completed.progress, /Files: 4; bundles uploaded and verified: 1; reused: 1/);
+		assert.doesNotMatch(completed.progress, /ago|Phase:/);
+	});
+}
+
+for (const mode of ['cancelled', 'lost lease']) {
+	test(`backup progress cannot publish after the job is ${mode}`, async (t) => {
+		const { db, settings } = fixture(t);
+		saveStorageSettings(db, { ...settings, archiveEnabled: false });
+		const jobId = queueStorageJob(db, 'full', { now });
+		let report;
+		await processStorageJob(db, {
+			now,
+			async runBackup(database, connection, options) {
+				const progress = {
+					phase: 'collecting',
+					files: 0,
+					totalFiles: 1,
+					bundles: 0,
+					uploadedObjects: 0,
+					reusedObjects: 0,
+					uploading: 0,
+					verifying: 0,
+					uploadedBytes: 0,
+					downloadedBytes: 0,
+					verificationBytes: 0,
+					lastActivityAt: now
+				};
+				report = options.onProgress;
+				report(progress);
+				const before = db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result;
+				if (mode === 'cancelled') cancelStorageJob(db, jobId, { now });
+				else db.prepare("UPDATE storage_worker_lock SET owner='replacement-worker'").run();
+				report({ ...progress, files: 1 });
+				assert.equal(
+					db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result,
+					before
+				);
+				return { files: 1 };
+			},
+			prune() {
+				assert.fail('unowned backup cannot prune');
+			}
+		});
+		const before = db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result;
+		report({ phase: 'preparing' });
+		assert.equal(
+			db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(jobId).result,
+			before
+		);
+		assert.notEqual(
+			db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(jobId).status,
+			'succeeded'
+		);
+	});
+}
+
 test('storage worker owns a durable lease, retries failures and resumes interrupted jobs', async (t) => {
 	const { db, settings } = fixture(t);
 	saveStorageSettings(db, { ...settings, archiveEnabled: false });
