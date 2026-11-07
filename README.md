@@ -75,6 +75,8 @@ This change applies to new recordings only. Existing files and database paths ar
 
 The SSH password is encrypted in SQLite, never displayed or returned to the browser. Blank password fields preserve it. The destination (including host key) cannot be changed once archives or recovery backups are in use; password and scheduling changes remain possible. Destination/key migration needs a separate planned procedure. Wait for a running job before changing settings. Changing a destination does not move existing data.
 
+The Storage page has four tabs: **Overview & jobs** for status, manual jobs and cancellation; **Settings** for connection, schedules and retention; **Restore** for recovery copies; and **Maintenance** for log cleanup and storage reset. Detailed help is collapsed. Switching tabs preserves unsaved inputs and loaded recovery points; status continues refreshing in the background.
+
 ### Archiving, schedules and retention
 
 - Browser/Telegram audio and reports are saved locally first. A persistent synchronization job reconciles **all regular files under `uploads` and `VOICE_SAVE_DIR`**, recording new/changed files and deletion tombstones in a durable SQLite queue. Discovery normally runs once per minute; each pass handles up to **100 files**, using the configured **1–16 parallel storage connections (default 4)** and at most that many temporary encrypted files. Pending work queues another pass, normally eligible within 15 seconds. Backups also synchronize their complete required catalog before publication. Synchronization runs when either audio archiving or recovery backups is enabled; an unavailable storage server does not block initial recording uploads.

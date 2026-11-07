@@ -54,8 +54,12 @@ function storageFormSettings(form) {
 	return normalizeStorageSettings(values);
 }
 
-export function load({ locals }) {
+export function load({ locals, url }) {
 	requireAdmin(locals);
+	const requestedTab = url?.searchParams.get('tab');
+	const tab = ['overview', 'settings', 'restore', 'maintenance'].includes(requestedTab)
+		? requestedTab
+		: 'overview';
 	const db = getDb();
 	let keyConfigured = false;
 	try {
@@ -65,6 +69,7 @@ export function load({ locals }) {
 		/* Only expose whether a valid key exists. */
 	}
 	return {
+		tab,
 		settings: getStorageSettings(db),
 		passwordConfigured: storagePasswordConfigured(db),
 		keyConfigured,

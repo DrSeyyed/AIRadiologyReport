@@ -502,8 +502,10 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 				specifier === '$app/forms'
 					? 'data:text/javascript,export function enhance(){}'
 					: specifier === '$app/navigation'
-						? 'data:text/javascript,export async function invalidateAll(){}'
-						: import.meta.resolve(specifier)
+						? 'data:text/javascript,export async function invalidateAll(){};export function replaceState(){}'
+						: specifier === '$app/paths'
+							? 'data:text/javascript,export function resolve(path){return path;}'
+							: import.meta.resolve(specifier)
 			)}`
 	);
 	const component = await import(
@@ -530,7 +532,7 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		assert.match(body, new RegExp(`<button[^>]*disabled[^>]*>${label}</button>`));
 	assert.match(body, /Recovering audio 1 of 2/);
 	assert.match(body, /Storage reset is active/);
-	assert.match(body, /action="\?\/cancel"/);
+	assert.match(body, /action="\?\/cancel&(?:amp;)?tab=overview"/);
 	assert.match(body, /Clear finished log/);
 	data.status.resetActive = false;
 	data.status.jobs = [
@@ -554,11 +556,79 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 			archiveBody,
 			new RegExp(`<input[^>]*name="${name}"[^>]*min="1"[^>]*max="600"[^>]*step="1"`)
 		);
-	assert.match(archiveBody, /<td class="whitespace-nowrap">[\s\S]*?action="\?\/cancel"/);
+	assert.match(archiveBody, /<td class="whitespace-nowrap">[\s\S]*?action="\?\/cancel&(?:amp;)?tab=overview"/);
 	assert.match(
 		archiveBody,
 		/<button class="[^"]*min-w-max whitespace-nowrap" name="jobId" value="999">Cancel<\/button>/
 	);
+	const tabs = ['overview', 'settings', 'restore', 'maintenance'];
+	for (const requested of [...tabs, 'invalid', '']) {
+		const expected = tabs.includes(requested) ? requested : 'overview';
+		const tabData = page.load({
+			locals: admin,
+			url: new URL(`http://localhost/admin/storage?tab=${requested}`)
+		});
+		assert.equal(tabData.tab, expected);
+		const { body: tabBody } = render(component.default, { props: { data: tabData } });
+		assert.equal((tabBody.match(/role="tab"/g) || []).length, 4);
+		for (const tab of tabs) {
+			const panel = tabBody.match(new RegExp(`<div id="storage-panel-${tab}"[^>]*>`))[0];
+			assert.equal(/\bhidden\b/.test(panel), tab !== expected);
+			const link = tabBody.match(new RegExp(`<a id="storage-tab-${tab}"[^>]*>`))[0];
+			assert.match(link, new RegExp(`aria-selected="${tab === expected}"`));
+			assert.match(link, new RegExp(`tabindex="${tab === expected ? 0 : -1}"`));
+		}
+		assert.match(tabBody, /name="password"/);
+		assert.match(tabBody, /Type RESET STORAGE to confirm/);
+	}
+});
+
+test('storage tabs support keyboard navigation and preserve unsaved settings', () => {
+	const source = readFileSync(
+		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
+		'utf8'
+	);
+	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
+	const location = { href: 'http://localhost/admin/storage?tab=restore&keep=1' };
+	let focused;
+	let prevented = 0;
+	const api = new Function(
+		'onMount', 'untrack', '$props', '$state', 'replaceState', 'resolve', 'window', 'document',
+		`${script}\nreturn { selectTab, tabClick, tabKeydown, settings, active: () => activeTab, hours: () => fullBackupHours };`
+	)(
+		() => {},
+		(read) => read(),
+		() => ({ data: { tab: 'restore', settings: { host: 'saved.invalid', fullBackupHours: [0, 12] } } }),
+		(value) => value,
+		(url) => { location.href = new URL(url, location.href).href; },
+		(path) => path,
+		{ location },
+		{ getElementById: (id) => ({ focus: () => { focused = id; } }) }
+	);
+	api.settings.host = 'unsaved.invalid';
+	const event = (values) => ({ button: 0, preventDefault: () => { prevented++; }, ...values });
+	assert.equal(api.active(), 'restore');
+	for (const values of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }])
+		api.tabClick(event(values), 'settings');
+	assert.equal(api.active(), 'restore');
+	assert.equal(prevented, 0);
+	api.tabClick(event(), 'settings');
+	assert.equal(api.active(), 'settings');
+	assert.equal(new URL(location.href).searchParams.get('tab'), 'settings');
+	assert.equal(new URL(location.href).searchParams.get('keep'), '1');
+	for (const [key, index, expected] of [
+		['ArrowLeft', 0, 'maintenance'], ['ArrowRight', 3, 'overview'],
+		['Home', 2, 'overview'], ['End', 1, 'maintenance']
+	]) {
+		api.tabKeydown(event({ key }), index);
+		assert.equal(api.active(), expected);
+		assert.equal(focused, `storage-tab-${expected}`);
+	}
+	api.tabKeydown(event({ key: 'Tab' }), 0);
+	assert.equal(prevented, 5);
+	assert.equal(api.settings.host, 'unsaved.invalid');
+	assert.equal(api.hours(), '0, 12');
+	assert.doesNotMatch(source, /\{#if activeTab/);
 });
 
 test('storage status refresh skips hidden pages and overlapping requests, preserves edits and cleans up', async () => {
@@ -657,15 +727,19 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	);
 	assert.match(page, /bind:value=\{settings\.fingerprint\}/);
 	assert.ok(!page.includes('bind:value={settings.password}'));
-	assert.match(page, /action="\?\/recoveryPoints"/);
-	assert.match(page, /action="\?\/restore"/);
-	assert.match(page, /action="\?\/cancel"/);
-	assert.match(page, /action="\?\/pause" use:enhance=\{pauseEnhance\}/);
-	assert.match(page, /action="\?\/clearLog"/);
-	assert.match(page, /action="\?\/reset" use:enhance=\{pauseEnhance\}/);
+	assert.match(page, /action="\?\/save&tab=settings"/);
+	assert.match(page, /formaction="\?\/probe&tab=settings"/);
+	assert.match(page, /action="\?\/job&tab=overview"/);
+	assert.match(page, /action="\?\/recoveryPoints&tab=restore"/);
+	assert.match(page, /action="\?\/restore&tab=restore"/);
+	assert.match(page, /action="\?\/cancel&tab=overview"/);
+	assert.match(page, /action="\?\/pause&tab=overview" use:enhance=\{pauseEnhance\}/);
+	assert.match(page, /action="\?\/clearLog&tab=maintenance"/);
+	assert.match(page, /action="\?\/reset&tab=maintenance" use:enhance=\{pauseEnhance\}/);
 	assert.match(page, /name="recoverAudio" required/);
-	assert.match(page, /adequate free SSD space/);
-	assert.match(page, /hash-verifies all archived audio locally/);
+	assert.match(page, /free SSD space for all archived audio/);
+	assert.match(page, /Audio is recovered and verified locally before/);
+	assert.match(page, /Remote backups are permanently lost/);
 	assert.match(page, /\{#if job.progress\}/);
 	assert.match(page, /\$state\(untrack\(/);
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
