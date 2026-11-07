@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { BUNDLE_BYTES } from '../src/lib/server/recovery-bundles.js';
 import Database from 'better-sqlite3';
 import {
 	backupRecovery,
@@ -148,6 +150,10 @@ test('full encrypted snapshot restores SQLite, reports, uploads extras and filte
 	assert.deepEqual(listing, [{ id: result.id, kind: 'full', createdAt: f.options.now }]);
 	const manifest = await f.manifest(result);
 	assert.equal(manifest.references.length, 2);
+	assert.equal(manifest.version, 2);
+	assert.equal(manifest.format, 'concat-gzip-v1');
+	assert.equal(manifest.bundles.length, 2);
+	assert.ok(manifest.bundles.every((bundle) => bundle.bytes <= BUNDLE_BYTES));
 	for (const name of await fs.readdir(path.join(f.remote, 'backups', 'objects'))) {
 		const bytes = await fs.readFile(path.join(f.remote, 'backups', 'objects', name));
 		assert.ok(!bytes.includes(Buffer.from('audio payload')));
@@ -193,7 +199,7 @@ test('database-only snapshots independently include referenced files and reuse v
 		f.deps
 	);
 	assert.notEqual(first.id, second.id);
-	assert.ok(second.reusedObjects >= 3);
+	assert.equal(second.reusedObjects, 2);
 	assert.equal(second.uploadedObjects, 0);
 	assert.ok(
 		!(await f.manifest(second)).files.some((entry) => entry.path === 'uploads/unreferenced.txt')
@@ -305,7 +311,7 @@ test('tampered encrypted object prevents incremental reuse and offline publicati
 		f.remote,
 		'backups',
 		'objects',
-		manifest.files.find((entry) => entry.role === 'audio').object
+		manifest.bundles[manifest.files.find((entry) => entry.role === 'audio').parts[0].bundle].object
 	);
 	await fs.appendFile(file, 'tampered');
 	await assert.rejects(
@@ -503,7 +509,7 @@ test('incorrect decryption key and missing object fail without publishing partia
 	const other = await fixture(t);
 	await assert.rejects(restoreRecovery(f.restoreOptions(result), other.deps));
 	const manifest = await f.manifest(result);
-	await fs.unlink(path.join(f.remote, 'backups', 'objects', manifest.files[0].object));
+	await fs.unlink(path.join(f.remote, 'backups', 'objects', manifest.bundles[0].object));
 	const restore = f.restoreOptions(result);
 	await fs.mkdir(restore.outputDirectory);
 	await assert.rejects(restoreRecovery(restore, f.deps));
@@ -515,11 +521,11 @@ test('collection detects a source changed after its encrypted object was uploade
 	const put = f.client.put;
 	f.client.put = async (source, destination) => {
 		await put(source, destination);
-		// Database, audio, report: change audio after its own object upload, not during copying.
+		// Mutate a captured source after bundle upload, not during copying.
 		if (destination.includes('/objects/')) {
 			const plain = path.join(f.root, 'checking-upload');
 			await f.deps.decryptFile(source, plain);
-			if ((await fs.readFile(plain, 'utf8')) === 'audio payload') {
+			if ((await fs.readFile(plain)).length > 0) {
 				await fs.writeFile(path.join(f.app, 'uploads', 'audio', 'part.ogg'), 'audio changed');
 			}
 		}
@@ -868,4 +874,358 @@ test('full settings extras are accepted and daily/monthly full catalogs survive 
 	assert.ok(kept.has(snapshots.latestDatabase.id));
 	assert.ok(!kept.has(snapshots.expiredFull.id));
 	assert.ok(!kept.has(snapshots.olderMonthlyFull.id));
+});
+
+test('bounded bundles split large files, preserve empty files and reuse unchanged payload after database changes', async (t) => {
+	const f = await ordinary(t);
+	const payload = Buffer.alloc(10000, 'compressible payload');
+	await f.write('uploads/large.bin', payload);
+	await f.write('uploads/empty.bin', '');
+	const options = { ...f.options, kind: 'full', bundleBytes: 4096 };
+	const first = await backupRecovery(f.db, connection, options, f.deps);
+	const manifest = await f.manifest(first);
+	const entry = manifest.files.find((file) => file.path === 'uploads/large.bin');
+	assert.ok(entry.parts.length >= 3);
+	assert.deepEqual(manifest.files.find((file) => file.path === 'uploads/empty.bin').parts, []);
+	assert.ok(manifest.bundles.every((bundle) => bundle.bytes <= 4096));
+	assert.ok(
+		manifest.bundles.reduce((sum, bundle) => sum + bundle.compressedBytes, 0) < first.bytes / 2
+	);
+	f.db.exec("CREATE TABLE changed(value TEXT); INSERT INTO changed VALUES ('new snapshot')");
+	const second = await backupRecovery(
+		f.db,
+		connection,
+		{ ...options, now: options.now + 1 },
+		f.deps
+	);
+	assert.ok(second.reusedObjects >= 3);
+	await fs.rm(path.join(f.remote, 'audio'), { recursive: true, force: true });
+	const restore = f.restoreOptions(second);
+	await restoreRecovery(restore, f.deps);
+	assert.deepEqual(
+		await fs.readFile(path.join(restore.outputDirectory, 'uploads', 'large.bin')),
+		payload
+	);
+	assert.equal((await fs.stat(path.join(restore.outputDirectory, 'uploads', 'empty.bin'))).size, 0);
+});
+
+test('v1 independent encrypted objects remain restorable and coexist with v2 backups', async (t) => {
+	const f = await ordinary(t);
+	const result = await backupRecovery(f.db, connection, f.options, f.deps);
+	const manifest = await f.manifest(result);
+	const raw = [];
+	for (const bundle of manifest.bundles) {
+		const plain = path.join(f.root, `${randomUUID()}.gz`);
+		await f.deps.decryptFile(path.join(f.remote, 'backups', 'objects', bundle.object), plain);
+		raw.push(gunzipSync(await fs.readFile(plain)));
+	}
+	for (const entry of manifest.files) {
+		const bytes = Buffer.concat(
+			entry.parts.map((part) => raw[part.bundle].subarray(part.offset, part.offset + part.bytes))
+		);
+		const plain = path.join(f.root, `${randomUUID()}.legacy`);
+		const encrypted = path.join(f.root, `${randomUUID()}.enc`);
+		await fs.writeFile(plain, bytes);
+		await f.deps.encryptFile(plain, encrypted);
+		entry.remoteSha256 = digest(await fs.readFile(encrypted));
+		entry.object = `${entry.remoteSha256}.enc`;
+		delete entry.parts;
+		await fs.copyFile(encrypted, path.join(f.remote, 'backups', 'objects', entry.object));
+	}
+	manifest.version = 1;
+	delete manifest.bundles;
+	delete manifest.format;
+	const plain = path.join(f.root, 'legacy-manifest.json');
+	await fs.writeFile(plain, JSON.stringify(manifest));
+	const restore = f.restoreOptions(result);
+	await f.deps.encryptFile(plain, restore.manifestFile);
+	await restoreRecovery(restore, f.deps);
+	assert.equal(
+		await fs.readFile(path.join(restore.outputDirectory, 'uploads', 'audio', 'part.ogg'), 'utf8'),
+		'audio payload'
+	);
+	await backupRecovery(f.db, connection, { ...f.options, now: f.options.now + 1 }, f.deps);
+	assert.equal((await listRecovery(connection, f.deps)).length, 2);
+});
+
+test('authenticated bundle descriptors reject invalid coverage, traversal and resource bounds', async (t) => {
+	const f = await ordinary(t);
+	const result = await backupRecovery(f.db, connection, f.options, f.deps);
+	const original = await f.manifest(result);
+	const changes = [
+		(m) => (m.bundles[0].bytes = BUNDLE_BYTES + 1),
+		(m) => (m.bundles[0].compressedBytes = BUNDLE_BYTES + 1024 * 1024 + 1),
+		(m) => (m.bundles[0].object = '../escape.enc'),
+		(m) => (m.files[0].parts[0].offset = 1),
+		(m) => (m.files[0].parts[0].bytes = -1),
+		(m) => (m.files[0].parts[0].bundle = -1),
+		(m) => (m.files[0].parts[0].bundle = m.bundles.length),
+		(m) => (m.files[0].parts = []),
+		(m) => m.bundles.push(structuredClone(m.bundles[0])),
+		(m) => (m.files[0].bytes = 1024 ** 4 + 1),
+		(m) => (m.files[1].path = 'uploads'),
+		(m) => (m.files[2].path = m.files[1].path.toUpperCase())
+	];
+	for (const change of changes) {
+		const manifest = structuredClone(original);
+		change(manifest);
+		const plain = path.join(f.root, 'changed-manifest.json');
+		await fs.writeFile(plain, JSON.stringify(manifest));
+		const restore = f.restoreOptions(result);
+		await f.deps.encryptFile(plain, restore.manifestFile);
+		await assert.rejects(restoreRecovery(restore, f.deps));
+		await assert.rejects(fs.stat(restore.outputDirectory), { code: 'ENOENT' });
+	}
+});
+
+test('authenticated compressed objects cannot exceed declared decompression bounds or hide raw corruption', async (t) => {
+	const f = await ordinary(t);
+	const result = await backupRecovery(f.db, connection, f.options, f.deps);
+	const original = await f.manifest(result);
+	for (const corrupt of [false, true]) {
+		const manifest = structuredClone(original);
+		const bundle = manifest.bundles[0];
+		const plain = path.join(f.root, `replacement-${corrupt}.gz`);
+		await fs.writeFile(plain, gzipSync(Buffer.alloc(bundle.bytes + (corrupt ? 0 : 1), 65)));
+		bundle.compressedBytes = (await fs.stat(plain)).size;
+		const encrypted = path.join(f.root, `replacement-${corrupt}.enc`);
+		await f.deps.encryptFile(plain, encrypted);
+		bundle.remoteSha256 = digest(await fs.readFile(encrypted));
+		bundle.object = `${bundle.remoteSha256}.enc`;
+		await fs.copyFile(encrypted, path.join(f.remote, 'backups', 'objects', bundle.object));
+		const json = path.join(f.root, 'replacement-manifest.json');
+		await fs.writeFile(json, JSON.stringify(manifest));
+		const restore = f.restoreOptions(result);
+		await f.deps.encryptFile(json, restore.manifestFile);
+		await assert.rejects(restoreRecovery(restore, f.deps));
+		await assert.rejects(fs.stat(restore.outputDirectory), { code: 'ENOENT' });
+		assert.ok(!(await fs.readdir(f.root)).some((name) => name.startsWith('.recovery-work-')));
+	}
+});
+
+test('failed bundle upload has no completed index and retry publishes a verified self-contained backup', async (t) => {
+	const f = await ordinary(t);
+	const put = f.client.put;
+	let fail = true;
+	let active = false;
+	for (const method of ['put', 'get', 'mkdir', 'list', 'rename']) {
+		const original = f.client[method];
+		f.client[method] = async (...args) => {
+			assert.equal(active, false, 'SFTP operations must be sequential');
+			active = true;
+			try {
+				return await original(...args);
+			} finally {
+				active = false;
+			}
+		};
+	}
+	const sequentialPut = f.client.put;
+	f.client.put = async (source, target) => {
+		if (fail && target.includes('/objects/')) {
+			fail = false;
+			await put(source, target);
+			throw new Error('interrupted');
+		}
+		return sequentialPut(source, target);
+	};
+	await assert.rejects(backupRecovery(f.db, connection, f.options, f.deps));
+	assert.deepEqual(await listRecovery(connection, f.deps), []);
+	const result = await backupRecovery(f.db, connection, f.options, f.deps);
+	await restoreRecovery(f.restoreOptions(result), f.deps);
+	assert.equal((await listRecovery(connection, f.deps)).length, 1);
+});
+
+test('bundle byte ranges never accept extraction paths from unauthoritative part fields', async (t) => {
+	const f = await ordinary(t);
+	const result = await backupRecovery(f.db, connection, f.options, f.deps);
+	const manifest = await f.manifest(result);
+	const outside = path.join(f.root, 'must-not-change');
+	await fs.writeFile(outside, 'preserved');
+	manifest.files[0].parts[0].target = outside;
+	const plain = path.join(f.root, 'injected-part.json');
+	await fs.writeFile(plain, JSON.stringify(manifest));
+	const restore = f.restoreOptions(result);
+	await f.deps.encryptFile(plain, restore.manifestFile);
+	await restoreRecovery(restore, f.deps);
+	assert.equal(await fs.readFile(outside, 'utf8'), 'preserved');
+});
+
+test('backup transport defaults to six hours while preserving an explicit shorter operation bound', async (t) => {
+	const f = await ordinary(t);
+	const configs = [];
+	const deps = {
+		...f.deps,
+		withStorage: async (config, callback) => {
+			configs.push(config);
+			return callback(f.client);
+		}
+	};
+	await backupRecovery(f.db, connection, f.options, deps);
+	assert.ok(configs.every((config) => config.operationTimeoutMs === 21_600_000));
+	const firstConnections = configs.length;
+	await backupRecovery(
+		f.db,
+		{ ...connection, operationTimeoutMs: 30_000 },
+		{ ...f.options, now: f.options.now + 1 },
+		deps
+	);
+	assert.ok(
+		configs.slice(firstConnections).every((config) => config.operationTimeoutMs === 30_000)
+	);
+});
+
+test('parallel bundle transfers use at most two separate pinned sessions and settle before cleanup/publication', async (t) => {
+	for (const mode of [
+		'success',
+		'upload-failure',
+		'verification-failure',
+		'lost-lease',
+		'transfer-timeout',
+		'coordinator-timeout'
+	]) {
+		await t.test(mode, { timeout: 15000 }, async (t) => {
+			const f = await ordinary(t);
+			await f.write('uploads/parallel.bin', Buffer.alloc(12000, 65));
+			let pairReady;
+			const paired = new Promise((resolve) => {
+				pairReady = resolve;
+			});
+			let releaseSibling;
+			const sibling = new Promise((resolve) => {
+				releaseSibling = resolve;
+			});
+			t.after(() => releaseSibling());
+			let firstFailed;
+			const failed = new Promise((resolve) => {
+				firstFailed = resolve;
+			});
+			let sessions = 0;
+			let workers = 0;
+			let peakWorkers = 0;
+			let started = 0;
+			let peakEncrypted = 0;
+			let owned = true;
+			let returned = false;
+			const busy = new Set();
+			const ordinals = new WeakMap();
+			async function exclusive(client, operation) {
+				assert.equal(busy.has(client), false, 'a client must never have concurrent operations');
+				busy.add(client);
+				try {
+					return await operation();
+				} finally {
+					busy.delete(client);
+				}
+			}
+			const deps = {
+				...f.deps,
+				async hashRemote(client, target) {
+					return exclusive(client, async () => {
+						const hash = await f.deps.hashRemote(client, target);
+						if (ordinals.get(client) === 1) {
+							if (mode === 'verification-failure') return '0'.repeat(64);
+							if (mode === 'lost-lease') owned = false;
+						}
+						return hash;
+					});
+				},
+				async withStorage(config, callback) {
+					assert.equal(config.fingerprint, connection.fingerprint);
+					assert.equal(config.host, connection.host);
+					assert.equal(config.operationTimeoutMs, 21_600_000);
+					const sessionId = sessions++;
+					const worker = sessionId > 0;
+					if (worker) {
+						workers++;
+						peakWorkers = Math.max(peakWorkers, workers);
+					}
+					assert.ok(workers <= 2);
+					const client = {};
+					for (const method of Object.keys(f.client)) {
+						client[method] = (...args) =>
+							exclusive(client, async () => {
+								if (method === 'put' && args[1].includes('/objects/')) {
+									assert.equal(worker, true);
+									const ordinal = ++started;
+									ordinals.set(client, ordinal);
+									const work = path.dirname(args[0]);
+									const spools = (await fs.readdir(work)).filter((name) =>
+										name.endsWith('.bundle.enc')
+									).length;
+									peakEncrypted = Math.max(peakEncrypted, spools);
+									assert.ok(spools <= 2, 'encrypted spool count must be bounded');
+									if (ordinal === 1) {
+										await paired;
+										if (mode === 'upload-failure') throw new Error('interrupted upload');
+										if (mode === 'transfer-timeout' || mode === 'coordinator-timeout')
+											await sibling;
+									}
+									if (ordinal === 2) {
+										pairReady();
+										await sibling;
+										await fs.access(args[0]);
+									}
+								} else if (method === 'put' || method === 'rename') {
+									assert.equal(workers, 0, 'publication must wait for verified session closure');
+								}
+								return f.client[method](...args);
+							});
+					}
+					try {
+						const running = callback(client);
+						running.catch(() => {});
+						if (
+							(mode === 'transfer-timeout' && sessionId === 1) ||
+							(mode === 'coordinator-timeout' && !worker)
+						) {
+							await paired;
+							firstFailed();
+							throw new Error('transport timed out before callback settlement');
+						}
+						return await running;
+					} catch (error) {
+						if (worker && ordinals.get(client) === 1) firstFailed();
+						throw error;
+					} finally {
+						await new Promise((resolve) => setImmediate(resolve));
+						if (worker) workers--;
+					}
+				}
+			};
+			const options = { ...f.options, kind: 'full', bundleBytes: 1024, owned: () => owned };
+			const backup = backupRecovery(f.db, connection, options, deps).finally(() => {
+				returned = true;
+			});
+			backup.catch(() => {});
+			await paired;
+			assert.equal(peakWorkers, 2);
+			if (mode !== 'success') {
+				await failed;
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.equal(returned, false, 'failure must await the still-active sibling session');
+				assert.ok((await fs.readdir(f.app)).some((name) => name.startsWith('.recovery-work-')));
+			}
+			releaseSibling();
+			if (mode === 'success') {
+				const result = await backup;
+				await restoreRecovery(f.restoreOptions(result), f.deps);
+			} else {
+				await assert.rejects(backup, { message: 'Recovery backup failed.' });
+				assert.deepEqual(await listRecovery(connection, f.deps), []);
+				const retry = await backupRecovery(
+					f.db,
+					connection,
+					{ ...f.options, now: f.options.now + 1 },
+					f.deps
+				);
+				await restoreRecovery(f.restoreOptions(retry), f.deps);
+			}
+			assert.equal(workers, 0);
+			assert.equal(busy.size, 0);
+			assert.equal(peakWorkers, 2);
+			assert.equal(peakEncrypted, 2);
+			assert.ok(!(await fs.readdir(f.app)).some((name) => name.startsWith('.recovery-work-')));
+		});
+	}
 });

@@ -14,7 +14,9 @@ import {
 	queueStorageJob,
 	storageStatus,
 	cancelStorageJob,
-	pauseAndCancelStorageJobs
+	pauseAndCancelStorageJobs,
+	clearStorageJobLog,
+	queueStorageReset
 } from '$lib/server/storage-worker.js';
 import { listRecovery } from '$lib/server/recovery-backups.js';
 
@@ -144,6 +146,41 @@ export const actions = {
 			};
 		} catch {
 			return fail(400, { error: 'Unable to pause storage jobs. Refresh status and try again.' });
+		}
+	},
+	clearLog: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			if (field(form, 'confirmation') !== 'clear') throw new Error();
+			const count = clearStorageJobLog(getDb());
+			return {
+				message: `Cleared ${count} finished jobs from the log. Active and retrying jobs remain visible; safety metadata, audio and backups are preserved.`
+			};
+		} catch {
+			return fail(400, { error: 'Unable to clear the log. Confirm clearing finished jobs once.' });
+		}
+	},
+	reset: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			if (field(form, 'confirmation') !== 'RESET STORAGE' || field(form, 'recoverAudio') !== 'on')
+				throw new Error();
+			const db = getDb();
+			assertStorageKey();
+			const connection = getStorageConnection(db);
+			normalizeStorageSettings({ ...getStorageSettings(db), enabled: true });
+			if (!connection.password) throw new Error();
+			const id = queueStorageReset(db);
+			return {
+				message: `Storage reset job ${id} queued; schedules are paused. The worker first recovers and hash-verifies all archived audio locally, then removes only audio/ and backups/ under the saved remote root. The live database is not restored or deleted. Schedules remain paused after completion. Refresh status to monitor progress.`
+			};
+		} catch {
+			return fail(400, {
+				error:
+					'Unable to queue storage reset. Enter RESET STORAGE exactly and confirm audio recovery once. Check the saved connection and encryption key. Use Pause & cancel all, then wait until no jobs are running or cancelling and no reset is active before retrying.'
+			});
 		}
 	},
 	recoveryPoints: async ({ locals }) => {

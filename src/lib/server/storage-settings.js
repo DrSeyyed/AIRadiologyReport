@@ -120,6 +120,15 @@ export function saveStorageSettings(db, input, password = '') {
 	assertStorageKey();
 	return db.transaction(() => {
 		const existing = getStorageSettings(db);
+		if (
+			db
+				.prepare(
+					`SELECT 1 FROM storage_reset_requests r JOIN storage_jobs j ON j.id=r.job_id
+			WHERE j.status IN ('pending','running') OR (j.status='failed' AND j.attempts<8) LIMIT 1`
+				)
+				.get()
+		)
+			throw new Error('Wait for the storage reset to finish before changing settings.');
 		const inUse =
 			db.prepare('SELECT 1 FROM storage_audio LIMIT 1').get() ||
 			db

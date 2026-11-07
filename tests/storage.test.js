@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, unlinkSyn
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import { insertStudy } from '../src/lib/server/studies.js';
@@ -26,12 +26,16 @@ import {
 } from '../src/lib/server/storage-audio.js';
 import {
 	processStorageJob,
+	clearStorageJobLog,
+	queueStorageReset,
 	cancelStorageJob,
 	pauseAndCancelStorageJobs,
 	queueStorageJob,
 	scheduleStorageJobs,
 	storageStatus
 } from '../src/lib/server/storage-worker.js';
+
+import { resetStorageData } from '../src/lib/server/storage-reset.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 const now = 1800000000;
@@ -352,7 +356,8 @@ test('storage worker owns a durable lease, retries failures and resumes interrup
 		now
 	);
 	await processStorageJob(db, { ...options, now: failed.retry_at });
-	assert.equal(backups, 1);
+	await processStorageJob(db, { ...options, now: failed.retry_at + 1 });
+	assert.equal(backups, 2);
 	assert.equal(
 		db.prepare("SELECT status FROM storage_jobs WHERE kind='full'").get().status,
 		'succeeded'
@@ -542,6 +547,7 @@ test('pause and cancel all preserves credentials and data while cancelling every
 
 test('running cancellation retains the lease and settings guard until cooperative cleanup finishes', async (t) => {
 	const { db, settings, audio } = fixture(t);
+	saveStorageSettings(db, { ...settings, backupsEnabled: false });
 	const id = queueStorageJob(db, 'archive', { now });
 	await processStorageJob(db, {
 		now,
@@ -679,4 +685,244 @@ test('archived playback keeps HTTP byte ranges and generation uses hydrated audi
 	assert.equal(getRecording(db, studyId, recording.id).text_report_path, reportPath);
 	assert.equal(readFileSync(reportPath, 'utf8'), 'Synthetic report.');
 	assert.equal(getRecording(db, studyId, recording.id).processing, 0);
+});
+
+function resetFixture(t) {
+	const context = fixture(t);
+	const { client, objects, connection } = context;
+	const folders = new Set(['/', connection.root]);
+	client.mkdir = async (path) => {
+		for (let current = path; current !== '/'; current = posix.dirname(current))
+			folders.add(current);
+	};
+	client.lstat = async (path) => {
+		if (objects.has(path))
+			return {
+				isFile: true,
+				isDirectory: false,
+				isSymbolicLink: false,
+				size: objects.get(path).length
+			};
+		if (folders.has(path)) return { isDirectory: true, isFile: false, isSymbolicLink: false };
+		throw Object.assign(new Error('Not found'), { code: 2 });
+	};
+	client.list = async (path) => [
+		...[...objects.keys()]
+			.filter((key) => posix.dirname(key) === path)
+			.map((key) => ({ name: posix.basename(key), type: '-' })),
+		...[...folders]
+			.filter((key) => key !== path && posix.dirname(key) === path)
+			.map((key) => ({ name: posix.basename(key), type: 'd' }))
+	];
+	client.rmdir = async (path, recursive) => {
+		assert.equal(recursive, false);
+		assert.equal((await client.list(path)).length, 0);
+		folders.delete(path);
+	};
+	const resetOptions = { roots: [context.directory], transport: context.transport };
+	const run = (at = now) =>
+		processStorageJob(context.db, {
+			now: at,
+			resetStorage: (db, connection, options) =>
+				resetStorageData(db, connection, { ...options, ...resetOptions })
+		});
+	return { ...context, folders, resetOptions, run };
+}
+
+test('clearing finished log preserves backup safety metadata and active jobs, including their future results', (t) => {
+	const { db, settings } = fixture(t);
+	backupCompleted(db);
+	const active = queueStorageJob(db, 'archive', { now });
+	const failed = queueStorageJob(db, 'test', { now });
+	db.prepare("UPDATE storage_jobs SET status='failed',attempts=8 WHERE id=?").run(failed);
+	assert.equal(clearStorageJobLog(db), 2);
+	assert.equal(clearStorageJobLog(db), 0);
+	assert.deepEqual(
+		storageStatus(db, now).jobs.map((job) => job.id),
+		[active]
+	);
+	assert.equal(storageStatus(db, now).last.find((row) => row.kind === 'full').at, now + 1);
+	assert.throws(() => saveStorageSettings(db, { ...settings, root: '/different' }), /in use/);
+	db.prepare("UPDATE storage_jobs SET status='succeeded' WHERE id=?").run(active);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'succeeded');
+});
+
+test('background job types rotate fairly instead of starving full and database backups behind archives', async (t) => {
+	const { db } = fixture(t);
+	const current = Math.floor(Date.now() / 1000);
+	const calls = [];
+	const options = {
+		runArchive: async () => {
+			calls.push('archive');
+			return {};
+		},
+		runBackup: async (db, connection, { kind }) => {
+			calls.push(kind);
+			return {};
+		},
+		prune: async () => ({})
+	};
+	for (let tick = 0; tick < 6; tick++) {
+		const at = current + tick * 61;
+		for (const kind of ['archive', 'database', 'full']) queueStorageJob(db, kind, { now: at });
+		await processStorageJob(db, { ...options, now: at });
+	}
+	assert.deepEqual(calls, ['full', 'database', 'archive', 'full', 'database', 'archive']);
+});
+
+test('reset rehydrates and verifies archive-only audio before app-only cleanup, preserving live data and credentials', async (t) => {
+	const context = resetFixture(t);
+	const { db, connection, options, audio, objects, client, folders, run, settings } = context;
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	db.prepare('UPDATE storage_audio SET evicted_at=?').run(now);
+	const password = db
+		.prepare("SELECT value FROM application_settings WHERE key='storage_password'")
+		.get().value;
+	await client.mkdir('/radiology/backups/objects');
+	objects.set(`/radiology/backups/objects/${'a'.repeat(64)}.enc`, Buffer.from('old backup'));
+	objects.set('/radiology/unrelated.txt', Buffer.from('leave alone'));
+	const id = queueStorageReset(db, { now });
+	assert.equal(storageStatus(db, now).resetActive, true);
+	assert.equal(storageStatus(db, now).jobs[0].kind, 'reset');
+	assert.throws(() => queueStorageReset(db, { now }), /wait|Pause/i);
+	assert.throws(() => queueStorageJob(db, 'test', { now }), /reset/);
+	assert.throws(() => saveStorageSettings(db, settings), /reset/);
+	assert.equal(getStorageSettings(db).enabled, false);
+	await run();
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.equal(objects.size, 1);
+	assert.equal(objects.get('/radiology/unrelated.txt').toString(), 'leave alone');
+	assert.deepEqual([...folders], ['/', '/radiology']);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 0);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM study_recordings').get().count, 1);
+	assert.equal(
+		db.prepare("SELECT value FROM application_settings WHERE key='storage_password'").get().value,
+		password
+	);
+	assert.equal(storageStatus(db, now).jobs[0].id, id);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'succeeded');
+	assert.equal(storageStatus(db, now).resetActive, false);
+	assert.equal(getStorageSettings(db).enabled, false);
+});
+
+test('reset never deletes remote data or archive tracking when recovered ciphertext is corrupt', async (t) => {
+	const { db, connection, options, audio, objects, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	const remote = [...objects.keys()][0];
+	objects.set(remote, Buffer.from('corrupted ciphertext'));
+	queueStorageReset(db, { now });
+	await run();
+	assert.equal(existsSync(audio), false);
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+	assert.equal(db.prepare('SELECT phase FROM storage_reset_requests').get().phase, 'recovering');
+});
+
+test('reset refuses changed local audio instead of overwriting it or deleting its remote copy', async (t) => {
+	const { db, connection, options, audio, objects, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	writeFileSync(audio, 'new local audio');
+	queueStorageReset(db, { now });
+	await run();
+	assert.equal(readFileSync(audio, 'utf8'), 'new local audio');
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+});
+
+test('reset stops for insufficient disk space before deleting storage data', async (t) => {
+	const { db, connection, options, audio, objects, resetOptions } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	db.prepare('UPDATE storage_audio SET bytes=?').run(Number.MAX_SAFE_INTEGER);
+	const id = queueStorageReset(db, { now });
+	await assert.rejects(
+		resetStorageData(db, connection, { ...resetOptions, jobId: id }),
+		/disk space/
+	);
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+});
+
+test('reset refuses unexpected remote files before deleting anything or forgetting archives', async (t) => {
+	const { db, connection, options, objects, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	objects.set('/radiology/audio/not-an-app-object.txt', Buffer.from('unrelated'));
+	queueStorageReset(db, { now });
+	await run();
+	assert.equal(objects.size, 2);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');
+});
+
+test('reset cancellation during recovery preserves remote objects and archive metadata', async (t) => {
+	const { db, connection, options, audio, objects, client, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	const id = queueStorageReset(db, { now });
+	const download = client.get;
+	client.get = async (...args) => {
+		await download(...args);
+		cancelStorageJob(db, id, { now });
+	};
+	await run();
+	assert.equal(storageStatus(db, now).jobs[0].status, 'cancelled');
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	assert.equal(getStorageSettings(db).enabled, false);
+});
+
+test('reset rejects remote symlink directories and unsafe local paths without remote deletion', async (t) => {
+	const { db, connection, options, objects, client, run, directory } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	const id = queueStorageReset(db, { now });
+	const attributes = client.lstat;
+	client.lstat = async (path) =>
+		path === '/radiology/audio' ? { isDirectory: true, isSymbolicLink: true } : attributes(path);
+	await run();
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	client.lstat = attributes;
+	db.prepare('UPDATE storage_audio SET path=?').run(
+		join(directory, '..', `outside-${randomUUID()}.ogg`)
+	);
+	const retry = db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at;
+	await run(retry);
+	assert.equal(objects.size, 1);
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
+	assert.equal(
+		db.prepare('SELECT phase FROM storage_reset_requests WHERE job_id=?').get(id).phase,
+		'recovering'
+	);
+});
+
+test('reset resumes cleanup safely after an interrupted deletion without needing archive metadata again', async (t) => {
+	const { db, connection, options, audio, objects, client, run } = resetFixture(t);
+	await archiveAudio(db, connection, options);
+	unlinkSync(audio);
+	const id = queueStorageReset(db, { now });
+	const remove = client.delete;
+	let interrupted = false;
+	client.delete = async (path, ...args) => {
+		await remove(path, ...args);
+		if (!interrupted) {
+			interrupted = true;
+			throw new Error('Connection interrupted after delete');
+		}
+	};
+	await run();
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 0);
+	assert.equal(
+		db.prepare('SELECT phase FROM storage_reset_requests WHERE job_id=?').get(id).phase,
+		'cleaning'
+	);
+	const retry = db.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at;
+	await run(retry);
+	assert.equal(objects.size, 0);
+	assert.equal(storageStatus(db, retry).jobs[0].status, 'succeeded');
+	assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
 });

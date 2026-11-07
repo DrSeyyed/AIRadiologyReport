@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS storage_jobs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS storage_jobs_due ON storage_jobs(status, retry_at);
+CREATE INDEX IF NOT EXISTS storage_jobs_kind_started ON storage_jobs(kind, started_at);
 
 CREATE TABLE IF NOT EXISTS storage_job_cancellations (
   job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
@@ -39,6 +40,18 @@ CREATE TABLE IF NOT EXISTS storage_job_cancellations (
 CREATE TABLE IF NOT EXISTS storage_restore_requests (
   job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
   backup_id TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_job_log_hidden (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS storage_reset_requests (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+  phase TEXT NOT NULL DEFAULT 'recovering' CHECK (phase IN ('recovering', 'cleaning', 'complete')),
+  restored INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS storage_worker_lock (

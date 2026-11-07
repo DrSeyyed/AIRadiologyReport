@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { listRecovery, restoreRecovery, validateRecoveryManifest } from './recovery-backups.js';
 import * as crypto from './storage-crypto.js';
 import * as transport from './storage-transport.js';
+import { recoveryObjects, objectDownloadBytes } from './recovery-bundles.js';
 
 export const STORAGE_RESTORE_ID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -200,6 +201,7 @@ async function download(client, remote, target, maxBytes, signal, deps, expected
  * injected uses recovery transport/crypto overrides; cwd/env support isolated test roots.
  * Staging must not overlap uploads, static, or VOICE_SAVE_DIR, including symlink aliases.
  * Downloads are capped at 16 MiB of manifest, 100,000 files and 1 TiB of plaintext, within six hours.
+ * v2 downloads use authenticated compressed bundle sizes; v1 independent objects remain supported.
  */
 export async function prepareStorageRestore(
 	connection,
@@ -262,12 +264,13 @@ export async function prepareStorageRestore(
 					client,
 					deps.storagePath(connection, 'backups', 'manifests', `${backupId}.enc`),
 					manifestFile,
-					MAX_MANIFEST_BYTES,
+					MAX_MANIFEST_BYTES + ENCRYPTION_OVERHEAD,
 					signal,
 					deps
 				);
 				const plain = path.join(work, 'manifest.json');
 				await deps.decryptFile(manifestFile, plain);
+				if ((await fs.stat(plain)).size > MAX_MANIFEST_BYTES) throw failure();
 				const parsed = validateRecoveryManifest(JSON.parse(await fs.readFile(plain, 'utf8')));
 				await fs.unlink(plain);
 				if (
@@ -283,7 +286,7 @@ export async function prepareStorageRestore(
 					bytes += entry.bytes;
 					if (!Number.isSafeInteger(bytes) || bytes > MAX_BYTES) throw failure();
 				}
-				for (const entry of parsed.files) {
+				for (const entry of recoveryObjects(parsed)) {
 					await assertOwned();
 					if (objects.has(entry.object)) continue;
 					objects.add(entry.object);
@@ -291,7 +294,7 @@ export async function prepareStorageRestore(
 						client,
 						deps.storagePath(connection, 'backups', 'objects', entry.object),
 						path.join(objectsDirectory, entry.object),
-						entry.bytes + ENCRYPTION_OVERHEAD,
+						objectDownloadBytes(parsed, entry),
 						signal,
 						deps,
 						entry.remoteSha256

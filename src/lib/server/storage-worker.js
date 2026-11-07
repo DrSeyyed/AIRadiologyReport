@@ -7,6 +7,7 @@ import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { archiveAudio, hashLocal } from './storage-audio.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { prepareStorageRestore } from './storage-restore.js';
+import { resetStorageData } from './storage-reset.js';
 
 const uuidPattern = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const backupIdPattern = new RegExp(`^\\d{1,16}-${uuidPattern}$`);
@@ -27,6 +28,7 @@ export function queueStorageJob(
 	if (kind === 'restore' && (typeof backupId !== 'string' || !backupIdPattern.test(backupId)))
 		throw new Error('Select a valid recovery point.');
 	return db.transaction(() => {
+		if (storageResetActive(db)) throw new Error('Wait for the storage reset to finish.');
 		const settings = getStorageSettings(db);
 		if (
 			!['test', 'restore'].includes(kind) &&
@@ -66,6 +68,45 @@ export function queueStorageJob(
 				id,
 				backupId
 			);
+		return id;
+	})();
+}
+
+export function storageResetActive(db) {
+	return Boolean(
+		db
+			.prepare(
+				`SELECT 1 FROM storage_reset_requests r JOIN storage_jobs j ON j.id=r.job_id
+		WHERE j.status IN ('pending','running') OR (j.status='failed' AND j.attempts<8) LIMIT 1`
+			)
+			.get()
+	);
+}
+
+export function clearStorageJobLog(db) {
+	return db
+		.prepare(
+			`INSERT OR IGNORE INTO storage_job_log_hidden(job_id)
+		SELECT id FROM storage_jobs WHERE status='succeeded' OR (status='failed' AND attempts>=8)`
+		)
+		.run().changes;
+}
+
+export function queueStorageReset(db, { now = Math.floor(Date.now() / 1000) } = {}) {
+	return db.transaction(() => {
+		if (
+			storageResetActive(db) ||
+			db.prepare("SELECT 1 FROM storage_jobs WHERE status='running' LIMIT 1").get()
+		)
+			throw new Error('Pause jobs and wait for running work to stop before resetting storage.');
+		getStorageConnection(db);
+		pauseAndCancelStorageJobs(db, { now });
+		// Reuse the deployed restore job kind; the side table identifies destructive maintenance.
+		const id = Number(
+			db.prepare("INSERT INTO storage_jobs(kind,created_at) VALUES('restore',?)").run(now)
+				.lastInsertRowid
+		);
+		db.prepare('INSERT INTO storage_reset_requests(job_id) VALUES(?)').run(id);
 		return id;
 	})();
 }
@@ -150,6 +191,7 @@ export async function processStorageJob(
 		runArchive = archiveAudio,
 		runBackup = backupRecovery,
 		prepareRestore = prepareStorageRestore,
+		resetStorage = resetStorageData,
 		prune = pruneRecovery,
 		testConnection = testStorageConnection,
 		heartbeatMs = 10_000
@@ -178,7 +220,7 @@ export async function processStorageJob(
 			.all())
 			finishCancelledJob(db, interrupted.id, now);
 		db.prepare(
-			"UPDATE storage_jobs SET status = 'failed', retry_at = ?, error = 'Interrupted by server restart; retrying.' WHERE status = 'running'"
+			"UPDATE storage_jobs SET status = 'failed', retry_at = ?, error = CASE WHEN attempts>=8 THEN 'Previous worker stopped or its lease expired; retry limit reached.' ELSE 'Previous worker stopped or its lease expired; retrying.' END WHERE status = 'running'"
 		).run(now);
 		return true;
 	})();
@@ -209,7 +251,9 @@ export async function processStorageJob(
 			.prepare(
 				`SELECT * FROM storage_jobs WHERE (status = 'pending' OR (status = 'failed' AND attempts < 8)) AND retry_at <= ?
 			AND (kind IN ('test','restore') OR (? = 1 AND ((kind = 'archive' AND ? = 1) OR (kind IN ('database','full') AND ? = 1))))
-			ORDER BY CASE kind WHEN 'test' THEN 0 WHEN 'restore' THEN 1 WHEN 'archive' THEN 2 WHEN 'full' THEN 3 ELSE 4 END, id LIMIT 1`
+			ORDER BY CASE kind WHEN 'test' THEN 0 WHEN 'restore' THEN 1 ELSE 2 END,
+			COALESCE((SELECT MAX(previous.started_at) FROM storage_jobs previous WHERE previous.kind=storage_jobs.kind),0),
+			CASE kind WHEN 'full' THEN 0 WHEN 'database' THEN 1 ELSE 2 END, created_at, id LIMIT 1`
 			)
 			.get(now, +settings.enabled, +settings.archiveEnabled, +settings.backupsEnabled);
 		if (!job) return false;
@@ -219,7 +263,9 @@ export async function processStorageJob(
 		const connection = getStorageConnection(db);
 		let result;
 		if (job.kind === 'test') result = await testConnection(connection);
-		else if (job.kind === 'restore') {
+		else if (db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)) {
+			result = await resetStorage(db, connection, { jobId: job.id, owned });
+		} else if (job.kind === 'restore') {
 			const request = db
 				.prepare('SELECT backup_id FROM storage_restore_requests WHERE job_id = ?')
 				.get(job.id);
@@ -245,17 +291,21 @@ export async function processStorageJob(
 		).run(now - 7 * 86400);
 		return true;
 	} catch {
-		if (job && owned())
+		if (job && owned()) {
+			const finished = Math.max(now, Math.floor(Date.now() / 1000));
 			db.prepare(
 				"UPDATE storage_jobs SET status='failed',finished_at=?,retry_at=?,error=? WHERE id=?"
 			).run(
-				now,
-				now + Math.min(3600, 60 * 2 ** Math.min(job.attempts, 6)),
-				job.kind === 'restore'
-					? 'Restore preparation failed. Check the encryption key, storage connection, selected recovery point and available disk space. The live database, audio and recovery points were not replaced.'
-					: 'Storage job failed. Check credentials, pinned host fingerprint, connectivity, free space and source availability. Local audio and existing recovery points were preserved.',
+				finished,
+				finished + Math.min(3600, 60 * 2 ** Math.min(job.attempts, 6)),
+				db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)
+					? 'Storage reset stopped. Check free local disk space, unchanged audio, encryption key, connection and unexpected or symbolic-link files in the app storage directories. Recovered local files were preserved; remote cleanup may be partial if it had already started. Retry or cancel this reset before starting another.'
+					: job.kind === 'restore'
+						? 'Restore preparation failed. Check the encryption key, storage connection, selected recovery point and available disk space. The live database, audio and recovery points were not replaced.'
+						: 'Storage job failed. Check credentials, pinned host fingerprint, connectivity, free space and source availability. Local audio and existing recovery points were preserved.',
 				job.id
 			);
+		}
 		return Boolean(job);
 	} finally {
 		clearInterval(heartbeat);
@@ -290,12 +340,15 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 	const settings = getStorageSettings(db);
 	const last = db
 		.prepare(
-			"SELECT kind,MAX(started_at) AS at FROM storage_jobs WHERE status = 'succeeded' GROUP BY kind"
+			"SELECT kind,MAX(started_at) AS at FROM storage_jobs WHERE status = 'succeeded' AND NOT EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) GROUP BY kind"
 		)
 		.all();
 	const jobs = db
 		.prepare(
-			'SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested FROM storage_jobs ORDER BY id DESC LIMIT 30'
+			`SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,
+			EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested,
+			(SELECT phase||': audio '||restored||'/'||total||', remote files removed '||deleted FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS progress
+			FROM storage_jobs WHERE NOT EXISTS(SELECT 1 FROM storage_job_log_hidden h WHERE h.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 30`
 		)
 		.all()
 		.map(({ result, cancelRequested, ...job }) => {
@@ -316,6 +369,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			}
 			return {
 				...job,
+				kind: job.progress ? 'reset' : job.kind,
 				status: cancelRequested
 					? job.status === 'running'
 						? 'cancelling'
@@ -362,5 +416,14 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 	const nextFull =
 		(Math.floor((now - settings.fileBackupHour * 3600) / 86400) + 1) * 86400 +
 		settings.fileBackupHour * 3600;
-	return { last, jobs, preparedRestores, archived, backlog, nextDatabase, nextFull };
+	return {
+		last,
+		jobs,
+		preparedRestores,
+		archived,
+		backlog,
+		nextDatabase,
+		nextFull,
+		resetActive: storageResetActive(db)
+	};
 }

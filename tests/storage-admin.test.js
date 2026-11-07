@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import {
@@ -261,6 +262,142 @@ test('admin pause cancels all jobs without requiring a usable encryption key or 
 	);
 });
 
+test('clearing finished log requires one exact confirmation without a key or network', async (t) => {
+	const { submit, db, state, page } = await fixture(t);
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,attempts,created_at) VALUES('full','succeeded',1,1),('test','failed',8,1),('test','pending',0,1),('database','failed',1,1),('archive','failed',8,1)"
+	).run();
+	db.prepare('INSERT INTO storage_job_cancellations(job_id,requested_at) VALUES(2,1)').run();
+	const before = db.prepare('SELECT * FROM storage_jobs ORDER BY id').all();
+	delete process.env.STORAGE_ENCRYPTION_KEY;
+	for (const confirmation of [undefined, 'CLEAR', 'clear ', 'clear\n']) {
+		const form = new FormData();
+		if (confirmation !== undefined) form.set('confirmation', confirmation);
+		assert.equal((await submit('clearLog', form)).status, 400);
+	}
+	const duplicate = new FormData();
+	duplicate.append('confirmation', 'clear');
+	duplicate.append('confirmation', 'clear');
+	assert.equal((await submit('clearLog', duplicate)).status, 400);
+	assert.deepEqual(db.prepare('SELECT * FROM storage_jobs ORDER BY id').all(), before);
+	const form = new FormData();
+	form.set('confirmation', 'clear');
+	const result = await submit('clearLog', form);
+	assert.match(result.message, /Cleared 3 finished jobs/);
+	assert.deepEqual(page.load({ locals: admin }).status.jobs.map((job) => job.id).sort(), [3, 4]);
+	assert.deepEqual(db.prepare('SELECT * FROM storage_jobs ORDER BY id').all(), before);
+	assert.equal(state.probes, 0);
+	assert.equal(state.lists, 0);
+});
+
+function resetForm() {
+	const form = new FormData();
+	form.set('confirmation', 'RESET STORAGE');
+	form.set('recoverAudio', 'on');
+	return form;
+}
+
+test('reset requires exact single confirmation and explicit single recovery approval', async (t) => {
+	const { submit, db, state } = await fixture(t);
+	for (const [field, value] of [
+		['confirmation', undefined], ['confirmation', 'reset storage'],
+		['confirmation', 'RESET STORAGE '], ['confirmation', 'RESET STORAGE\n'],
+		['recoverAudio', undefined], ['recoverAudio', 'yes'], ['recoverAudio', 'off']
+	]) {
+		const form = resetForm();
+		if (value === undefined) form.delete(field);
+		else form.set(field, value);
+		assert.equal((await submit('reset', form)).status, 400);
+	}
+	for (const field of ['confirmation', 'recoverAudio']) {
+		const form = resetForm();
+		form.append(field, form.get(field));
+		assert.equal((await submit('reset', form)).status, 400);
+	}
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 0);
+	assert.equal(state.dbCalls, 0);
+	assert.equal(state.probes, 0);
+	assert.equal(state.lists, 0);
+});
+
+test('reset validates saved encryption key and connection before queuing', async (t) => {
+	const { submit, db, settings } = await fixture(t);
+	const key = process.env.STORAGE_ENCRYPTION_KEY;
+	delete process.env.STORAGE_ENCRYPTION_KEY;
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	process.env.STORAGE_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	process.env.STORAGE_ENCRYPTION_KEY = key;
+	saveStorageSettings(db, { ...settings, host: '' });
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	saveStorageSettings(db, settings);
+	db.prepare("DELETE FROM application_settings WHERE key='storage_password'").run();
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 0);
+});
+
+test('reset request only queues work, pauses schedules and preserves connection and live data', async (t) => {
+	const { submit, db, state, page, settings } = await fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: true, backupsEnabled: true });
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('test','pending',1)").run();
+	const connection = getStorageConnection(db);
+	const result = await submit('reset', resetForm());
+	assert.match(result.message, /queued; schedules are paused/);
+	assert.match(result.message, /live database is not restored or deleted/);
+	assert.ok(!JSON.stringify(result).includes(connection.password));
+	const loaded = page.load({ locals: admin });
+	assert.equal(loaded.settings.enabled, false);
+	assert.equal(loaded.status.resetActive, true);
+	assert.equal(loaded.status.jobs.find((job) => job.kind === 'test').status, 'cancelled');
+	const reset = loaded.status.jobs.find((job) => job.kind === 'reset');
+	assert.equal(reset.status, 'pending');
+	assert.equal(reset.canCancel, true);
+	assert.ok(reset.progress === null || typeof reset.progress === 'string');
+	assert.deepEqual(getStorageConnection(db), { ...connection, enabled: false });
+	assert.equal(state.probes, 0);
+	assert.equal(state.lists, 0);
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_reset_requests').get().n, 1);
+	const cancel = new FormData();
+	cancel.set('jobId', String(reset.id));
+	assert.ok((await submit('cancel', cancel)).message);
+	assert.equal(page.load({ locals: admin }).status.resetActive, false);
+});
+
+test('reset refuses running jobs without pausing or scheduling reset', async (t) => {
+	const { submit, db, page, settings } = await fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: true });
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('test','running',1)").run();
+	assert.equal((await submit('reset', resetForm())).status, 400);
+	assert.equal(page.load({ locals: admin }).settings.enabled, true);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM storage_jobs WHERE kind='reset'").get().n, 0);
+});
+
+test('pending reset UI disables settings, manual jobs and restore but retains cancellation', async (t) => {
+	const { page, submit } = await fixture(t);
+	assert.ok((await submit('reset', resetForm())).message);
+	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
+	const compiled = compile(source, { filename: '+page.svelte', generate: 'server' }).js.code.replace(
+		/from (['"])([^'"]+)\1/g,
+		(_statement, _quote, specifier) => `from ${JSON.stringify(specifier === '$app/forms'
+			? 'data:text/javascript,export function enhance(){}'
+			: import.meta.resolve(specifier))}`
+	);
+	const component = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+	const data = page.load({ locals: admin });
+	data.status.jobs.find((job) => job.kind === 'reset').progress = 'Recovering audio 1 of 2';
+	const { body } = render(component.default, { props: {
+		data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] }
+	} });
+	assert.match(body, /<fieldset disabled/);
+	for (const label of ['Test saved connection', 'Archive audio now', 'Recovery snapshot now', 'Full recovery backup now', 'Load recovery points from storage', 'Prepare restore', 'Reset storage', 'Save settings'])
+		assert.match(body, new RegExp(`<button[^>]*disabled[^>]*>${label}</button>`));
+	assert.match(body, /Recovering audio 1 of 2/);
+	assert.match(body, /Storage reset is active/);
+	assert.match(body, /action="\?\/cancel"/);
+	assert.match(body, /Clear finished log/);
+});
+
 test('storage settings page compiles and navigation is admin-only', () => {
 	const page = readFileSync(
 		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
@@ -275,6 +412,12 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /action="\?\/restore"/);
 	assert.match(page, /action="\?\/cancel"/);
 	assert.match(page, /action="\?\/pause" use:enhance=\{pauseEnhance\}/);
+	assert.match(page, /action="\?\/clearLog"/);
+	assert.match(page, /action="\?\/reset" use:enhance=\{pauseEnhance\}/);
+	assert.match(page, /name="recoverAudio" required/);
+	assert.match(page, /adequate free SSD space/);
+	assert.match(page, /hash-verifies all archived audio locally/);
+	assert.match(page, /job.kind === 'reset' && job.progress/);
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
 	assert.match(page, /name="confirmation" value="prepare" required/);
 	assert.match(page, /Manual activation required/);

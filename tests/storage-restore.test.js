@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { Transform } from 'node:stream';
 import Database from 'better-sqlite3';
 import { backupRecovery } from '../src/lib/server/recovery-backups.js';
@@ -37,8 +38,12 @@ async function fixture(t) {
 		CREATE TABLE storage_jobs(id INTEGER PRIMARY KEY, kind TEXT);
 		CREATE TABLE storage_restore_requests(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE, backup_id TEXT NOT NULL);
 		CREATE TABLE storage_worker_lock(id INTEGER PRIMARY KEY);
+		CREATE TABLE storage_reset_requests(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE, phase TEXT, restored INTEGER, total INTEGER, deleted INTEGER);
+		CREATE TABLE storage_job_log_hidden(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE);
 		INSERT INTO storage_jobs VALUES(1,'restore');
 		INSERT INTO storage_restore_requests VALUES(1,'old');
+		INSERT INTO storage_reset_requests VALUES(1,'restoring',1,2,0);
+		INSERT INTO storage_job_log_hidden VALUES(1);
 		INSERT INTO storage_worker_lock VALUES(1);
 		INSERT INTO application_settings VALUES('storage_settings','{"enabled":true,"archiveEnabled":true,"backupsEnabled":true}');
 	`);
@@ -199,6 +204,8 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 			'storage_audio',
 			'storage_jobs',
 			'storage_restore_requests',
+			'storage_reset_requests',
+			'storage_job_log_hidden',
 			'storage_worker_lock'
 		]) {
 			assert.equal(restored.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0);
@@ -223,7 +230,7 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 		'audio payload'
 	);
 	assert.ok(!f.downloads.some((p) => p.endsWith('/unreferenced.enc')));
-	const expected = new Set(f.manifest.files.map((entry) => entry.object));
+	const expected = new Set(f.manifest.bundles.map((entry) => entry.object));
 	for (const p of f.downloads.filter((value) => value.includes('/objects/')))
 		assert.ok(expected.has(path.posix.basename(p)));
 	if (process.platform !== 'win32') {
@@ -294,7 +301,7 @@ test('manifest authentication and identity are checked before downloading any ob
 				if (kind === 'kind') manifest.kind = 'database';
 				if (kind === 'createdAt') manifest.createdAt++;
 				if (kind === 'traversal') manifest.files[0].path = 'uploads/../../outside';
-				if (kind === 'object') manifest.files[0].object = '../outside.enc';
+				if (kind === 'object') manifest.bundles[0].object = '../outside.enc';
 				if (kind === 'duplicate-path') manifest.files.push(structuredClone(manifest.files[0]));
 				if (kind === 'budget') manifest.files[0].bytes = 1024 ** 4 + 1;
 				await f.replaceManifest(manifest);
@@ -308,7 +315,7 @@ test('missing, corrupt and incorrectly described objects leave no prepared outpu
 	for (const kind of ['missing', 'tamper', 'plaintext-hash', 'plaintext-size', 'database'])
 		await t.test(kind, async (t) => {
 			const f = await fixture(t);
-			const object = path.join(f.remote, 'backups', 'objects', f.manifest.files[0].object);
+			const object = path.join(f.remote, 'backups', 'objects', f.manifest.bundles[0].object);
 			if (kind === 'missing') await fs.unlink(object);
 			if (kind === 'tamper') {
 				const bytes = await fs.readFile(object);
@@ -341,7 +348,7 @@ test('remote symbolic links and oversized objects are rejected before reading', 
 						? `/vault/backups/manifests/${f.backup.id}.enc`
 						: target === 'ancestor'
 							? '/vault/backups'
-							: `/vault/backups/objects/${f.manifest.files[0].object}`;
+							: `/vault/backups/objects/${f.manifest.bundles[0].object}`;
 			f.client.lstat = async (p) =>
 				p === remote
 					? target === 'oversized'
@@ -489,4 +496,51 @@ test('local staging directory links are rejected without touching their targets'
 	});
 	assert.deepEqual(await fs.readdir(outside), ['sentinel']);
 	assert.equal(f.calls.length, 0);
+});
+
+test('remote preparation downloads and restores legacy v1 independent objects', async (t) => {
+	const f = await fixture(t);
+	const raw = [];
+	for (const bundle of f.manifest.bundles) {
+		const plain = path.join(f.root, `${randomUUID()}.gz`);
+		await decryptFile(path.join(f.remote, 'backups', 'objects', bundle.object), plain);
+		raw.push(gunzipSync(await fs.readFile(plain)));
+	}
+	for (const entry of f.manifest.files) {
+		const plain = path.join(f.root, `${randomUUID()}.legacy`);
+		const encrypted = path.join(f.root, `${randomUUID()}.enc`);
+		await fs.writeFile(
+			plain,
+			Buffer.concat(
+				entry.parts.map((part) => raw[part.bundle].subarray(part.offset, part.offset + part.bytes))
+			)
+		);
+		await encryptFile(plain, encrypted);
+		entry.remoteSha256 = createHash('sha256')
+			.update(await fs.readFile(encrypted))
+			.digest('hex');
+		entry.object = `${entry.remoteSha256}.enc`;
+		delete entry.parts;
+		await fs.copyFile(encrypted, path.join(f.remote, 'backups', 'objects', entry.object));
+	}
+	f.manifest.version = 1;
+	delete f.manifest.bundles;
+	delete f.manifest.format;
+	await f.replaceManifest(f.manifest);
+	const result = await prepareStorageRestore(connection, { backupId: f.backup.id }, f.deps);
+	assert.equal(
+		await fs.readFile(
+			path.join(f.app, 'restore-staging', result.restoreId, 'uploads', 'audio.ogg'),
+			'utf8'
+		),
+		'audio payload'
+	);
+});
+
+test('remote preparation rejects authenticated oversized bundle declarations before object download', async (t) => {
+	const f = await fixture(t);
+	f.manifest.bundles[0].bytes = 256 * 1024 * 1024 + 1;
+	await f.replaceManifest(f.manifest);
+	await f.reject();
+	assert.ok(!f.downloads.some((name) => name.includes('/objects/')));
 });

@@ -3,9 +3,22 @@ import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { bundleTransfers } from './recovery-bundle-transfers.js';
+import {
+	BUNDLE_BYTES,
+	MAX_RECOVERY_BYTES,
+	MAX_RECOVERY_FILES,
+	MAX_MANIFEST_BYTES,
+	bundleWriter,
+	objectDownloadBytes,
+	unpackBundles
+} from './recovery-bundles.js';
 
 /**
- * Self-contained, encrypted recovery snapshots (v1). No dependency on an earlier full backup.
+ * Self-contained, encrypted recovery snapshots (v2 gzip bundles; v1 restores remain supported).
+ * No dependency on an earlier full backup. Bundles cap uncompressed bytes at 256 MiB.
+ * At most two encrypted bundle spools/transfers are active, on separate pinned sessions.
+ * Every transfer settles and closes before manifest/index publication or work cleanup.
  * Database backups include every snapshot-referenced audio/report; full backups also walk uploads
  * and include EVERY storage_audio row captured by the SQLite snapshot, even unreferenced archives.
  * Archive plaintext, encrypted remote bytes, and live archive metadata are rechecked at publication.
@@ -182,6 +195,8 @@ function pauseRestoredStorage(db) {
 	for (const table of [
 		'storage_job_cancellations',
 		'storage_restore_requests',
+		'storage_reset_requests',
+		'storage_job_log_hidden',
 		'storage_jobs',
 		'storage_worker_lock'
 	]) {
@@ -320,7 +335,7 @@ function serializeEnvironment(values) {
 
 function validateManifest(manifest) {
 	if (
-		manifest?.version !== 1 ||
+		![1, 2].includes(manifest?.version) ||
 		!ID.test(manifest.id) ||
 		!['full', 'database'].includes(manifest.kind) ||
 		!Number.isSafeInteger(manifest.createdAt) ||
@@ -339,20 +354,73 @@ function validateManifest(manifest) {
 	)
 		throw new Error('Invalid recovery voice root.');
 	if (manifest.voiceDirectory !== undefined) safeRelative(manifest.voiceDirectory);
+	if (manifest.files.length > MAX_RECOVERY_FILES) throw new Error('Invalid recovery manifest.');
+	const bundled = manifest.version === 2;
+	const covered = [];
+	if (bundled) {
+		if (
+			manifest.format !== 'concat-gzip-v1' ||
+			!Array.isArray(manifest.bundles) ||
+			manifest.bundles.length > MAX_RECOVERY_FILES
+		)
+			throw new Error('Invalid recovery bundles.');
+		for (const bundle of manifest.bundles) {
+			if (
+				!DIGEST.test(bundle.sha256) ||
+				!DIGEST.test(bundle.remoteSha256) ||
+				bundle.object !== `${bundle.remoteSha256}.enc` ||
+				!Number.isSafeInteger(bundle.bytes) ||
+				bundle.bytes < 1 ||
+				bundle.bytes > BUNDLE_BYTES ||
+				!Number.isSafeInteger(bundle.compressedBytes) ||
+				bundle.compressedBytes < 1 ||
+				bundle.compressedBytes > bundle.bytes + 1024 * 1024
+			)
+				throw new Error('Invalid recovery bundle.');
+			covered.push(0);
+		}
+	}
 	const paths = new Set();
 	const canonicalPaths = new Set();
 	let databases = 0;
+	let totalBytes = 0;
+	let lastBundle = 0;
 	for (const entry of manifest.files) {
 		safeRelative(entry.path);
 		if (
 			canonicalPaths.has(entry.path.toLowerCase()) ||
 			!DIGEST.test(entry.sha256) ||
-			!DIGEST.test(entry.remoteSha256) ||
-			entry.object !== `${entry.remoteSha256}.enc` ||
+			(!bundled &&
+				(!DIGEST.test(entry.remoteSha256) || entry.object !== `${entry.remoteSha256}.enc`)) ||
 			!Number.isSafeInteger(entry.bytes) ||
 			entry.bytes < 0
 		) {
 			throw new Error('Invalid recovery manifest.');
+		}
+		totalBytes += entry.bytes;
+		if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_RECOVERY_BYTES)
+			throw new Error('Invalid recovery size.');
+		if (bundled) {
+			if (!Array.isArray(entry.parts) || entry.parts.length > MAX_RECOVERY_FILES)
+				throw new Error('Invalid recovery parts.');
+			let bytes = 0;
+			for (const part of entry.parts) {
+				if (
+					!Number.isSafeInteger(part.bundle) ||
+					part.bundle < lastBundle ||
+					part.bundle >= covered.length ||
+					!Number.isSafeInteger(part.offset) ||
+					part.offset !== covered[part.bundle] ||
+					!Number.isSafeInteger(part.bytes) ||
+					part.bytes < 1 ||
+					part.bytes > manifest.bundles[part.bundle].bytes - part.offset
+				)
+					throw new Error('Invalid recovery part.');
+				lastBundle = part.bundle;
+				covered[part.bundle] += part.bytes;
+				bytes += part.bytes;
+			}
+			if (bytes !== entry.bytes) throw new Error('Invalid recovery size.');
 		}
 		paths.add(entry.path);
 		canonicalPaths.add(entry.path.toLowerCase());
@@ -366,6 +434,14 @@ function validateManifest(manifest) {
 			entry.path === 'environment.json'
 		))
 			throw new Error('Invalid recovery path.');
+	}
+	if (bundled && covered.some((bytes, index) => bytes !== manifest.bundles[index].bytes))
+		throw new Error('Invalid recovery bundle coverage.');
+	for (const name of canonicalPaths) {
+		const segments = name.split('/');
+		while (segments.pop() && segments.length)
+			if (canonicalPaths.has(segments.join('/')))
+				throw new Error('Invalid recovery path collision.');
 	}
 	if (databases !== 1) throw new Error('Invalid recovery database.');
 	for (const reference of manifest.references) {
@@ -385,7 +461,11 @@ async function readManifest(client, connection, snapshot, work, deps) {
 			deps.storagePath(connection, 'backups', 'manifests', `${snapshot.id}.enc`),
 			encrypted
 		);
+		if ((await fs.stat(encrypted)).size > MAX_MANIFEST_BYTES + 35)
+			throw new Error('Recovery manifest limit exceeded.');
 		await deps.decryptFile(encrypted, plain);
+		if ((await fs.stat(plain)).size > MAX_MANIFEST_BYTES)
+			throw new Error('Recovery manifest limit exceeded.');
 		const manifest = validateManifest(JSON.parse(await fs.readFile(plain, 'utf8')));
 		if (
 			manifest.id !== snapshot.id ||
@@ -433,10 +513,14 @@ export async function listRecovery(connection, injected = {}) {
 export async function backupRecovery(db, connection, options = {}, injected = {}) {
 	let work;
 	let snapshot;
+	let collection;
+	let activeTransfers;
+	let aborted = false;
 	try {
 		const deps = await dependencies(injected);
 		await deps.assertStorageKey();
 		async function assertOwned() {
+			if (aborted) throw new Error('Recovery backup aborted.');
 			if (
 				options.owned !== undefined &&
 				(typeof options.owned !== 'function' || (await options.owned()) !== true)
@@ -516,7 +600,9 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 					? `uploads/${path.relative(uploads, voice).split(path.sep).join('/')}`
 					: 'voice';
 		const manifest = {
-			version: 1,
+			version: 2,
+			format: 'concat-gzip-v1',
+			bundles: [],
 			id,
 			kind,
 			createdAt: now,
@@ -545,149 +631,188 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		}
 		let uploadedObjects = 0;
 		let reusedObjects = 0;
-		await deps.withStorage(connection, async (client) => {
-			for (const folder of ['objects', 'manifests', 'indexes'])
-				await client.mkdir(deps.storagePath(connection, 'backups', folder), true);
-			const reusable = new Map();
-			for (const previous of await indexes(client, connection, deps)) {
-				const old = await readManifest(client, connection, previous, work, deps);
-				for (const entry of old.files)
-					if (!reusable.has(entry.sha256)) reusable.set(entry.sha256, entry);
-			}
-			async function addFile(source, relative, role, expected) {
-				const plain = path.join(work, `${randomUUID()}.plain`);
-				const encrypted = path.join(work, `${randomUUID()}.enc`);
+		const transferConnection = {
+			...connection,
+			operationTimeoutMs:
+				connection.operationTimeoutMs === undefined
+					? 6 * 60 * 60 * 1000
+					: connection.operationTimeoutMs
+		};
+		await deps.withStorage(transferConnection, (client) => {
+			collection = (async () => {
+				const transfers = bundleTransfers(deps, transferConnection, client, work, assertOwned);
+				activeTransfers = transfers;
 				try {
-					const info = await copyStable(source, plain, initialSources.get(source));
-					if (expected && (info.sha256 !== expected.sha256 || info.bytes !== expected.bytes))
+					for (const folder of ['objects', 'manifests', 'indexes'])
+						await client.mkdir(deps.storagePath(connection, 'backups', folder), true);
+					const reusable = new Map();
+					for (const previous of await indexes(client, connection, deps)) {
+						const old = await readManifest(client, connection, previous, work, deps);
+						if (old.version === 2)
+							for (const entry of old.bundles)
+								if (!reusable.has(entry.sha256)) reusable.set(entry.sha256, entry);
+					}
+					const writer = bundleWriter(
+						work,
+						manifest,
+						async (compressed, info) => {
+							await assertOwned();
+							const existing = reusable.get(info.sha256);
+							if (existing) {
+								await transfers.wait(info.sha256);
+								if (
+									existing.bytes !== info.bytes ||
+									(await deps.hashRemote(
+										client,
+										deps.storagePath(connection, 'backups', 'objects', existing.object)
+									)) !== existing.remoteSha256
+								)
+									throw new Error('Recovery bundle changed.');
+								reusedObjects++;
+								return {
+									object: existing.object,
+									remoteSha256: existing.remoteSha256,
+									compressedBytes: existing.compressedBytes
+								};
+							}
+							const uploaded = await transfers.upload(compressed, info);
+							uploadedObjects++;
+							reusable.set(info.sha256, { ...info, ...uploaded });
+							return uploaded;
+						},
+						options.bundleBytes
+					);
+					let collectedBytes = 0;
+					async function addFile(source, relative, role, expected) {
+						const plain = path.join(work, `${randomUUID()}.plain`);
+						try {
+							await assertOwned();
+							const info = await copyStable(source, plain, initialSources.get(source));
+							collectedBytes += info.bytes;
+							if (
+								manifest.files.length >= MAX_RECOVERY_FILES ||
+								collectedBytes > MAX_RECOVERY_BYTES ||
+								(expected && (info.sha256 !== expected.sha256 || info.bytes !== expected.bytes))
+							)
+								throw new Error();
+							const entry = { path: relative, role, ...info };
+							await writer.add(plain, entry);
+							manifest.files.push(entry);
+						} finally {
+							await fs.rm(plain, { force: true });
+						}
+					}
+					await addFile(databaseFile, 'db/pacs.db', 'database');
+					// Keep frequently changing database bytes out of reusable payload bundles.
+					await writer.flush();
+					for (const [relative, entry] of [...catalog].sort(([a], [b]) => a.localeCompare(b))) {
+						await noLinks(entry.source, true);
+						try {
+							await fs.lstat(entry.source);
+						} catch (error) {
+							if (
+								error.code !== 'ENOENT' ||
+								entry.role !== 'audio' ||
+								!hasColumn(snapshot, 'storage_audio', 'path')
+							)
+								throw error;
+							const archive = archivesUsed.get(entry.original);
+							if (!archive) throw new Error();
+							const archived = path.join(work, `${randomUUID()}.archive`);
+							const plain = path.join(work, `${randomUUID()}.audio`);
+							const remote = deps.storagePath(connection, 'audio', archive.object_key);
+							await client.get(remote, archived);
+							if ((await sha256(archived)) !== archive.remote_sha256) throw new Error();
+							await deps.decryptFile(archived, plain);
+							await addFile(plain, relative, entry.role, archive);
+							await fs.rm(archived, { force: true });
+							await fs.rm(plain, { force: true });
+							continue;
+						}
+						await addFile(entry.source, relative, entry.role, archivesUsed.get(entry.original));
+					}
+					const runtime = Object.fromEntries(
+						APP_ENV_KEYS.filter((key) => typeof env[key] === 'string').map((key) => [key, env[key]])
+					);
+					const environment = path.join(work, 'environment.json');
+					await fs.writeFile(environment, JSON.stringify(runtime, null, 2), { mode: 0o600 });
+					await addFile(environment, 'environment.json', 'environment');
+					const envFile = path.join(cwd, '.env');
+					await noLinks(envFile, true);
+					let envContent;
+					try {
+						envContent = await fs.readFile(envFile, 'utf8');
+					} catch (error) {
+						if (error.code !== 'ENOENT') throw error;
+					}
+					if (envContent !== undefined) {
+						const local = path.join(work, 'app.env');
+						await fs.writeFile(local, serializeEnvironment(filteredEnvironment(envContent)), {
+							mode: 0o600
+						});
+						await addFile(local, '.env', 'environment');
+					}
+					async function verifyCollection() {
+						await assertOwned();
+						const capturedFiles = new Map(manifest.files.map((file) => [file.path, file]));
+						for (const [relative, entry] of catalog)
+							if (initialSources.has(entry.source)) {
+								await noLinks(entry.source);
+								const captured = capturedFiles.get(relative);
+								if (
+									!sameFileState(
+										initialSources.get(entry.source),
+										await fs.stat(entry.source, { bigint: true })
+									) ||
+									(await sha256(entry.source)) !== captured.sha256
+								)
+									throw new Error('Recovery source changed.');
+							}
+						for (const archive of archivesUsed.values()) {
+							if (
+								(await deps.hashRemote(
+									client,
+									deps.storagePath(connection, 'audio', archive.object_key)
+								)) !== archive.remote_sha256
+							) {
+								throw new Error('Recovery archive changed.');
+							}
+						}
+						await assertOwned();
+						assertArchiveCatalog();
+					}
+					await writer.flush();
+					await transfers.finish();
+					await verifyCollection();
+					validateManifest(manifest);
+					const json = path.join(work, 'manifest.json');
+					const encrypted = path.join(work, 'manifest.enc');
+					const serialized = JSON.stringify(manifest);
+					if (Buffer.byteLength(serialized) > MAX_MANIFEST_BYTES)
+						throw new Error('Recovery manifest limit exceeded.');
+					await fs.writeFile(json, serialized, { mode: 0o600 });
+					await deps.encryptFile(json, encrypted);
+					const target = deps.storagePath(connection, 'backups', 'manifests', `${id}.enc`);
+					await client.put(encrypted, target);
+					if ((await deps.hashRemote(client, target)) !== (await sha256(encrypted)))
 						throw new Error();
-					const existing = reusable.get(info.sha256);
-					let object;
-					let remoteSha256;
-					if (existing) {
-						object = existing.object;
-						remoteSha256 = existing.remoteSha256;
-						if (
-							(await deps.hashRemote(
-								client,
-								deps.storagePath(connection, 'backups', 'objects', object)
-							)) !== remoteSha256
-						)
-							throw new Error();
-						reusedObjects++;
-					} else {
-						await deps.encryptFile(plain, encrypted);
-						remoteSha256 = await sha256(encrypted);
-						object = `${remoteSha256}.enc`;
-						const target = deps.storagePath(connection, 'backups', 'objects', object);
-						await client.put(encrypted, target);
-						if ((await deps.hashRemote(client, target)) !== remoteSha256) throw new Error();
-						uploadedObjects++;
-						reusable.set(info.sha256, { object, remoteSha256 });
-					}
-					manifest.files.push({ path: relative, role, ...info, object, remoteSha256 });
+					// Publication is last and atomic: an index is the sole completed-snapshot marker.
+					const publicIndex = path.join(work, 'index.json');
+					await fs.writeFile(publicIndex, JSON.stringify({ id, kind, createdAt: now }), {
+						mode: 0o600
+					});
+					const pending = deps.storagePath(connection, 'backups', 'indexes', `${id}.pending`);
+					await client.put(publicIndex, pending);
+					await verifyCollection();
+					await client.rename(
+						pending,
+						deps.storagePath(connection, 'backups', 'indexes', `${id}.${kind}.json`)
+					);
 				} finally {
-					await fs.rm(plain, { force: true });
-					await fs.rm(encrypted, { force: true });
+					await transfers.settle();
 				}
-			}
-			await addFile(databaseFile, 'db/pacs.db', 'database');
-			for (const [relative, entry] of catalog) {
-				await noLinks(entry.source, true);
-				try {
-					await fs.lstat(entry.source);
-				} catch (error) {
-					if (
-						error.code !== 'ENOENT' ||
-						entry.role !== 'audio' ||
-						!hasColumn(snapshot, 'storage_audio', 'path')
-					)
-						throw error;
-					const archive = archivesUsed.get(entry.original);
-					if (!archive) throw new Error();
-					const archived = path.join(work, `${randomUUID()}.archive`);
-					const plain = path.join(work, `${randomUUID()}.audio`);
-					const remote = deps.storagePath(connection, 'audio', archive.object_key);
-					await client.get(remote, archived);
-					if ((await sha256(archived)) !== archive.remote_sha256) throw new Error();
-					await deps.decryptFile(archived, plain);
-					await addFile(plain, relative, entry.role, archive);
-					await fs.rm(archived, { force: true });
-					await fs.rm(plain, { force: true });
-					continue;
-				}
-				await addFile(entry.source, relative, entry.role, archivesUsed.get(entry.original));
-			}
-			const runtime = Object.fromEntries(
-				APP_ENV_KEYS.filter((key) => typeof env[key] === 'string').map((key) => [key, env[key]])
-			);
-			const environment = path.join(work, 'environment.json');
-			await fs.writeFile(environment, JSON.stringify(runtime, null, 2), { mode: 0o600 });
-			await addFile(environment, 'environment.json', 'environment');
-			const envFile = path.join(cwd, '.env');
-			await noLinks(envFile, true);
-			let envContent;
-			try {
-				envContent = await fs.readFile(envFile, 'utf8');
-			} catch (error) {
-				if (error.code !== 'ENOENT') throw error;
-			}
-			if (envContent !== undefined) {
-				const local = path.join(work, 'app.env');
-				await fs.writeFile(local, serializeEnvironment(filteredEnvironment(envContent)), {
-					mode: 0o600
-				});
-				await addFile(local, '.env', 'environment');
-			}
-			async function verifyCollection() {
-				await assertOwned();
-				for (const [relative, entry] of catalog)
-					if (initialSources.has(entry.source)) {
-						await noLinks(entry.source);
-						const captured = manifest.files.find((file) => file.path === relative);
-						if (
-							!sameFileState(
-								initialSources.get(entry.source),
-								await fs.stat(entry.source, { bigint: true })
-							) ||
-							(await sha256(entry.source)) !== captured.sha256
-						)
-							throw new Error('Recovery source changed.');
-					}
-				for (const archive of archivesUsed.values()) {
-					if (
-						(await deps.hashRemote(
-							client,
-							deps.storagePath(connection, 'audio', archive.object_key)
-						)) !== archive.remote_sha256
-					) {
-						throw new Error('Recovery archive changed.');
-					}
-				}
-				await assertOwned();
-				assertArchiveCatalog();
-			}
-			await verifyCollection();
-			validateManifest(manifest);
-			const json = path.join(work, 'manifest.json');
-			const encrypted = path.join(work, 'manifest.enc');
-			await fs.writeFile(json, JSON.stringify(manifest), { mode: 0o600 });
-			await deps.encryptFile(json, encrypted);
-			const target = deps.storagePath(connection, 'backups', 'manifests', `${id}.enc`);
-			await client.put(encrypted, target);
-			if ((await deps.hashRemote(client, target)) !== (await sha256(encrypted))) throw new Error();
-			// Publication is last and atomic: an index is the sole completed-snapshot marker.
-			const publicIndex = path.join(work, 'index.json');
-			await fs.writeFile(publicIndex, JSON.stringify({ id, kind, createdAt: now }), {
-				mode: 0o600
-			});
-			const pending = deps.storagePath(connection, 'backups', 'indexes', `${id}.pending`);
-			await client.put(publicIndex, pending);
-			await verifyCollection();
-			await client.rename(
-				pending,
-				deps.storagePath(connection, 'backups', 'indexes', `${id}.${kind}.json`)
-			);
+			})();
+			return collection;
 		});
 		return {
 			id,
@@ -700,8 +825,11 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 			reusedObjects
 		};
 	} catch {
+		aborted = true;
 		throw new Error('Recovery backup failed.');
 	} finally {
+		await activeTransfers?.settle();
+		await collection?.catch(() => {});
 		await cleanupRecovery(snapshot, work);
 	}
 }
@@ -819,21 +947,42 @@ export async function restoreRecovery(
 		await noLinks(manifestFile);
 		await noLinks(objectsDirectory);
 		const plainManifest = path.join(work, 'manifest.json');
+		if ((await fs.stat(manifestFile)).size > MAX_MANIFEST_BYTES + 35) throw new Error();
 		await deps.decryptFile(manifestFile, plainManifest);
+		if ((await fs.stat(plainManifest)).size > MAX_MANIFEST_BYTES) throw new Error();
 		const manifest = validateManifest(JSON.parse(await fs.readFile(plainManifest, 'utf8')));
 		const restored = path.join(work, 'restored');
 		await fs.mkdir(restored, { mode: 0o700 });
-		for (const entry of manifest.files) {
-			const object = path.join(objectsDirectory, entry.object);
+		async function checkObject(object, entry) {
 			await noLinks(object);
-			if ((await sha256(object)) !== entry.remoteSha256) throw new Error();
-			const target = path.join(restored, ...entry.path.split('/'));
-			await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-			await deps.decryptFile(object, target);
-			await fs.chmod(target, 0o600);
-			if ((await fs.stat(target)).size !== entry.bytes || (await sha256(target)) !== entry.sha256)
+			const stat = await fs.stat(object);
+			if (
+				!stat.isFile() ||
+				stat.size > objectDownloadBytes(manifest, entry) ||
+				(await sha256(object)) !== entry.remoteSha256
+			)
 				throw new Error();
 		}
+		if (manifest.version === 2) {
+			await unpackBundles(
+				manifest,
+				objectsDirectory,
+				restored,
+				work,
+				deps.decryptFile,
+				checkObject
+			);
+		} else
+			for (const entry of manifest.files) {
+				const object = path.join(objectsDirectory, entry.object);
+				await checkObject(object, entry);
+				const target = path.join(restored, ...entry.path.split('/'));
+				await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+				await deps.decryptFile(object, target);
+				await fs.chmod(target, 0o600);
+				if ((await fs.stat(target)).size !== entry.bytes || (await sha256(target)) !== entry.sha256)
+					throw new Error();
+			}
 		database = new Database(path.join(restored, 'db', 'pacs.db'));
 		if (database.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
 		const remap = database.transaction(() => {
