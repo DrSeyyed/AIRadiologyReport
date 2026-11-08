@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { hashStorageFile, linkStorageFile } from '../src/lib/server/storage-shell.js';
+import {
+	hashStorageFile,
+	linkStorageFile,
+	statStorageFiles,
+	MAX_STORAGE_STAT_PATHS
+} from '../src/lib/server/storage-shell.js';
 import { abortStorageSession, assertStorageSession } from '../src/lib/server/storage-session.js';
 
 const digest = 'abcdef0123456789'.repeat(4);
@@ -85,6 +90,107 @@ test('link quotes both paths and has no force, overwrite or interactive flags', 
 	assert.equal(mock.calls.destroyed, 0);
 });
 
+test('batched metadata quotes paths, retains order and reports regular files or missing entries', async () => {
+	const mock = mockSession();
+	let checks = 0;
+	const progress = [];
+	const result = statStorageFiles(
+		mock.client,
+		["/vault/O'Brien $(nope)", '/vault/missing', '/vault/empty'],
+		{},
+		{
+			assertActive: () => checks++,
+			onProgress: (bytes) => progress.push(bytes)
+		}
+	);
+	assert.equal(mock.calls.commands.length, 1);
+	assert.match(
+		mock.calls.commands[0],
+		/^for p in '\/vault\/O'\\''Brien \$\(nope\)' '\/vault\/missing' '\/vault\/empty';/
+	);
+	assert.match(mock.calls.commands[0], /stat --printf='%f %s\\n' -- "\$p"/);
+	assert.doesNotMatch(mock.calls.commands[0], /stat -L|sha256sum/);
+	mock.channel.write('81a4 42\nmiss');
+	mock.channel.write('ing\n8180 0\n');
+	complete(mock.channel);
+	assert.deepEqual(await result, [{ size: 42 }, null, { size: 0 }]);
+	assert.ok(checks > 3);
+	assert.ok(progress.length > 0);
+	assert.equal(mock.calls.destroyed, 0);
+});
+
+test('batched metadata rejects unsafe types, malformed results and unsafe sizes', async () => {
+	for (const output of [
+		'',
+		'81a4 1',
+		'81a4 1\nextra\n',
+		'81a4 1\n81a4 2\n',
+		'a1ff 42\n',
+		'41ed 42\n',
+		'11a4 42\n',
+		'c1a4 42\n',
+		'81a4 -1\n',
+		'81a4 1.5\n',
+		'81a4 9007199254740992\n',
+		'81a4 01\n',
+		'unknown\n',
+		'81a4 1\r\n'
+	]) {
+		const mock = mockSession();
+		const result = statStorageFiles(mock.client, ['/vault/file']);
+		complete(mock.channel, output);
+		await rejectsSafely(result);
+		assert.equal(mock.calls.destroyed, 1);
+	}
+});
+
+test('metadata batches and commands are bounded before dispatch', async () => {
+	for (const paths of [
+		undefined,
+		[],
+		['/vault/file', '../escape'],
+		Array(MAX_STORAGE_STAT_PATHS + 1).fill('/file'),
+		Array(MAX_STORAGE_STAT_PATHS).fill('/' + 'a'.repeat(4000))
+	]) {
+		const mock = mockSession();
+		await rejectsSafely(statStorageFiles(mock.client, paths));
+		assert.deepEqual(mock.calls.commands, []);
+	}
+	const mock = mockSession();
+	const result = statStorageFiles(mock.client, Array(MAX_STORAGE_STAT_PATHS).fill('/file'));
+	complete(mock.channel, '81a4 1\n'.repeat(MAX_STORAGE_STAT_PATHS));
+	assert.equal((await result).length, MAX_STORAGE_STAT_PATHS);
+});
+
+test('metadata batches retain total deadlines and reject cancellation before accepting results', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const stalled = mockSession(() => {});
+	const rejected = rejectsSafely(
+		statStorageFiles(stalled.client, ['/file'], { verificationTimeoutSeconds: 1 })
+	);
+	t.mock.timers.tick(1000);
+	await rejected;
+	assert.equal(stalled.calls.destroyed, 1);
+	const mock = mockSession();
+	let owned = true;
+	const cancelled = rejectsSafely(
+		statStorageFiles(
+			mock.client,
+			['/file'],
+			{},
+			{
+				assertActive: () => {
+					if (!owned) throw new Error(secret);
+				}
+			}
+		)
+	);
+	owned = false;
+	complete(mock.channel, '81a4 1\n');
+	await cancelled;
+	assert.equal(mock.calls.destroyed, 1);
+});
+
 test('buffered stdout is not consumed before data handlers are ready', async () => {
 	const mock = mockSession((callback, channel) => {
 		channel.write(`${digest}  /file\n`);
@@ -124,6 +230,7 @@ test('invalid or traversing paths reject before executing, with no path leakage'
 	]) {
 		const mock = mockSession();
 		await rejectsSafely(hashStorageFile(mock.client, path));
+		await rejectsSafely(statStorageFiles(mock.client, [path]));
 		await rejectsSafely(linkStorageFile(mock.client, path, '/target'));
 		await rejectsSafely(linkStorageFile(mock.client, '/source', path));
 		assert.deepEqual(mock.calls.commands, []);

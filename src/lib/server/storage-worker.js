@@ -203,8 +203,12 @@ export function scheduleStorageJobs(db, now = Math.floor(Date.now() / 1000)) {
 	retireDatabaseJobs(db, now);
 	const settings = getStorageSettings(db);
 	if (!settings.enabled) return;
-	if (settings.archiveEnabled || settings.backupsEnabled)
-		queueStorageJob(db, 'archive', { now, scheduleKey: `archive:${Math.floor(now / 60)}` });
+	if (settings.archiveEnabled || settings.backupsEnabled) {
+		// Persist the window's starting minute, retaining existing one-minute schedule keys.
+		const minute =
+			Math.floor(now / (settings.syncIntervalMinutes * 60)) * settings.syncIntervalMinutes;
+		queueStorageJob(db, 'archive', { now, scheduleKey: `archive:${minute}` });
+	}
 	if (settings.backupsEnabled) {
 		const { due } = fullBackupSlots(settings.fullBackupHours, now);
 		queueStorageJob(db, 'full', { now, scheduleKey: `full:${due}` });

@@ -177,6 +177,33 @@ test('admin persists parallel connection limits and rejects malformed, missing a
 	assert.equal(getStorageConnection(db).parallelConnections, 16);
 });
 
+test('admin saves and loads bounded sync intervals and accepts legacy forms without the new field', async (t) => {
+	const { submit, form, page, db } = await fixture(t);
+	assert.equal(page.load({ locals: admin }).settings.syncIntervalMinutes, 1);
+	for (const minutes of [1, 7, 1440]) {
+		const input = form();
+		input.set('syncIntervalMinutes', String(minutes));
+		assert.ok((await submit('save', input)).message);
+		assert.equal(page.load({ locals: admin }).settings.syncIntervalMinutes, minutes);
+		assert.equal(getStorageConnection(db).syncIntervalMinutes, minutes);
+	}
+	for (const value of ['0', '1441', '-1', '1.5', '5x', '', 'NaN', 'Infinity']) {
+		const invalid = form();
+		invalid.set('syncIntervalMinutes', value);
+		const result = await submit('save', invalid);
+		assert.equal(result.status, 400);
+		assert.match(result.data.error, /whole minutes from 1 to 1440/);
+	}
+	const duplicate = form();
+	duplicate.append('syncIntervalMinutes', '5');
+	assert.equal((await submit('save', duplicate)).status, 400);
+	assert.equal(getStorageConnection(db).syncIntervalMinutes, 1440);
+	const legacy = form();
+	legacy.delete('syncIntervalMinutes');
+	assert.ok((await submit('save', legacy)).message);
+	assert.equal(page.load({ locals: admin }).settings.syncIntervalMinutes, 1);
+});
+
 test('admin saves comma-separated UTC full hours and audit cadence without deprecated schedule controls', async (t) => {
 	const { submit, form, page, db } = await fixture(t);
 	const input = form();
@@ -551,6 +578,14 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(archiveBody, /Status refreshes every 5 seconds/);
 	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
 	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);
+	assert.match(archiveBody, /<input[^>]*name="syncIntervalMinutes"[^>]*min="1"[^>]*max="1440"[^>]*value="1"/);
+	assert.match(archiveBody, /every 1–1440 minutes \(default 1\)/);
+	assert.match(archiveBody, /Pending batches continue on the short worker cycle/);
+	assert.match(archiveBody, /Full backup UTC hours are independent/);
+	const configured = render(component.default, {
+		props: { data: { ...data, settings: { ...data.settings, syncIntervalMinutes: 1440 } } }
+	});
+	assert.match(configured.body, /<input[^>]*name="syncIntervalMinutes"[^>]*value="1440"/);
 	for (const name of ['uploadTimeoutSeconds', 'verificationTimeoutSeconds'])
 		assert.match(
 			archiveBody,

@@ -44,7 +44,11 @@ function storageFormSettings(form) {
 				throw new Error('Enter comma-separated UTC hours from 0 to 23.');
 			values[key] = value.split(',').map((hour) => Number(hour.trim()));
 		} else if (typeof defaultValue === 'number') {
-			if (['databaseIntervalHours', 'fileBackupHour'].includes(key) && !form.has(key)) continue;
+			if (
+				['databaseIntervalHours', 'fileBackupHour', 'syncIntervalMinutes'].includes(key) &&
+				!form.has(key)
+			)
+				continue;
 			const value = field(form, key);
 			if (!/^\d+$/.test(value))
 				throw new Error('Enter whole numbers for timeouts, schedules and retention.');
@@ -89,7 +93,7 @@ export const actions = {
 		} catch {
 			return fail(400, {
 				error:
-					'Invalid storage settings. Complete the connection, SHA256 fingerprint, timeout and schedule fields with valid values. Inactivity timeouts must be whole seconds from 1 to 600; full backup hours must be 1–24 unique comma-separated UTC hours from 0 to 23, and integrity audit days must be from 1 to 365.'
+					'Invalid storage settings. Complete the connection, SHA256 fingerprint, timeout and schedule fields with valid values. Synchronization intervals must be whole minutes from 1 to 1440. Inactivity timeouts must be whole seconds from 1 to 600; full backup hours must be 1–24 unique comma-separated UTC hours from 0 to 23, and integrity audit days must be from 1 to 365.'
 			});
 		}
 		try {

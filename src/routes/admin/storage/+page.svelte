@@ -52,6 +52,7 @@
 	];
 	const numberFields = [
 		['parallelConnections', 'Parallel storage connections (default 4)', 1, 16],
+		['syncIntervalMinutes', 'Automatic file sync / audio eviction check interval (minutes)', 1, 1440],
 		['localRetentionDays', 'Keep local audio (days)', 1, 3650],
 		['integrityAuditDays', 'Remote integrity audit cadence (days)', 1, 365],
 		['hourlyRetention', 'Recent recovery points to keep', 1, 8760],
@@ -121,6 +122,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<p class="mt-2 text-base-content/70">Uploads and download reads use inactivity limits. Storage-side hash/link commands use the verification timeout as a hard deadline, not an inactivity limit. New settings apply to subsequent jobs; changing an in-use destination requires migration.</p>
 		</details>
 		<h3 class="text-lg font-semibold">Services, schedule and retention</h3>
+		<p class="text-sm text-base-content/70">Automatic file sync and eligible audio eviction checks: every 1–1440 minutes (default 1), in aligned time windows. Pending batches continue on the short worker cycle (normally 15 seconds); manual jobs do not wait for this interval. Full backup UTC hours are independent.</p>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="enabled" bind:checked={settings.enabled} /> Enable background storage jobs</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Allow eviction of eligible local audio after verified synchronization and backup</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="backupsEnabled" bind:checked={settings.backupsEnabled} /> Scheduled full recovery backups and background file synchronization</label>

@@ -307,20 +307,23 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 			])
 				await ensureFileDirectory(client, deps.storagePath(connection, ...parts));
 			const preserving = new Map();
-			function preserve(worker, object) {
+			function preserve(worker, object, checked) {
 				validObject(object);
 				if (!preserving.has(object.object_key))
-					preserving.set(object.object_key, preserveObject(worker, object));
+					preserving.set(object.object_key, preserveObject(worker, object, checked));
 				return preserving.get(object.object_key);
 			}
-			async function preserveObject(worker, object) {
+			async function preserveObject(worker, object, checked) {
 				validObject(object);
 				assertActive();
 				const source = deps.storagePath(connection, 'files', 'objects', object.object_key);
 				const target = deps.storagePath(connection, 'backups', 'objects', object.object_key);
-				if ((await remoteFileStat(worker, source)).size !== object.encrypted_bytes)
+				const [sourceInfo, exists] = checked || [
+					await remoteFileStat(worker, source),
+					await remoteFileStat(worker, target, true)
+				];
+				if (!sourceInfo || sourceInfo.size !== object.encrypted_bytes)
 					throw new Error('Recovery object changed.');
-				const exists = await remoteFileStat(worker, target, true);
 				if (exists) {
 					if (
 						exists.size !== object.encrypted_bytes ||
@@ -379,30 +382,81 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 				});
 				progress.add('files');
 			}
+			const objects = new Map();
+			for (const entry of frozen) {
+				assertActive();
+				const object = validObject(objectRow.get(destination, entry.object_key));
+				const archive = archiveVersions.get(entry.path);
+				if (archive && (object.sha256 !== archive.sha256 || object.bytes !== archive.bytes))
+					throw new Error('Recovery archive version changed.');
+				if (!preserving.has(object.object_key)) objects.set(object.object_key, object);
+			}
+			const batches = [];
+			let batch = { objects: [], paths: [], bytes: 0 };
+			for (const object of objects.values()) {
+				const paths = [
+					deps.storagePath(connection, 'files', 'objects', object.object_key),
+					deps.storagePath(connection, 'backups', 'objects', object.object_key)
+				];
+				// Allow for shell quoting expansion and keep commands below the SSH exec argument limit.
+				const bytes = paths.reduce((sum, target) => sum + Buffer.byteLength(target) * 4 + 4, 0);
+				if (
+					batch.objects.length &&
+					(batch.objects.length >= 32 || batch.bytes + bytes > 48 * 1024)
+				) {
+					batches.push(batch);
+					batch = { objects: [], paths: [], bytes: 0 };
+				}
+				batch.objects.push(object);
+				batch.paths.push(...paths);
+				batch.bytes += bytes;
+			}
+			if (batch.objects.length) batches.push(batch);
+			const checkedObjects = new Map();
 			await storageFilePool(
 				deps,
 				connection,
-				frozen,
-				async (worker, entry) => {
-					const object = validObject(objectRow.get(destination, entry.object_key));
-					const archive = archiveVersions.get(entry.path);
-					if (archive && (object.sha256 !== archive.sha256 || object.bytes !== archive.bytes))
-						throw new Error('Recovery archive version changed.');
-					await preserve(worker, object);
-					manifest.files.push({
-						path: entry.path,
-						role: roles.get(entry.path) || 'attachment',
-						sha256: object.sha256,
-						remoteSha256: object.remote_sha256,
-						bytes: object.bytes,
-						object: object.object_key
+				batches,
+				async (worker, batch) => {
+					assertActive();
+					const checked = await deps.statStorageFiles(worker, batch.paths, connection, {
+						assertActive,
+						onProgress: () => progress.activity()
 					});
-					reusedObjects++;
-					progress.add('files');
+					assertActive();
+					if (!Array.isArray(checked) || checked.length !== batch.paths.length)
+						throw new Error('Recovery object checks incomplete.');
+					for (let index = 0; index < batch.objects.length; index++)
+						checkedObjects.set(
+							batch.objects[index].object_key,
+							checked.slice(index * 2, index * 2 + 2)
+						);
 				},
 				assertActive,
 				client
 			);
+			await storageFilePool(
+				deps,
+				connection,
+				[...objects.values()],
+				(worker, object) => preserve(worker, object, checkedObjects.get(object.object_key)),
+				assertActive,
+				client
+			);
+			for (const entry of frozen) {
+				assertActive();
+				const object = validObject(objectRow.get(destination, entry.object_key));
+				manifest.files.push({
+					path: entry.path,
+					role: roles.get(entry.path) || 'attachment',
+					sha256: object.sha256,
+					remoteSha256: object.remote_sha256,
+					bytes: object.bytes,
+					object: object.object_key
+				});
+				reusedObjects++;
+				progress.add('files');
+			}
 			progress.set({ bundles: uploadedObjects + reusedObjects, uploadedObjects, reusedObjects });
 			async function fence() {
 				await assertSources();

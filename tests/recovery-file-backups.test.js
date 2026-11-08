@@ -46,6 +46,8 @@ async function fixture(t, settings = connection) {
 		puts: [],
 		hashes: [],
 		links: [],
+		statBatches: [],
+		lstats: [],
 		gets: 0,
 		reads: 0,
 		remoteHashes: 0,
@@ -61,6 +63,7 @@ async function fixture(t, settings = connection) {
 			await fs.mkdir(local(target), { recursive: true });
 		},
 		async lstat(target) {
+			calls.lstats.push(target);
 			return (await hooks.lstat?.(target)) || fs.lstat(local(target));
 		},
 		async put(source, target) {
@@ -103,6 +106,24 @@ async function fixture(t, settings = connection) {
 			calls.hashes.push(target);
 			await hooks.hash?.(target);
 			return digest(await fs.readFile(local(target)));
+		},
+		async statStorageFiles(_client, targets, _settings, { assertActive }) {
+			assertActive();
+			calls.statBatches.push([...targets]);
+			await hooks.statBatch?.(targets);
+			const result = [];
+			for (const target of targets) {
+				try {
+					const info = (await hooks.lstat?.(target)) || (await fs.lstat(local(target)));
+					if (!info.isFile() || info.isSymbolicLink()) throw new Error('Unsafe storage object.');
+					result.push({ size: info.size });
+				} catch (error) {
+					if (error.code !== 'ENOENT') throw error;
+					result.push(null);
+				}
+			}
+			assertActive();
+			return result;
 		},
 		async linkStorageFile(_client, source, target, _settings, { assertActive }) {
 			assertActive();
@@ -269,6 +290,53 @@ test('unchanged file and config versions are reused without upload, encryption, 
 	assert.equal(f.calls.gets + f.calls.reads, 0);
 	assert.ok(second.reusedObjects >= stable.length);
 });
+
+test('unchanged backups batch metadata checks without per-object SFTP requests or repeat checksums', async (t) => {
+	const f = await fixture(t);
+	for (let index = 0; index < 70; index++)
+		await f.write(`uploads/batched-${index}.txt`, `unique batched payload ${index}`);
+	await f.run();
+	const objects = f.db.prepare('SELECT object_key FROM storage_file_catalog').all();
+	f.calls.statBatches.length = 0;
+	f.calls.lstats.length = 0;
+	f.calls.hashes.length = 0;
+	f.calls.links.length = 0;
+	await f.run({ now: f.options.now + 1 });
+	assert.equal(f.calls.statBatches.length, Math.ceil(objects.length / 32));
+	assert.ok(f.calls.statBatches.every((targets) => targets.length <= 64));
+	const checked = f.calls.statBatches.flat();
+	for (const { object_key } of objects) {
+		assert.equal(checked.filter((target) => target.endsWith('/' + object_key)).length, 2);
+		assert.ok(!f.calls.lstats.some((target) => target.endsWith('/' + object_key)));
+		assert.ok(!f.calls.hashes.some((target) => target.endsWith('/' + object_key)));
+		assert.ok(!f.calls.links.some(([, target]) => target.endsWith('/' + object_key)));
+	}
+});
+
+for (const failure of [
+	'missing-source',
+	'wrong-source-size',
+	'wrong-backup-size',
+	'partial-output',
+	'cancelled'
+]) {
+	test(`batched metadata ${failure} prevents recovery publication`, async (t) => {
+		const f = await fixture(t);
+		let owned = true;
+		const read = f.deps.statStorageFiles;
+		f.deps.statStorageFiles = async (...args) => {
+			const result = await read(...args);
+			if (failure === 'missing-source') result[0] = null;
+			if (failure === 'wrong-source-size') result[0] = { size: result[0].size + 1 };
+			if (failure === 'wrong-backup-size') result[1] = { size: result[0].size + 1 };
+			if (failure === 'partial-output') result.pop();
+			if (failure === 'cancelled') owned = false;
+			return result;
+		};
+		await assert.rejects(f.run({ owned: () => owned }), failed);
+		await f.unpublished();
+	});
+}
 
 test('referenced and unreferenced evicted archive-only audio is hardlinked without decryption', async (t) => {
 	const f = await fixture(t);

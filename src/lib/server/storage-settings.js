@@ -13,6 +13,7 @@ export const DEFAULT_STORAGE_SETTINGS = Object.freeze({
 	root: '',
 	fingerprint: '',
 	localRetentionDays: 30,
+	syncIntervalMinutes: 1,
 	databaseIntervalHours: 1,
 	fileBackupHour: 2,
 	fullBackupHours: Object.freeze([0, 12]),
@@ -28,6 +29,7 @@ const fields = Object.keys(DEFAULT_STORAGE_SETTINGS);
 const limits = {
 	port: [1, 65535],
 	localRetentionDays: [1, 3650],
+	syncIntervalMinutes: [1, 1440],
 	databaseIntervalHours: [1, 168],
 	fileBackupHour: [0, 23],
 	integrityAuditDays: [1, 365],

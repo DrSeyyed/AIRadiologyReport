@@ -2,6 +2,8 @@ import { storageTimeoutMs } from './storage-settings.js';
 import { abortStorageSession, assertStorageSession } from './storage-session.js';
 
 const MAX_OUTPUT_BYTES = 16 * 1024;
+export const MAX_STORAGE_STAT_PATHS = 128;
+const MAX_STAT_COMMAND_BYTES = 64 * 1024;
 const ignoreError = () => {};
 const shellError = () => new Error('Storage shell operation failed.');
 
@@ -172,6 +174,34 @@ export async function hashStorageFile(client, remotePath, settings = {}, options
 			if (!/^[a-fA-F0-9]{64}$/.test(digest) || output.slice(64) !== `  ${remotePath}\n`)
 				throw shellError();
 			return digest.toLowerCase();
+		});
+	} catch {
+		throw shellError();
+	}
+}
+
+/** Read bounded batches of regular-file sizes without following final symlinks or reading contents. */
+export async function statStorageFiles(client, paths, settings = {}, options = {}) {
+	try {
+		assertStorageSession(client);
+		options.assertActive?.();
+		if (!Array.isArray(paths) || paths.length < 1 || paths.length > MAX_STORAGE_STAT_PATHS)
+			throw shellError();
+		const argumentsList = paths.map(quotePath).join(' ');
+		const command = `for p in ${argumentsList}; do if [ -e "$p" ] || [ -L "$p" ]; then stat --printf='%f %s\\n' -- "$p" || exit 1; else printf 'missing\\n'; fi; done`;
+		if (Buffer.byteLength(command) > MAX_STAT_COMMAND_BYTES) throw shellError();
+		return await execute(client, command, settings, options, (output) => {
+			const lines = output.split('\n');
+			if (lines.pop() !== '' || lines.length !== paths.length) throw shellError();
+			return lines.map((line) => {
+				if (line === 'missing') return null;
+				const match = /^([a-fA-F0-9]{4,8}) (0|[1-9][0-9]*)$/.exec(line);
+				if (!match) throw shellError();
+				const mode = Number.parseInt(match[1], 16);
+				const size = Number(match[2]);
+				if ((mode & 0xf000) !== 0x8000 || !Number.isSafeInteger(size)) throw shellError();
+				return { size };
+			});
 		});
 	} catch {
 		throw shellError();

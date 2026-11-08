@@ -691,6 +691,80 @@ test('storage settings are disabled by default, validated and credentials encryp
 	);
 });
 
+test('sync intervals default for missing settings, validate and survive a database restart', async (t) => {
+	const { db, settings, directory } = fixture(t);
+	assert.equal(DEFAULT_STORAGE_SETTINGS.syncIntervalMinutes, 1);
+	assert.equal(normalizeStorageSettings({}).syncIntervalMinutes, 1);
+	const legacy = { ...settings };
+	delete legacy.syncIntervalMinutes;
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(JSON.stringify(legacy));
+	assert.equal(getStorageSettings(db).syncIntervalMinutes, 1);
+	for (const value of [0, -1, 1441, 1.5, '5', null, NaN, Infinity])
+		assert.throws(() => normalizeStorageSettings({ ...settings, syncIntervalMinutes: value }));
+	const destination = storageDestination(settings);
+	for (const syncIntervalMinutes of [1, 7, 1440]) {
+		saveStorageSettings(db, { ...settings, syncIntervalMinutes });
+		assert.equal(getStorageConnection(db).syncIntervalMinutes, syncIntervalMinutes);
+		assert.equal(storageDestination(getStorageSettings(db)), destination);
+	}
+	const at = Math.floor(now / 86400) * 86400;
+	scheduleStorageJobs(db, at);
+	db.prepare("UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=?").run(at, at);
+	const count = db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n;
+	const filename = join(directory, 'restart.sqlite');
+	await db.backup(filename);
+	const restarted = new Database(filename);
+	try {
+		assert.equal(getStorageSettings(restarted).syncIntervalMinutes, 1440);
+		scheduleStorageJobs(restarted, at + 15);
+		assert.equal(restarted.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, count);
+	} finally {
+		restarted.close();
+	}
+});
+
+for (const minutes of [1, 7, 1440]) {
+	test(`automatic sync uses durable ${minutes}-minute windows and skips missed checks`, (t) => {
+		const { db, settings } = fixture(t);
+		saveStorageSettings(db, { ...settings, backupsEnabled: false, syncIntervalMinutes: minutes });
+		const seconds = minutes * 60;
+		const at = Math.floor(now / seconds) * seconds;
+		scheduleStorageJobs(db, at);
+		assert.equal(db.prepare('SELECT schedule_key FROM storage_jobs').get().schedule_key, `archive:${at / 60}`);
+		db.prepare("UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=?").run(at, at);
+		scheduleStorageJobs(db, at + seconds - 1);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
+		scheduleStorageJobs(db, at + seconds);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 2);
+		db.prepare("UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=? WHERE status='pending'").run(at + seconds, at + seconds);
+		scheduleStorageJobs(db, at + seconds * 10);
+		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
+	});
+}
+
+test('long sync intervals preserve retry backoff, immediate manual work and pause safety', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, backupsEnabled: false, syncIntervalMinutes: 1440 });
+	const at = Math.floor(now / 86400) * 86400;
+	const options = { now: at, runArchive: async () => { throw new Error('offline'); } };
+	assert.equal(await processStorageJob(db, options), true);
+	const failed = db.prepare("SELECT * FROM storage_jobs WHERE kind='archive'").get();
+	assert.equal(failed.status, 'failed');
+	assert.equal(failed.retry_at, at + 60);
+	assert.equal(await processStorageJob(db, { ...options, now: at + 15 }), false);
+	scheduleStorageJobs(db, at + 86400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
+	assert.equal(db.prepare('SELECT retry_at FROM storage_jobs').get().retry_at, at + 60);
+	assert.equal(queueStorageJob(db, 'archive', { now: at + 15, retryNow: true }), failed.id);
+	assert.equal(await processStorageJob(db, { now: at + 15, runArchive: async () => ({ syncPending: 0 }) }), true);
+	const manual = queueStorageJob(db, 'archive', { now: at + 30 });
+	assert.notEqual(manual, failed.id);
+	assert.equal(await processStorageJob(db, { now: at + 30, runArchive: async () => ({ syncPending: 0 }) }), true);
+	pauseAndCancelStorageJobs(db, { now: at + 40 });
+	assert.equal(getStorageSettings(db).syncIntervalMinutes, 1440);
+	assert.equal(await processStorageJob(db, { now: at + 86400, runArchive: async () => assert.fail('paused') }), false);
+});
+
 test('full backup hours default twice daily, migrate legacy schedules once and persist canonically', (t) => {
 	const { db, settings } = fixture(t);
 	assert.deepEqual(DEFAULT_STORAGE_SETTINGS.fullBackupHours, [0, 12]);
@@ -1071,6 +1145,7 @@ test('full schedules use the latest UTC slot, skip missed slots and stay stable 
 		...settings,
 		archiveEnabled: false,
 		fullBackupHours: [18, 6],
+		syncIntervalMinutes: 1440,
 		fileBackupHour: 3,
 		databaseIntervalHours: 1
 	});
@@ -1137,7 +1212,7 @@ test('full slot retries and cancellation retain one durable identity until the n
 
 test('file synchronization is available for backups without audio eviction, with immediate non-audio continuation', async (t) => {
 	const { db, settings } = fixture(t);
-	saveStorageSettings(db, { ...settings, archiveEnabled: false });
+	saveStorageSettings(db, { ...settings, archiveEnabled: false, syncIntervalMinutes: 10 });
 	db.prepare('DELETE FROM recording_audio_parts').run();
 	db.prepare('UPDATE study_recordings SET audio_report_path=NULL').run();
 	assert.equal(storageStatus(db).backlog, 0);
@@ -1170,7 +1245,8 @@ test('file synchronization is available for backups without audio eviction, with
 	);
 	assert.equal(await processStorageJob(db, options), true);
 	assert.equal(await processStorageJob(db, options), false);
-	assert.equal(await processStorageJob(db, { ...options, now: now + 60 }), true);
+	assert.equal(await processStorageJob(db, { ...options, now: now + 60 }), false);
+	assert.equal(await processStorageJob(db, { ...options, now: now + 600 }), true);
 	assert.equal(calls, 3);
 	saveStorageSettings(db, { ...settings, archiveEnabled: false, backupsEnabled: false });
 	assert.throws(() => queueStorageJob(db, 'archive'), /Enable/);
