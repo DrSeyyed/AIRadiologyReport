@@ -33,6 +33,14 @@
 		selectTab(tabs[next].id);
 		document.getElementById(`storage-tab-${tabs[next].id}`)?.focus();
 	}
+	let recoveryPoints = $state(untrack(() => form?.recoveryPoints || []));
+	function recoveryEnhance() {
+		return async ({ result, update }) => {
+			if (result.type === 'success' && Array.isArray(result.data?.recoveryPoints))
+				recoveryPoints = result.data.recoveryPoints;
+			await update();
+		};
+	}
 	let settings = $state(untrack(() => ({ ...data.settings })));
 	let fullBackupHours = $state(untrack(() => data.settings.fullBackupHours.join(', ')));
 	onMount(() => {
@@ -153,6 +161,10 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<button class="btn btn-outline" name="kind" value="archive" disabled={data.status.resetActive || !data.settings.enabled || (!data.settings.archiveEnabled && !data.settings.backupsEnabled)}>Sync files now</button>
 			<button class="btn btn-primary" name="kind" value="full" disabled={data.status.resetActive || !data.settings.enabled || !data.settings.backupsEnabled}>Full recovery backup now</button>
 		</form>
+		<form method="POST" action="?/audit&tab=overview" use:enhance class="space-y-2">
+			<button class="btn btn-outline" name="confirmation" value="audit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Run full checksum audit</button>
+			<p class="text-sm text-base-content/70">Hash all tracked encrypted files, protected backup copies and legacy audio on storage, even if recently checked. No downloads. Shows progress, checksum MiB and elapsed time; cancellable in the job log. Works while schedules are paused.</p>
+		</form>
 		<form method="POST" action="?/pause&tab=overview" use:enhance={pauseEnhance}>
 			<button class="btn btn-warning" name="confirmation" value="pause">Pause &amp; cancel all</button>
 		</form>
@@ -170,16 +182,16 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<summary class="cursor-pointer font-medium">Restore requirements and activation</summary>
 			<p class="mt-2 text-base-content/70">Allow disk space for restored data and temporary downloads. Protect prepared copies like patient data and remove them manually when no longer needed. Preparation works while schedules are paused. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
 		</details>
-		<form method="POST" action="?/recoveryPoints&tab=restore" use:enhance>
+		<form method="POST" action="?/recoveryPoints&tab=restore" use:enhance={recoveryEnhance}>
 			<button class="btn btn-outline" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Load recovery points from storage</button>
 		</form>
-		{#if form?.recoveryPoints?.length}
+		{#if recoveryPoints.length}
 			<form method="POST" action="?/restore&tab=restore" use:enhance class="space-y-3">
 				<fieldset disabled={data.status.resetActive} class="contents">
 				<label class="form-control">Completed recovery point
 					<select class="select select-bordered font-mono" name="backupId" required>
 						<option value="">Select a backup</option>
-						{#each form.recoveryPoints as point (point.id)}
+						{#each recoveryPoints as point (point.id)}
 							<option value={point.id}>{point.kind === 'full' ? 'Full backup' : 'Legacy recovery snapshot'} — {time(Number(point.id.split('-')[0]))} — {point.id}</option>
 						{/each}
 					</select>
@@ -199,6 +211,27 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 	</div>
 	<div id="storage-panel-maintenance" role="tabpanel" aria-labelledby="storage-tab-maintenance" tabindex="0" hidden={activeTab !== 'maintenance'} class="card space-y-4 bg-base-100 p-6 shadow">
 		<h3 class="text-lg font-semibold">Storage maintenance</h3>
+		<h4 class="font-semibold">Delete selected recovery points</h4>
+		<p class="text-sm text-base-content/70">Permanently removes selected backup indexes and manifests, including the newest if selected. Shared file objects, synchronized files and live data stay intact, so this may reclaim little space. Scheduled retention still protects the newest backup.</p>
+		<form method="POST" action="?/recoveryPoints&tab=maintenance" use:enhance={recoveryEnhance}>
+			<button class="btn btn-outline" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Load recovery points for deletion</button>
+		</form>
+		{#if recoveryPoints.length}
+			<form method="POST" action="?/deleteBackups&tab=maintenance" use:enhance={recoveryEnhance} class="space-y-3">
+				<fieldset disabled={data.status.resetActive} class="space-y-3">
+					<legend class="font-medium">Select recovery points (up to 100)</legend>
+					<div class="max-h-64 space-y-2 overflow-y-auto rounded border border-base-300 p-3">
+						{#each recoveryPoints as point (point.id)}
+							<label class="flex items-start gap-3 break-all"><input class="checkbox shrink-0" type="checkbox" name="backupIds" value={point.id} /><span>{point.kind === 'full' ? 'Full backup' : 'Legacy snapshot'} — {time(Number(point.id.split('-')[0]))}<br /><span class="font-mono text-xs">{point.id}</span></span></label>
+						{/each}
+					</div>
+					<label class="form-control">Type DELETE BACKUPS to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
+					<label class="flex items-center gap-3"><input class="checkbox" type="checkbox" name="acknowledge" required /> I understand that selected recovery points are permanently lost, even if they are the newest or only backups.</label>
+					<button class="btn btn-error" type="submit" disabled={data.status.resetActive}>Delete selected backups</button>
+				</fieldset>
+			</form>
+		{/if}
+		<p class="text-sm text-base-content/70">Deletion runs as a cancellable job and works while schedules are paused. Cancelling cannot undo completed deletions. Reload this list afterward. Restore preparation must finish or be cancelled first.</p>
 		<form method="POST" action="?/clearLog&tab=maintenance" use:enhance class="space-y-3">
 			<p class="text-sm text-base-content/70">Hide finished jobs only. Active jobs, safety metadata, audio and backups are kept.</p>
 			<button class="btn btn-outline" name="confirmation" value="clear">Clear finished log</button>

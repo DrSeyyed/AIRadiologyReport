@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
 	getStorageSettings,
 	getStorageConnection,
+	storageDestination,
 	MAX_STORAGE_PARALLEL_CONNECTIONS
 } from './storage-settings.js';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
@@ -15,6 +16,12 @@ import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { safeRecoveryProgress } from './recovery-progress.js';
 import { prepareStorageRestore } from './storage-restore.js';
 import { resetStorageData, storageResetFailureMessage } from './storage-reset.js';
+import { auditStorageData, safeStorageAuditProgress } from './storage-audit.js';
+import {
+	deleteRecoveryPoints,
+	validateBackupDeletionIds,
+	safeBackupDeletionProgress
+} from './storage-backup-deletion.js';
 
 const uuidPattern = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const backupIdPattern = new RegExp(`^\\d{1,16}-${uuidPattern}$`);
@@ -36,6 +43,8 @@ export function queueStorageJob(
 		throw new Error('Select a valid recovery point.');
 	return db.transaction(() => {
 		if (storageResetActive(db)) throw new Error('Wait for the storage reset to finish.');
+		if (kind === 'restore' && activeMaintenance(db, 'delete'))
+			throw new Error('Wait for backup deletion to finish before preparing a restore.');
 		const settings = getStorageSettings(db);
 		if (
 			!['test', 'restore'].includes(kind) &&
@@ -47,7 +56,7 @@ export function queueStorageJob(
 			throw new Error('Enable the selected storage service before requesting a job.');
 		const existing = db
 			.prepare(
-				"SELECT id FROM storage_jobs WHERE kind = ? AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8)) ORDER BY id DESC LIMIT 1"
+				"SELECT id FROM storage_jobs WHERE kind = ? AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8)) ORDER BY id DESC LIMIT 1"
 			)
 			.get(kind);
 		if (existing) {
@@ -77,6 +86,65 @@ export function queueStorageJob(
 				id,
 				backupId
 			);
+		return id;
+	})();
+}
+
+function activeMaintenance(db, operation) {
+	return db
+		.prepare(
+			`SELECT j.id,m.backup_ids,m.destination FROM storage_maintenance_requests m
+		JOIN storage_jobs j ON j.id=m.job_id WHERE m.operation=? AND
+		(j.status IN ('pending','running') OR (j.status='failed' AND j.attempts<8)) LIMIT 1`
+		)
+		.get(operation);
+}
+
+export function queueStorageMaintenance(
+	db,
+	operation,
+	{ backupIds = null, now = Math.floor(Date.now() / 1000), retryNow = false } = {}
+) {
+	if (!['audit', 'delete'].includes(operation)) throw new Error('Invalid storage maintenance.');
+	const ids =
+		operation === 'delete' ? JSON.stringify(validateBackupDeletionIds(backupIds).sort()) : null;
+	return db.transaction(() => {
+		if (storageResetActive(db)) throw new Error('Wait for the storage reset to finish.');
+		const destination = storageDestination(getStorageConnection(db));
+		if (
+			operation === 'delete' &&
+			db
+				.prepare(
+					`SELECT 1 FROM storage_restore_requests r
+			JOIN storage_jobs j ON j.id=r.job_id WHERE j.status IN ('pending','running') OR
+			(j.status='failed' AND j.attempts<8) LIMIT 1`
+				)
+				.get()
+		)
+			throw new Error('Wait for restore preparation to finish before deleting backups.');
+		const existing = activeMaintenance(db, operation);
+		if (existing) {
+			if (
+				existing.backup_ids !== ids ||
+				existing.destination !== destination ||
+				db.prepare('SELECT 1 FROM storage_job_cancellations WHERE job_id=?').get(existing.id)
+			)
+				throw new Error('Wait for the existing maintenance job or cancel it first.');
+			if (retryNow)
+				db.prepare("UPDATE storage_jobs SET retry_at=? WHERE id=? AND status='failed'").run(
+					now,
+					existing.id
+				);
+			return existing.id;
+		}
+		// Side-table operations preserve compatibility with the deployed storage_jobs CHECK constraint.
+		const id = Number(
+			db.prepare("INSERT INTO storage_jobs(kind,created_at) VALUES('restore',?)").run(now)
+				.lastInsertRowid
+		);
+		db.prepare(
+			'INSERT INTO storage_maintenance_requests(job_id,operation,destination,backup_ids) VALUES(?,?,?,?)'
+		).run(id, operation, destination, ids);
 		return id;
 	})();
 }
@@ -122,7 +190,7 @@ export function queueStorageReset(db, { now = Math.floor(Date.now() / 1000) } = 
 
 function finishCancelledJob(db, id, now) {
 	db.prepare(
-		"UPDATE storage_jobs SET status='failed',attempts=8,finished_at=?,retry_at=0,result=NULL,error='Cancelled by administrator.' WHERE id=? AND status IN ('pending','running','failed')"
+		"UPDATE storage_jobs SET status='failed',attempts=8,finished_at=?,retry_at=0,result=CASE WHEN EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) THEN result ELSE NULL END,error=CASE WHEN EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id AND m.operation='delete') THEN 'Cancelled by administrator. Deletion may be partial; reload recovery points. Shared file objects were retained.' ELSE 'Cancelled by administrator.' END WHERE id=? AND status IN ('pending','running','failed')"
 	).run(now, id);
 }
 
@@ -162,7 +230,10 @@ function archiveProgress(progress) {
 		!fields.every((field) => Number.isSafeInteger(progress[field]) && progress[field] >= 0)
 	)
 		return null;
-	if (progress.preparing + progress.uploading + progress.verifying > MAX_STORAGE_PARALLEL_CONNECTIONS)
+	if (
+		progress.preparing + progress.uploading + progress.verifying >
+		MAX_STORAGE_PARALLEL_CONNECTIONS
+	)
 		return null;
 	const verificationBytes =
 		progress.verificationBytes === undefined ? 0 : progress.verificationBytes;
@@ -246,6 +317,8 @@ export async function processStorageJob(
 		runBackup = backupRecovery,
 		prepareRestore = prepareStorageRestore,
 		resetStorage = resetStorageData,
+		runAudit = auditStorageData,
+		deleteBackups = deleteRecoveryPoints,
 		prune = pruneRecovery,
 		testConnection = testStorageConnection,
 		heartbeatMs = 10_000
@@ -281,6 +354,7 @@ export async function processStorageJob(
 	})();
 	if (!claimed) return false;
 	let job;
+	let maintenance;
 	const leaseOwned = () =>
 		db.prepare('SELECT owner FROM storage_worker_lock WHERE id = 1').get()?.owner === owner;
 	const cancelled = () =>
@@ -320,9 +394,68 @@ export async function processStorageJob(
 		db.prepare(
 			"UPDATE storage_jobs SET status='running',started_at=?,finished_at=NULL,attempts=attempts+1,error=NULL,result=NULL WHERE id=?"
 		).run(now, job.id);
+		maintenance = db
+			.prepare('SELECT * FROM storage_maintenance_requests WHERE job_id=?')
+			.get(job.id);
 		const connection = getStorageConnection(db);
 		let result;
-		if (job.kind === 'test') result = await testConnection(connection);
+		if (maintenance) {
+			if (maintenance.destination !== storageDestination(connection))
+				throw new Error('Storage destination changed.');
+			const sanitize =
+				maintenance.operation === 'audit' ? safeStorageAuditProgress : safeBackupDeletionProgress;
+			const onProgress = (progress) => {
+				if (!owned()) throw new Error('Storage maintenance stopped.');
+				const safe = sanitize(progress);
+				if (safe)
+					db.prepare("UPDATE storage_jobs SET result=? WHERE id=? AND status='running'").run(
+						JSON.stringify(safe),
+						job.id
+					);
+			};
+			if (maintenance.operation === 'audit') {
+				result = sanitize(await runAudit(db, connection, { now, owned, onProgress }));
+			} else {
+				const backupIds = validateBackupDeletionIds(JSON.parse(maintenance.backup_ids));
+				result = sanitize(
+					await deleteBackups(connection, {
+						backupIds,
+						plan: maintenance.plan ? JSON.parse(maintenance.plan) : null,
+						owned,
+						onProgress,
+						onPlan(plan) {
+							if (!owned()) throw new Error('Storage maintenance stopped.');
+							if (
+								!Array.isArray(plan) ||
+								plan.length !== backupIds.length ||
+								plan.some(
+									(point, i) =>
+										point?.id !== backupIds[i] || !['full', 'database'].includes(point.kind)
+								)
+							)
+								throw new Error('Invalid backup deletion plan.');
+							db.transaction(() => {
+								db.prepare('UPDATE storage_maintenance_requests SET plan=? WHERE job_id=?').run(
+									JSON.stringify(plan),
+									job.id
+								);
+								const record = db.prepare(
+									'INSERT OR IGNORE INTO storage_deleted_recovery_points(backup_id,deleted_at) VALUES(?,?)'
+								);
+								for (const point of plan) record.run(point.id, Math.floor(Date.now() / 1000));
+							})();
+						}
+					})
+				);
+			}
+			if (
+				!result ||
+				(maintenance.operation === 'audit'
+					? result.checked !== result.total
+					: result.deleted !== result.total)
+			)
+				throw new Error('Invalid storage maintenance result.');
+		} else if (job.kind === 'test') result = await testConnection(connection);
 		else if (db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)) {
 			result = await resetStorage(db, connection, { jobId: job.id, owned });
 		} else if (job.kind === 'restore') {
@@ -402,9 +535,13 @@ export async function processStorageJob(
 				finished + Math.min(3600, 60 * 2 ** Math.min(job.attempts, 6)),
 				db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)
 					? `Storage reset stopped. ${storageResetFailureMessage(error)} Recovered local files were preserved; remote cleanup may be partial if it had already started. Retry or cancel this reset before starting another.`
-					: job.kind === 'restore'
-						? 'Restore preparation failed. Check the encryption key, storage connection, selected recovery point and available disk space. The live database, audio and recovery points were not replaced.'
-						: 'Storage job failed. Check credentials, pinned host fingerprint, connectivity, free space and source availability. Local audio and existing recovery points were preserved.',
+					: maintenance
+						? maintenance.operation === 'audit'
+							? 'Checksum audit stopped. Check storage connectivity, the saved destination, and missing, changed or corrupted encrypted objects. No files were deleted or replaced.'
+							: 'Backup deletion stopped. Some selected points may already be removed. Retry the same selection or cancel and reload the list. Shared file objects and live data were retained.'
+						: job.kind === 'restore'
+							? 'Restore preparation failed. Check the encryption key, storage connection, selected recovery point and available disk space. The live database, audio and recovery points were not replaced.'
+							: 'Storage job failed. Check credentials, pinned host fingerprint, connectivity, free space and source availability. Local audio and existing recovery points were preserved.',
 				job.id
 			);
 		}
@@ -442,22 +579,34 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 	const settings = getStorageSettings(db);
 	const last = db
 		.prepare(
-			"SELECT kind,MAX(started_at) AS at FROM storage_jobs WHERE status = 'succeeded' AND NOT EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) GROUP BY kind"
+			"SELECT kind,MAX(started_at) AS at FROM storage_jobs WHERE status = 'succeeded' AND NOT EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) GROUP BY kind"
 		)
 		.all();
 	const jobs = db
 		.prepare(
 			`SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,
 			EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested,
+			(SELECT operation FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AS maintenance,
 			(SELECT phase||': audio '||restored||'/'||total||', remote files removed '||deleted FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS progress
 			FROM storage_jobs WHERE NOT EXISTS(SELECT 1 FROM storage_job_log_hidden h WHERE h.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 30`
 		)
 		.all()
-		.map(({ result, cancelRequested, ...job }) => {
+		.map(({ result, cancelRequested, maintenance, ...job }) => {
+			const displayedKind =
+				maintenance || (job.kind === 'restore' && job.progress ? 'reset' : job.kind);
 			let backupId = null;
 			let restoreDirectory = null;
 			try {
 				const parsed = JSON.parse(result);
+				if (maintenance === 'audit') {
+					const progress = safeStorageAuditProgress(parsed);
+					if (progress)
+						job.progress = `Checksums: ${progress.checked}/${progress.total}; verified: ${(progress.verifiedBytes / (1024 * 1024)).toFixed(2)} MiB; elapsed: ${progress.elapsedSeconds}s. Last checksum activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+				} else if (maintenance === 'delete') {
+					const progress = safeBackupDeletionProgress(parsed);
+					if (progress)
+						job.progress = `Recovery points removed: ${progress.deleted}/${progress.total}. Shared file objects retained.`;
+				}
 				if (
 					job.kind === 'archive' &&
 					Number.isSafeInteger(parsed?.copied) &&
@@ -484,8 +633,10 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 						job.progress = `Files: ${parsed.files}; objects uploaded and verified: ${parsed.uploadedObjects}; reused: ${parsed.reusedObjects}; source data: ${(parsed.bytes / (1024 * 1024)).toFixed(2)} MiB.`;
 					}
 				}
-				if (typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id)) backupId = parsed.id;
+				if (!maintenance && typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id))
+					backupId = parsed.id;
 				if (
+					!maintenance &&
 					job.kind === 'restore' &&
 					job.status === 'succeeded' &&
 					typeof parsed?.restoreId === 'string' &&
@@ -497,7 +648,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			}
 			return {
 				...job,
-				kind: job.kind === 'restore' && job.progress ? 'reset' : job.kind,
+				kind: displayedKind,
 				status: cancelRequested
 					? job.status === 'running'
 						? 'cancelling'
@@ -513,7 +664,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 		});
 	const preparedRestores = db
 		.prepare(
-			"SELECT id,finished_at,result FROM storage_jobs WHERE kind='restore' AND status='succeeded' ORDER BY id DESC LIMIT 10"
+			"SELECT id,finished_at,result FROM storage_jobs WHERE kind='restore' AND status='succeeded' AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 10"
 		)
 		.all()
 		.flatMap(({ result, ...job }) => {

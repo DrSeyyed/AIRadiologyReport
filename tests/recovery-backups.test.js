@@ -977,6 +977,10 @@ test('restore pauses storage and clears all job and lease history while retainin
 		INSERT INTO storage_worker_lock VALUES(1,'obsolete-worker',2000000000);
 		CREATE TABLE storage_job_cancellations(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id), requested_at INTEGER NOT NULL);
 		INSERT INTO storage_job_cancellations VALUES(2,1800000000);
+		CREATE TABLE storage_maintenance_requests(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id), operation TEXT);
+		INSERT INTO storage_maintenance_requests VALUES(2,'delete');
+		CREATE TABLE storage_deleted_recovery_points(backup_id TEXT PRIMARY KEY, deleted_at INTEGER);
+		INSERT INTO storage_deleted_recovery_points VALUES('synthetic-deleted-backup',1800000000);
 	`);
 	const settings = {
 		enabled: true,
@@ -1020,6 +1024,8 @@ test('restore pauses storage and clears all job and lease history while retainin
 		);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_jobs').get().n, 0);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_worker_lock').get().n, 0);
+		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_maintenance_requests').get().n, 0);
+		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_deleted_recovery_points').get().n, 0);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 0);
 		assert.equal(restored.pragma('integrity_check', { simple: true }), 'ok');
 	} finally {

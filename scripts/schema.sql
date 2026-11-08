@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS storage_reset_requests (
   deleted INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS storage_maintenance_requests (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+  operation TEXT NOT NULL CHECK (operation IN ('audit', 'delete')),
+  destination TEXT NOT NULL,
+  backup_ids TEXT,
+  plan TEXT
+);
+
+CREATE TABLE IF NOT EXISTS storage_deleted_recovery_points (
+  backup_id TEXT PRIMARY KEY,
+  deleted_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS storage_worker_lock (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   owner TEXT NOT NULL,

@@ -425,6 +425,70 @@ test('clearing finished log requires one exact confirmation without a key or net
 	assert.equal(state.lists, 0);
 });
 
+const deletionId = '1800000100-22222222-2222-2222-2222-222222222222';
+function deleteBackupsForm() {
+	const form = new FormData();
+	form.set('confirmation', 'DELETE BACKUPS');
+	form.set('acknowledge', 'on');
+	form.set('backupIds', deletionId);
+	return form;
+}
+
+test('audit and deletion queue without network access while schedules are paused', async (t) => {
+	const { submit, page, db, state } = await fixture(t);
+	const audit = new FormData();
+	audit.set('confirmation', 'audit');
+	assert.match((await submit('audit', audit)).message, /Checksum audit job/);
+	assert.match((await submit('deleteBackups', deleteBackupsForm())).message, /Backup deletion job/);
+	assert.deepEqual(page.load({ locals: admin }).status.jobs.map((job) => job.kind), ['delete', 'audit']);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_deleted_recovery_points').get().n, 0);
+	assert.equal(state.lists, 0);
+	assert.equal(state.probes, 0);
+});
+
+test('backup deletion requires exact single confirmation, acknowledgment and strict bounded selections', async (t) => {
+	const { submit, db } = await fixture(t);
+	for (const [field, value] of [
+		['confirmation', null], ['confirmation', 'delete backups'], ['confirmation', 'DELETE BACKUPS '],
+		['acknowledge', null], ['acknowledge', 'yes'], ['backupIds', null], ['backupIds', '../escape'],
+		['backupIds', '1800000100-ABCDEFAB-2222-2222-2222-222222222222']
+	]) {
+		const form = deleteBackupsForm();
+		if (value === null) form.delete(field);
+		else form.set(field, value);
+		assert.equal((await submit('deleteBackups', form)).status, 400);
+	}
+	for (const name of ['confirmation', 'acknowledge', 'backupIds']) {
+		const form = deleteBackupsForm();
+		form.append(name, form.get(name));
+		assert.equal((await submit('deleteBackups', form)).status, 400);
+	}
+	const tooMany = deleteBackupsForm();
+	for (let index = 0; index < 100; index++) tooMany.append('backupIds', deletionId);
+	assert.equal((await submit('deleteBackups', tooMany)).status, 400);
+	const audit = new FormData();
+	assert.equal((await submit('audit', audit)).status, 400);
+	audit.append('confirmation', 'audit');
+	audit.append('confirmation', 'audit');
+	assert.equal((await submit('audit', audit)).status, 400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 0);
+});
+
+test('maintenance validates saved connection and encryption key and refuses active resets', async (t) => {
+	const { submit, db, settings } = await fixture(t);
+	const audit = new FormData();
+	audit.set('confirmation', 'audit');
+	delete process.env.STORAGE_ENCRYPTION_KEY;
+	assert.equal((await submit('audit', audit)).status, 400);
+	assert.equal((await submit('deleteBackups', deleteBackupsForm())).status, 400);
+	process.env.STORAGE_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+	assert.equal((await submit('audit', audit)).status, 400);
+	saveStorageSettings(db, settings, 'new-synthetic-password');
+	assert.ok((await submit('reset', resetForm())).message);
+	assert.equal((await submit('audit', audit)).status, 400);
+	assert.equal((await submit('deleteBackups', deleteBackupsForm())).status, 400);
+});
+
 function resetForm() {
 	const form = new FormData();
 	form.set('confirmation', 'RESET STORAGE');
@@ -551,12 +615,19 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		'Test saved connection',
 		'Sync files now',
 		'Full recovery backup now',
+		'Run full checksum audit',
+		'Load recovery points for deletion',
+		'Delete selected backups',
 		'Load recovery points from storage',
 		'Prepare restore',
 		'Reset storage',
 		'Save settings'
 	])
 		assert.match(body, new RegExp(`<button[^>]*disabled[^>]*>${label}</button>`));
+	assert.match(body, /Type DELETE BACKUPS to confirm/);
+	assert.match(body, /name="backupIds"/);
+	assert.match(body, /name="acknowledge" required/);
+	assert.match(body, /newest or only backups/);
 	assert.match(body, /Recovering audio 1 of 2/);
 	assert.match(body, /Storage reset is active/);
 	assert.match(body, /action="\?\/cancel&(?:amp;)?tab=overview"/);
@@ -664,6 +735,24 @@ test('storage tabs support keyboard navigation and preserve unsaved settings', (
 	assert.equal(api.settings.host, 'unsaved.invalid');
 	assert.equal(api.hours(), '0, 12');
 	assert.doesNotMatch(source, /\{#if activeTab/);
+});
+
+test('loaded recovery points persist independently of polling and clear only on successful deletion', async () => {
+	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
+	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
+	const points = [{ id: deletionId, kind: 'full' }];
+	const api = new Function('onMount', 'untrack', '$props', '$state',
+		`${script}\nreturn { recoveryEnhance, points: () => recoveryPoints };`)(
+		() => {}, (read) => read(), () => ({ data: { settings: { fullBackupHours: [0] } }, form: { recoveryPoints: points } }), (value) => value
+	);
+	assert.deepEqual(api.points(), points);
+	const update = async () => {};
+	await api.recoveryEnhance()({ result: { type: 'failure', data: { error: 'no' } }, update });
+	assert.deepEqual(api.points(), points);
+	await api.recoveryEnhance()({ result: { type: 'success', data: { message: 'unrelated status' } }, update });
+	assert.deepEqual(api.points(), points);
+	await api.recoveryEnhance()({ result: { type: 'success', data: { recoveryPoints: [] } }, update });
+	assert.deepEqual(api.points(), []);
 });
 
 test('storage status refresh skips hidden pages and overlapping requests, preserves edits and cleans up', async () => {

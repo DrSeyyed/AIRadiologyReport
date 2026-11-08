@@ -208,7 +208,9 @@ export async function archiveAudio(
 					!processing(db, ref.path) &&
 					db
 						.prepare(
-							"SELECT 1 FROM storage_jobs WHERE kind='full' AND status='succeeded' AND started_at>? LIMIT 1"
+							`SELECT 1 FROM storage_jobs j WHERE kind='full' AND status='succeeded' AND started_at>?
+							AND NOT EXISTS(SELECT 1 FROM storage_deleted_recovery_points d
+							WHERE d.backup_id=CASE WHEN json_valid(j.result) THEN json_extract(j.result,'$.id') END) LIMIT 1`
 						)
 						.get(saved.archived_at)
 				)
@@ -309,7 +311,9 @@ export async function archiveAudio(
 						if (
 							!db
 								.prepare(
-									"SELECT 1 FROM storage_jobs WHERE kind = 'full' AND status = 'succeeded' AND started_at > ? LIMIT 1"
+									`SELECT 1 FROM storage_jobs j WHERE kind='full' AND status='succeeded' AND started_at>?
+									AND NOT EXISTS(SELECT 1 FROM storage_deleted_recovery_points d
+									WHERE d.backup_id=CASE WHEN json_valid(j.result) THEN json_extract(j.result,'$.id') END) LIMIT 1`
 								)
 								.get(saved.archived_at)
 						)

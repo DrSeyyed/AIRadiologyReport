@@ -209,6 +209,8 @@ function pauseRestoredStorage(db) {
 		'storage_job_cancellations',
 		'storage_restore_requests',
 		'storage_reset_requests',
+		'storage_maintenance_requests',
+		'storage_deleted_recovery_points',
 		'storage_job_log_hidden',
 		'storage_jobs',
 		'storage_worker_lock'

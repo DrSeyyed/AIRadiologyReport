@@ -361,7 +361,8 @@ export async function resetStorageData(
 					for (const table of [
 						'storage_file_queue',
 						'storage_file_catalog',
-						'storage_file_objects'
+						'storage_file_objects',
+						'storage_deleted_recovery_points'
 					])
 						if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))
 							db.prepare(`DELETE FROM ${table}`).run();

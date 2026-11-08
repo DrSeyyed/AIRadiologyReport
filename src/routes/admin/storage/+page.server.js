@@ -16,7 +16,8 @@ import {
 	cancelStorageJob,
 	pauseAndCancelStorageJobs,
 	clearStorageJobLog,
-	queueStorageReset
+	queueStorageReset,
+	queueStorageMaintenance
 } from '$lib/server/storage-worker.js';
 import { listRecovery } from '$lib/server/recovery-backups.js';
 
@@ -215,7 +216,7 @@ export const actions = {
 			return {
 				recoveryPoints,
 				message: recoveryPoints.length
-					? 'Select a completed recovery point to prepare a verified copy. The live site will not be replaced.'
+					? 'Recovery points loaded. Select a point to prepare a verified copy in Restore, or select points for permanent deletion in Maintenance.'
 					: 'No completed recovery points were found on the saved storage server.'
 			};
 		} catch {
@@ -242,7 +243,50 @@ export const actions = {
 		} catch {
 			return fail(400, {
 				error:
-					'Unable to prepare restore. Select a valid completed recovery point, confirm preparation and check the saved connection. Wait for any existing restore preparation to finish.'
+					'Unable to prepare restore. Select a valid completed recovery point, confirm preparation and check the saved connection. Wait for existing restore preparation or backup deletion to finish.'
+			});
+		}
+	},
+	audit: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			if (field(form, 'confirmation') !== 'audit') throw new Error();
+			const db = getDb();
+			const connection = getStorageConnection(db);
+			normalizeStorageSettings({ ...getStorageSettings(db), enabled: true });
+			if (!connection.password) throw new Error();
+			const id = queueStorageMaintenance(db, 'audit', { retryNow: true });
+			return {
+				message: `Checksum audit job ${id} queued. All tracked encrypted file copies are checked, including recently verified ones. See progress, elapsed time and cancellation in Overview & jobs.`
+			};
+		} catch {
+			return fail(400, {
+				error:
+					'Unable to queue checksum audit. Check the saved connection and encryption key, and wait for any storage reset or maintenance cancellation to finish.'
+			});
+		}
+	},
+	deleteBackups: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			if (field(form, 'confirmation') !== 'DELETE BACKUPS' || field(form, 'acknowledge') !== 'on')
+				throw new Error();
+			const backupIds = form.getAll('backupIds');
+			const db = getDb();
+			const connection = getStorageConnection(db);
+			normalizeStorageSettings({ ...getStorageSettings(db), enabled: true });
+			if (!connection.password) throw new Error();
+			const id = queueStorageMaintenance(db, 'delete', { backupIds, retryNow: true });
+			return {
+				recoveryPoints: [],
+				message: `Backup deletion job ${id} queued. Selected recovery points, including the newest if selected, will be permanently removed. Shared encrypted objects and live data are kept. Monitor or cancel in Overview & jobs; reload the recovery-point list afterward.`
+			};
+		} catch {
+			return fail(400, {
+				error:
+					'Unable to queue backup deletion. Select 1–100 distinct recovery points, type DELETE BACKUPS and acknowledge permanent deletion. Check the saved connection; wait for restore preparation, storage reset or a different deletion job to finish.'
 			});
 		}
 	},

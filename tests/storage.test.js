@@ -988,6 +988,20 @@ test('audio archive is encrypted, verified and independent backup is required be
 	assert.equal(existsSync(temporary), false);
 });
 
+test('manually deleted backup evidence cannot permit local audio eviction until a new full backup succeeds', async (t) => {
+	const { db, audio, connection, options } = fixture(t);
+	await archiveAudio(db, connection, options);
+	const backupId = '1800000100-22222222-2222-2222-2222-222222222222';
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at,started_at,result) VALUES('full','succeeded',?,?,?)")
+		.run(now + 1, now + 1, JSON.stringify({ id: backupId }));
+	db.prepare('INSERT INTO storage_deleted_recovery_points(backup_id,deleted_at) VALUES(?,?)').run(backupId, now + 2);
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 3 }), { copied: 0, evicted: 0 });
+	assert.ok(existsSync(audio));
+	backupCompleted(db, now + 4);
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 5 }), { copied: 0, evicted: 1 });
+	assert.equal(existsSync(audio), false);
+});
+
 test('failed archive upload, corrupt remote object and changed local source never evict original audio', async (t) => {
 	const context = fixture(t);
 	const { db, audio, connection, client, options, objects } = context;
