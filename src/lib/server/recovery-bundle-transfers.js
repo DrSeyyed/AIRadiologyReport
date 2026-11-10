@@ -3,12 +3,13 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileDigest } from './recovery-bundles.js';
 import { uploadStorageFile } from './storage-upload.js';
+import { storageParallelConnections } from './storage-settings.js';
 
-/** Two encrypted spools maximum. Each transfer gets its own pinned transport session.
- * Legacy injected transports may return the coordinator client; those transfers are awaited
- * synchronously. Repeated injected worker clients are serialized for the entire put/hash pair.
+/** Reserve the coordinator's slot while producing bundles; use it synchronously when workers
+ * fill the other slots. Shared injected clients serialize the complete upload/check pair.
  */
 export function bundleTransfers(deps, connection, coordinator, work, assertOwned, progress) {
+	const concurrency = storageParallelConnections(connection);
 	const pending = new Set();
 	const byDigest = new Map();
 	const clients = new WeakMap();
@@ -19,7 +20,7 @@ export function bundleTransfers(deps, connection, coordinator, work, assertOwned
 	return {
 		async upload(source, info) {
 			assertHealthy();
-			while (pending.size >= 2) {
+			while (pending.size >= concurrency) {
 				await Promise.race(pending);
 				assertHealthy();
 			}
@@ -37,12 +38,17 @@ export function bundleTransfers(deps, connection, coordinator, work, assertOwned
 				const connected = new Promise((resolve) => {
 					ready = resolve;
 				});
-				let sharedCoordinator = false;
+				const useCoordinator = pending.size >= concurrency - 1;
+				const withClient = useCoordinator
+					? (_connection, callback) => callback(coordinator)
+					: deps.withStorage.bind(deps);
+				let sharedCoordinator = useCoordinator;
 				let task;
 				let running;
 				task = Promise.resolve()
 					.then(() =>
-						deps.withStorage(connection, (client) => {
+						withClient(connection, (client) => {
+							if (failure) return Promise.reject(failure);
 							running = (async () => {
 								const previous = clients.get(client) || Promise.resolve();
 								let release;

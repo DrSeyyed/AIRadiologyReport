@@ -8,6 +8,13 @@ import { verifyRecoveryArchives } from './recovery-archive-verification.js';
 import { recoveryProgress } from './recovery-progress.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { downloadStorageFile } from './storage-download.js';
+import { storageFilePool, storageTaskPool } from './storage-file-pool.js';
+import {
+	storageParallelConnections,
+	getStorageSettings,
+	normalizeStorageSettings
+} from './storage-settings.js';
+import { encryptSecret } from './storage-crypto.js';
 import {
 	BUNDLE_BYTES,
 	MAX_RECOVERY_BYTES,
@@ -23,12 +30,13 @@ import {
  * The explicit concat-gzip-v1 compatibility writer below retains the former v2 bundle safety checks.
  * Both v1 and v2 restores remain supported, without depending on an earlier full backup.
  * Legacy bundles cap uncompressed bytes at 256 MiB.
- * At most two encrypted bundle spools/transfers are active, on separate pinned sessions.
+ * Independent file work and encrypted bundle spools use the configured parallel connection limit.
+ * The coordinator counts toward that limit; bundle packing and publication remain ordered.
  * Every transfer settles and closes before manifest/index publication or work cleanup.
  * Database backups include every snapshot-referenced audio/report; full backups also walk uploads
  * and include EVERY storage_audio row captured by the SQLite snapshot, even unreferenced archives.
  * Archive plaintext, encrypted remote bytes, and live archive metadata are rechecked at publication.
- * Each source-archive checksum pass uses up to four reused sessions and drains before continuing.
+ * Each source-archive checksum pass uses the configured reused sessions and drains before continuing.
  * Full publication rejects new live archive rows with archived_at <= now that were not captured.
  * options.owned is an optional sync/async boolean lease callback; false/throw aborts publication.
  * Parent must maintain/renew the lease across the final SFTP rename and recording job success.
@@ -36,9 +44,11 @@ import {
  * backup's coverage: eviction needs unchanged archive identity or a strict earlier-than fence.
  * Custom VOICE_SAVE_DIR is the only additional allowed root and restores under voice/.
  * Restored recording paths are app-root-relative (even originally absolute ones), so db/uploads/
- * voice may be promoted together. storage_audio rows are deleted: no source-archive dependency.
- * Restores disable storage/archive/backups, delete storage job history and worker leases, and
- * preserve connection settings/encrypted credentials for explicit operator review before enabling.
+ * voice may be promoted together. Download mode clears storage_audio; remote mode retains verified
+ * archive pointers and requires the original storage/key for on-demand playback.
+ * Restores disable storage/archive/backups and delete storage job history and worker leases.
+ * Remote mode replaces saved connection credentials with the currently verified connection;
+ * download mode preserves them for explicit operator review before enabling.
  * .env and environment.json contain ONLY APP_ENV_KEYS, never provider credentials or the storage key.
  * Retention deletes completed indexes/manifests only. Shared objects are intentionally retained:
  * safe reference-counted garbage collection is not implemented, so pruning does not reclaim objects.
@@ -242,6 +252,69 @@ function validateArchive(row, destination) {
 		!/^[a-f0-9-]{36}\.enc$/.test(row.object_key)
 	)
 		throw new Error('Invalid recovery archive.');
+}
+
+export function recoveryAudioPlan(manifest, databaseFile, connection) {
+	const database = new Database(databaseFile, { readonly: true, fileMustExist: true });
+	try {
+		if (database.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
+		const archives = new Map();
+		for (const row of archiveRows(database)) {
+			const key = `${row.sha256}:${row.bytes}`;
+			if (!archives.has(key)) archives.set(key, row);
+		}
+		const plan = [];
+		for (const entry of manifest.files) {
+			const archive = archives.get(`${entry.sha256}:${entry.bytes}`);
+			if (entry.role !== 'audio' || !archive) continue;
+			validateArchive(archive, recoveryDestination(connection));
+			plan.push({ path: entry.path, archive });
+		}
+		return plan;
+	} finally {
+		database.close();
+	}
+}
+
+function restoreRemoteAudio(database, manifest, plan, connection) {
+	const files = new Map(manifest.files.map((entry) => [entry.path, entry]));
+	const rows = new Map(archiveRows(database).map((row) => [row.path, row]));
+	const paths = new Set();
+	for (const retained of plan) {
+		const entry = files.get(retained.path);
+		const saved = rows.get(retained.archive?.path);
+		if (
+			!entry || entry.role !== 'audio' || paths.has(entry.path) || !saved ||
+			archiveIdentity(saved) !== archiveIdentity(retained.archive) ||
+			entry.sha256 !== saved.sha256 || entry.bytes !== saved.bytes
+		) throw new Error('Invalid remote recovery audio.');
+		validateArchive(saved, recoveryDestination(connection));
+		paths.add(entry.path);
+	}
+	if (hasColumn(database, 'storage_audio', 'path'))
+		database.prepare('DELETE FROM storage_audio').run();
+	if (!plan.length) return;
+	const insert = database.prepare(
+		`INSERT INTO storage_audio(${ARCHIVE_FIELDS.join(',')}) VALUES(${ARCHIVE_FIELDS.map(() => '?').join(',')})`
+	);
+	for (const retained of plan) {
+		const row = { ...retained.archive, path: retained.path,
+			evicted_at: retained.archive.evicted_at ?? manifest.createdAt };
+		insert.run(...ARCHIVE_FIELDS.map((field) => row[field]));
+	}
+	const settings = normalizeStorageSettings({
+		...getStorageSettings(database),
+		...Object.fromEntries(['host', 'username', 'root', 'fingerprint'].map((key) => [key, connection[key]])),
+		port: connection.port ?? 22,
+		enabled: false, archiveEnabled: false, backupsEnabled: false
+	});
+	if (typeof connection.password !== 'string' || !connection.password ||
+		connection.password.length > 4096 || connection.password.includes('\0')) throw new Error();
+	const setting = database.prepare(
+		'INSERT INTO application_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value'
+	);
+	setting.run('storage_settings', JSON.stringify(settings));
+	setting.run('storage_password', encryptSecret(connection.password));
 }
 
 function referencedFiles(db) {
@@ -644,19 +717,25 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		}
 		progress.set({ totalFiles: catalog.size + 2 });
 		const initialSources = new Map();
-		for (const entry of catalog.values()) {
-			const archive = snapshotArchives.get(entry.original);
-			if (archive) {
-				validateArchive(archive, destination);
-				archivesUsed.set(archive.path, archive);
-			}
-			await noLinks(entry.source, true);
-			try {
-				initialSources.set(entry.source, await fs.stat(entry.source, { bigint: true }));
-			} catch (error) {
-				if (error.code !== 'ENOENT' || entry.role !== 'audio') throw error;
-			}
-		}
+		const concurrency = storageParallelConnections(connection);
+		await storageTaskPool(
+			[...catalog.values()],
+			concurrency,
+			async (entry) => {
+				const archive = snapshotArchives.get(entry.original);
+				if (archive) {
+					validateArchive(archive, destination);
+					archivesUsed.set(archive.path, archive);
+				}
+				await noLinks(entry.source, true);
+				try {
+					initialSources.set(entry.source, await fs.stat(entry.source, { bigint: true }));
+				} catch (error) {
+					if (error.code !== 'ENOENT' || entry.role !== 'audio') throw error;
+				}
+			},
+			assertOwned
+		);
 		const voiceDirectory =
 			voice === uploads
 				? 'uploads'
@@ -703,6 +782,7 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 					: connection.operationTimeoutMs
 		};
 		await deps.withStorage(transferConnection, (client) => {
+			if (aborted) throw new Error('Recovery backup aborted.');
 			collection = (async () => {
 				const transfers = bundleTransfers(
 					deps,
@@ -718,12 +798,23 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						await client.mkdir(deps.storagePath(connection, 'backups', folder), true);
 					progress.set({ phase: 'checking' });
 					const reusable = new Map();
-					for (const previous of await indexes(client, connection, deps)) {
-						const old = await readManifest(client, connection, previous, work, deps);
+					const previous = await indexes(client, connection, deps);
+					const oldManifests = new Array(previous.length);
+					await storageFilePool(
+						deps,
+						transferConnection,
+						previous.map((snapshot, index) => ({ snapshot, index })),
+						async (worker, { snapshot, index }) => {
+							oldManifests[index] = await readManifest(worker, connection, snapshot, work, deps);
+						},
+						assertOwned,
+						client
+					);
+					// Preserve index priority when multiple snapshots contain reusable plaintext.
+					for (const old of oldManifests)
 						if (old.version === 2)
 							for (const entry of old.bundles)
 								if (!reusable.has(entry.sha256)) reusable.set(entry.sha256, entry);
-					}
 					const writer = bundleWriter(
 						work,
 						manifest,
@@ -758,21 +849,26 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						options.bundleBytes
 					);
 					let collectedBytes = 0;
-					async function addFile(source, relative, role, expected) {
+					async function captureFile(source, expected) {
 						const plain = path.join(work, `${randomUUID()}.plain`);
+						await assertOwned();
+						const info = await copyStable(
+							source,
+							plain,
+							initialSources.get(source),
+							progress.activity
+						);
+						if (expected && (info.sha256 !== expected.sha256 || info.bytes !== expected.bytes))
+							throw new Error('Recovery source changed.');
+						return { plain, info };
+					}
+					async function addCaptured({ plain, info }, relative, role) {
 						try {
 							await assertOwned();
-							const info = await copyStable(
-								source,
-								plain,
-								initialSources.get(source),
-								progress.activity
-							);
 							collectedBytes += info.bytes;
 							if (
 								manifest.files.length >= MAX_RECOVERY_FILES ||
-								collectedBytes > MAX_RECOVERY_BYTES ||
-								(expected && (info.sha256 !== expected.sha256 || info.bytes !== expected.bytes))
+								collectedBytes > MAX_RECOVERY_BYTES
 							)
 								throw new Error();
 							const entry = { path: relative, role, ...info };
@@ -783,37 +879,72 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 							await fs.rm(plain, { force: true });
 						}
 					}
+					async function addFile(source, relative, role, expected) {
+						await addCaptured(await captureFile(source, expected), relative, role);
+					}
 					progress.set({ phase: 'collecting' });
 					await addFile(databaseFile, 'db/pacs.db', 'database');
 					// Keep frequently changing database bytes out of reusable payload bundles.
 					await writer.flush();
-					for (const [relative, entry] of [...catalog].sort(([a], [b]) => a.localeCompare(b))) {
-						await noLinks(entry.source, true);
-						try {
-							await fs.lstat(entry.source);
-						} catch (error) {
-							if (
-								error.code !== 'ENOENT' ||
-								entry.role !== 'audio' ||
-								!hasColumn(snapshot, 'storage_audio', 'path')
-							)
-								throw error;
-							const archive = archivesUsed.get(entry.original);
-							if (!archive) throw new Error();
-							const archived = path.join(work, `${randomUUID()}.archive`);
-							const plain = path.join(work, `${randomUUID()}.audio`);
-							const remote = deps.storagePath(connection, 'audio', archive.object_key);
-							await downloadStorageFile(client, remote, archived, connection, {
-								onProgress: (bytes) => progress.add('downloadedBytes', bytes)
-							});
-							if ((await sha256(archived)) !== archive.remote_sha256) throw new Error();
-							await deps.decryptFile(archived, plain);
-							await addFile(plain, relative, entry.role, archive);
-							await fs.rm(archived, { force: true });
-							await fs.rm(plain, { force: true });
-							continue;
-						}
-						await addFile(entry.source, relative, entry.role, archivesUsed.get(entry.original));
+					const entries = [...catalog].sort(([a], [b]) => a.localeCompare(b));
+					for (let offset = 0; offset < entries.length; offset += concurrency) {
+						const batch = entries.slice(offset, offset + concurrency).map(([relative, entry]) => ({
+							relative,
+							...entry
+						}));
+						const archivedEntries = [];
+						await storageTaskPool(
+							batch,
+							concurrency,
+							async (entry) => {
+								await noLinks(entry.source, true);
+								try {
+									await fs.lstat(entry.source);
+								} catch (error) {
+									if (
+										error.code !== 'ENOENT' ||
+										entry.role !== 'audio' ||
+										!hasColumn(snapshot, 'storage_audio', 'path')
+									)
+										throw error;
+									entry.archive = archivesUsed.get(entry.original);
+									if (!entry.archive) throw new Error();
+									archivedEntries.push(entry);
+									return;
+								}
+								entry.captured = await captureFile(entry.source, archivesUsed.get(entry.original));
+							},
+							assertOwned
+						);
+						// Downloads reuse the coordinator, so do not overlap them with upload sessions.
+						if (archivedEntries.length) await transfers.finish();
+						await storageFilePool(
+							deps,
+							transferConnection,
+							archivedEntries,
+							async (worker, entry) => {
+								const archived = path.join(work, `${randomUUID()}.archive`);
+								const plain = path.join(work, `${randomUUID()}.audio`);
+								try {
+									const remote = deps.storagePath(connection, 'audio', entry.archive.object_key);
+									await downloadStorageFile(worker, remote, archived, connection, {
+										onProgress: (bytes) => progress.add('downloadedBytes', bytes)
+									});
+									if ((await sha256(archived)) !== entry.archive.remote_sha256) throw new Error();
+									await assertOwned();
+									await deps.decryptFile(archived, plain);
+									entry.captured = await captureFile(plain, entry.archive);
+								} finally {
+									await fs.rm(archived, { force: true });
+									await fs.rm(plain, { force: true });
+								}
+							},
+							assertOwned,
+							client
+						);
+						// Bundle byte ordering and manifest part indices are dependency-sensitive.
+						for (const entry of batch)
+							await addCaptured(entry.captured, entry.relative, entry.role);
 					}
 					const runtime = Object.fromEntries(
 						APP_ENV_KEYS.filter((key) => typeof env[key] === 'string').map((key) => [key, env[key]])
@@ -841,8 +972,10 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 						progress.set({ phase: 'verifying' });
 						await assertOwned();
 						const capturedFiles = new Map(manifest.files.map((file) => [file.path, file]));
-						for (const [relative, entry] of catalog)
-							if (initialSources.has(entry.source)) {
+						await storageTaskPool(
+							[...catalog].filter(([, entry]) => initialSources.has(entry.source)),
+							concurrency,
+							async ([relative, entry]) => {
 								await noLinks(entry.source);
 								const captured = capturedFiles.get(relative);
 								if (
@@ -854,7 +987,9 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 								)
 									throw new Error('Recovery source changed.');
 								progress.activity();
-							}
+							},
+							assertOwned
+						);
 						await verifyRecoveryArchives(
 							deps,
 							transferConnection,
@@ -1018,9 +1153,22 @@ export async function pruneRecovery(
 	}
 }
 
-/** Offline restore only. objectsDirectory contains downloaded backups/objects/*.enc. */
+/** Offline restore only. objectsDirectory contains downloaded backups/objects/*.enc.
+ * parallelConnections optionally bounds independent file work (default: storage settings default).
+ * Database integrity/remapping and final publication start only after all file workers drain.
+ */
 export async function restoreRecovery(
-	{ manifestFile, objectsDirectory, outputDirectory, onProgress = () => {}, owned = () => {} },
+	{
+		manifestFile,
+		objectsDirectory,
+		outputDirectory,
+		parallelConnections,
+		audioMode = 'download',
+		remoteAudio = [],
+		remoteConnection,
+		onProgress = () => {},
+		owned = () => {}
+	},
 	injected = {}
 ) {
 	let work;
@@ -1029,13 +1177,17 @@ export async function restoreRecovery(
 	const activity = () => onProgress({});
 	const phase = (phase) => onProgress({ phase });
 	const verifiedFile = () => onProgress({ restoredFiles: ++restoredFiles });
+	const assertActive = async () => {
+		if ((await owned()) === false) throw new Error('Recovery lease lost.');
+	};
 	try {
 		const deps = await dependencies(injected, false);
+		const concurrency = storageParallelConnections({ parallelConnections });
 		const decrypt = async (source, target) => {
-			await owned();
+			await assertActive();
 			phase('decrypting');
 			await deps.decryptFile(source, target);
-			await owned();
+			await assertActive();
 			activity();
 		};
 		await deps.assertStorageKey();
@@ -1054,10 +1206,16 @@ export async function restoreRecovery(
 		await decrypt(manifestFile, plainManifest);
 		if ((await fs.stat(plainManifest)).size > MAX_MANIFEST_BYTES) throw new Error();
 		const manifest = validateManifest(JSON.parse(await fs.readFile(plainManifest, 'utf8')));
+		if (!['download', 'remote'].includes(audioMode) || !Array.isArray(remoteAudio) ||
+			(audioMode !== 'remote' && remoteAudio.length)) throw new Error();
+		const omitted = new Set(remoteAudio.map((entry) => entry.path));
+		const files = manifest.files.filter((entry) => !omitted.has(entry.path));
+		if (omitted.size !== remoteAudio.length || files.length + omitted.size !== manifest.files.length)
+			throw new Error();
 		const restored = path.join(work, 'restored');
 		await fs.mkdir(restored, { mode: 0o700 });
 		async function checkObject(object, entry) {
-			await owned();
+			await assertActive();
 			phase('verifying');
 			await noLinks(object);
 			const stat = await fs.stat(object);
@@ -1072,25 +1230,33 @@ export async function restoreRecovery(
 			await unpackBundles(manifest, objectsDirectory, restored, work, decrypt, checkObject, {
 				activity,
 				verifiedFile,
-				phase
+				phase,
+				assertActive,
+				parallelConnections,
+				files
 			});
 		} else
-			for (const entry of manifest.files) {
-				const object = path.join(objectsDirectory, entry.object);
-				await checkObject(object, entry);
-				const target = path.join(restored, ...entry.path.split('/'));
-				await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-				await decrypt(object, target);
-				await fs.chmod(target, 0o600);
-				phase('verifying');
-				if (
-					(await fs.stat(target)).size !== entry.bytes ||
-					(await sha256(target, activity)) !== entry.sha256
-				)
-					throw new Error();
-				verifiedFile();
-			}
-		await owned();
+			await storageTaskPool(
+				files,
+				concurrency,
+				async (entry) => {
+					const object = path.join(objectsDirectory, entry.object);
+					await checkObject(object, entry);
+					const target = path.join(restored, ...entry.path.split('/'));
+					await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+					await decrypt(object, target);
+					await fs.chmod(target, 0o600);
+					phase('verifying');
+					if (
+						(await fs.stat(target)).size !== entry.bytes ||
+						(await sha256(target, activity)) !== entry.sha256
+					)
+						throw new Error();
+					verifiedFile();
+				},
+				assertActive
+			);
+		await assertActive();
 		phase('database');
 		database = new Database(path.join(restored, 'db', 'pacs.db'));
 		if (database.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
@@ -1104,9 +1270,7 @@ export async function restoreRecovery(
 							.run(target, reference.original);
 					}
 			}
-			// Restored audio is local and independent of the source archive and its destination.
-			if (hasColumn(database, 'storage_audio', 'path'))
-				database.prepare('DELETE FROM storage_audio').run();
+			restoreRemoteAudio(database, manifest, remoteAudio, remoteConnection);
 			pauseRestoredStorage(database);
 		});
 		remap();
@@ -1130,7 +1294,7 @@ export async function restoreRecovery(
 		} catch (error) {
 			if (error.code !== 'ENOENT') throw error;
 		}
-		await owned();
+		await assertActive();
 		phase('publishing');
 		await fs.rmdir(output).catch((error) => {
 			if (error.code !== 'ENOENT') throw error;
@@ -1140,7 +1304,9 @@ export async function restoreRecovery(
 			id: manifest.id,
 			kind: manifest.kind,
 			createdAt: manifest.createdAt,
-			files: manifest.files.length
+			files: files.length,
+			audioMode,
+			remoteAudioFiles: remoteAudio.length
 		};
 	} catch {
 		throw new Error('Recovery restore failed. Output was not published.');

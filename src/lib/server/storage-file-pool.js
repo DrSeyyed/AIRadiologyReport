@@ -1,5 +1,27 @@
 import { storageParallelConnections } from './storage-settings.js';
 
+export async function storageTaskPool(items, concurrency, operation, assertActive = () => {}) {
+	const limit = storageParallelConnections({ parallelConnections: concurrency });
+	let cursor = 0;
+	let failure;
+	await Promise.all(
+		Array.from({ length: Math.min(limit, items.length) }, async () => {
+			try {
+				while (!failure && cursor < items.length) {
+					await assertActive();
+					if (failure || cursor >= items.length) break;
+					const index = cursor++;
+					await operation(items[index], index);
+					await assertActive();
+				}
+			} catch (error) {
+				failure ||= error instanceof Error ? error : new Error('Storage operation failed.');
+			}
+		})
+	);
+	if (failure) throw failure;
+}
+
 export async function storageFilePool(
 	deps,
 	connection,

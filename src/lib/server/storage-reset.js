@@ -4,7 +4,9 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hashLocal } from './storage-audio.js';
 import { decryptFile } from './storage-crypto.js';
 import { abortStorageSession } from './storage-session.js';
-import { storageDestination } from './storage-settings.js';
+import { storageFilePool, storageTaskPool } from './storage-file-pool.js';
+import { maintenanceTransport } from './storage-maintenance-sessions.js';
+import { storageDestination, storageParallelConnections } from './storage-settings.js';
 import { storagePath, withStorage } from './storage-transport.js';
 
 const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
@@ -70,30 +72,39 @@ async function directory(client, path) {
 	return attributes;
 }
 
-async function remotePlan(client, connection, setStage) {
-	const files = [];
-	const folders = [];
-	async function collect(segments, pattern) {
-		setStage(`Inspecting remote ${segments.join('/')}`);
-		const path = storagePath(connection, ...segments);
-		if (!(await directory(client, path))) return;
-		const entries = await client.list(path);
-		if (entries.length > 200_000)
-			throw new StorageResetFailure(
-				`Storage reset listing limit exceeded in ${segments.join('/')}.`
-			);
-		for (const entry of entries) {
-			if (!pattern.test(entry.name) || entry.type !== '-') {
-				const reason =
-					entry.type === 'l'
-						? 'symbolic links are not allowed'
-						: 'unrecognized file name or entry type';
-				throw new StorageResetFailure(`Unexpected entry in ${segments.join('/')}: ${reason}.`);
+async function remotePlan(client, connection, setStage, pool) {
+	const tasks = [];
+	const parents = new Map();
+	async function collect(session, { segments, pattern, index }) {
+		const files = [];
+		const folders = [];
+		const taskStage = `Inspecting remote ${segments.join('/')}`;
+		setStage(taskStage);
+		try {
+			const path = storagePath(connection, ...segments);
+			if (!(await directory(session, path))) return { files, folders, index };
+			const entries = await session.list(path);
+			if (entries.length > 200_000)
+				throw new StorageResetFailure(
+					`Storage reset listing limit exceeded in ${segments.join('/')}.`
+				);
+			for (const entry of entries) {
+				if (!pattern.test(entry.name) || entry.type !== '-') {
+					const reason =
+						entry.type === 'l'
+							? 'symbolic links are not allowed'
+							: 'unrecognized file name or entry type';
+					throw new StorageResetFailure(`Unexpected entry in ${segments.join('/')}: ${reason}.`);
+				}
+				files.push(storagePath(connection, ...segments, entry.name));
 			}
-			files.push(storagePath(connection, ...segments, entry.name));
+			folders.push(path);
+			return { files, folders, index };
+		} catch (error) {
+			throw resetFailure(error, taskStage);
 		}
-		folders.push(path);
 	}
+	const schedule = (segments, pattern) => tasks.push({ segments, pattern, index: tasks.length });
 	setStage('Inspecting remote backups');
 	const backups = storagePath(connection, 'backups');
 	if (await directory(client, backups)) {
@@ -103,10 +114,10 @@ async function remotePlan(client, connection, setStage) {
 					'Unexpected entry in backups; only real indexes, manifests and objects directories are allowed.'
 				);
 		// Remove completed and unfinished indexes before the objects they reference.
-		await collect(['backups', 'indexes'], indexName);
-		await collect(['backups', 'manifests'], manifestName);
-		await collect(['backups', 'objects'], objectName);
-		folders.push(backups);
+		schedule(['backups', 'indexes'], indexName);
+		schedule(['backups', 'manifests'], manifestName);
+		schedule(['backups', 'objects'], objectName);
+		parents.set(tasks.length - 1, backups);
 	}
 	setStage('Inspecting remote files');
 	const synced = storagePath(connection, 'files');
@@ -116,11 +127,25 @@ async function remotePlan(client, connection, setStage) {
 				throw new StorageResetFailure(
 					'Unexpected entry in files; only a real objects directory is allowed.'
 				);
-		await collect(['files', 'objects'], objectName);
-		folders.push(synced);
+		schedule(['files', 'objects'], objectName);
+		parents.set(tasks.length - 1, synced);
 	}
-	await collect(['audio'], audioName);
-	return { files, folders };
+	schedule(['audio'], audioName);
+	const results = [];
+	await pool(
+		tasks,
+		async (session, task) => {
+			results[task.index] = await collect(session, task);
+		},
+		client
+	);
+	return {
+		files: results.flatMap((result) => result.files),
+		folders: results.flatMap((result, index) => [
+			...result.folders,
+			...(parents.has(index) ? [parents.get(index)] : [])
+		])
+	};
 }
 
 async function localTarget(path, roots) {
@@ -195,8 +220,10 @@ export async function resetStorageData(
 	const controller = new AbortController();
 	async function assertOwned() {
 		const active = !controller.signal.aborted && (await owned());
-		if (!active || controller.signal.aborted)
+		if (!active || controller.signal.aborted) {
+			controller.abort();
 			throw new StorageResetFailure('Storage reset no longer owns the worker.');
+		}
 	}
 	const request = db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(jobId);
 	if (!request) throw new StorageResetFailure('Missing storage reset request.');
@@ -222,16 +249,40 @@ export async function resetStorageData(
 				}
 			])
 		);
+		guarded.destroy = abort;
 		try {
 			await assertOwned();
 			return await operation(guarded);
 		} catch (error) {
-			callbackFailure = resetFailure(error, stage);
+			callbackFailure ||= resetFailure(error, stage);
 			throw error;
 		} finally {
 			controller.signal.removeEventListener('abort', abort);
 		}
 	};
+	const safeTransport = maintenanceTransport(transport, controller, assertOwned);
+	const sessionConnection = {
+		...connection,
+		operationTimeoutMs: 6 * 60 * 60 * 1000,
+		signal: controller.signal
+	};
+	const pool = (items, operation, coordinator) =>
+		storageFilePool(
+			{ withStorage: (config, callback) => safeTransport(config, captureFailure(callback)) },
+			sessionConnection,
+			items,
+			async (client, item) => {
+				try {
+					return await operation(client, item);
+				} catch (error) {
+					callbackFailure ||= resetFailure(error, stage);
+					controller.abort();
+					throw error;
+				}
+			},
+			assertOwned,
+			coordinator
+		);
 	let checking = false;
 	const cancellation = setInterval(async () => {
 		if (checking) return;
@@ -245,8 +296,8 @@ export async function resetStorageData(
 		}
 	}, 250);
 	try {
-		return await transport(
-			{ ...connection, operationTimeoutMs: 6 * 60 * 60 * 1000, signal: controller.signal },
+		return await safeTransport(
+			sessionConnection,
 			captureFailure(async (client) => {
 				await assertOwned();
 				if (request.phase === 'recovering') {
@@ -259,8 +310,6 @@ export async function resetStorageData(
 					);
 					let recovered = 0;
 					for (const saved of rows) {
-						stage = `Recovering local audio ${recovered + 1}/${rows.length}`;
-						await assertOwned();
 						if (
 							saved.destination !== destination ||
 							!audioName.test(saved.object_key) ||
@@ -270,63 +319,89 @@ export async function resetStorageData(
 							saved.bytes < 0
 						)
 							throw new StorageResetFailure('Invalid archive metadata; reset stopped.');
-						const { target, parent } = await localTarget(saved.path, roots);
-						if (!(await matches(target, saved))) {
-							const space = await statfs(parent, { bigint: true });
-							if (space.bavail * space.bsize < BigInt(saved.bytes) * 2n + 64n * 1024n * 1024n)
-								throw new StorageResetFailure(
-									'Insufficient local disk space to recover audio safely.'
-								);
-							const work = await mkdtemp(join(parent, '.storage-reset-'));
-							try {
-								const encrypted = join(work, `${randomUUID()}.enc`);
-								const plain = join(work, 'audio');
-								const remote = storagePath(connection, 'audio', saved.object_key);
-								const attributes = await client.lstat(remote);
-								if (
-									!attribute(attributes, 'isFile') ||
-									attribute(attributes, 'isSymbolicLink') ||
-									!Number.isSafeInteger(attributes.size) ||
-									attributes.size < saved.bytes ||
-									attributes.size > saved.bytes + 1024
-								)
-									throw new StorageResetFailure('Unsafe remote audio object or unexpected size.');
-								await client.get(remote, encrypted);
-								if ((await hashLocal(encrypted)) !== saved.remote_sha256)
-									throw new StorageResetFailure('Corrupt encrypted audio.');
-								stage = `Decrypting recovered audio ${recovered + 1}/${rows.length}`;
-								await decryptFile(encrypted, plain);
-								stage = `Validating recovered audio ${recovered + 1}/${rows.length}`;
-								if (!(await matches(plain, saved)))
-									throw new StorageResetFailure('Recovered audio is missing.');
-								await syncFile(plain);
+					}
+					const recoveryWork = new Set();
+					try {
+						await pool(
+							rows,
+							async (session, saved) => {
+								stage = `Recovering local audio ${recovered + 1}/${rows.length}`;
 								await assertOwned();
-								try {
-									await link(plain, target);
-								} catch (error) {
-									if (error.code !== 'EEXIST' || !(await matches(target, saved))) throw error;
+								const { target, parent } = await localTarget(saved.path, roots);
+								if (!(await matches(target, saved))) {
+									const space = await statfs(parent, { bigint: true });
+									if (space.bavail * space.bsize < BigInt(saved.bytes) * 2n + 64n * 1024n * 1024n)
+										throw new StorageResetFailure(
+											'Insufficient local disk space to recover audio safely.'
+										);
+									const work = await mkdtemp(join(parent, '.storage-reset-'));
+									recoveryWork.add(work);
+									{
+										const encrypted = join(work, `${randomUUID()}.enc`);
+										const plain = join(work, 'audio');
+										const remote = storagePath(connection, 'audio', saved.object_key);
+										const attributes = await session.lstat(remote);
+										if (
+											!attribute(attributes, 'isFile') ||
+											attribute(attributes, 'isSymbolicLink') ||
+											!Number.isSafeInteger(attributes.size) ||
+											attributes.size < saved.bytes ||
+											attributes.size > saved.bytes + 1024
+										)
+											throw new StorageResetFailure(
+												'Unsafe remote audio object or unexpected size.'
+											);
+										await session.get(remote, encrypted);
+										if ((await hashLocal(encrypted)) !== saved.remote_sha256)
+											throw new StorageResetFailure('Corrupt encrypted audio.');
+										stage = `Decrypting recovered audio ${recovered + 1}/${rows.length}`;
+										await decryptFile(encrypted, plain);
+										stage = `Validating recovered audio ${recovered + 1}/${rows.length}`;
+										if (!(await matches(plain, saved)))
+											throw new StorageResetFailure('Recovered audio is missing.');
+										await syncFile(plain);
+										await assertOwned();
+										try {
+											await link(plain, target);
+										} catch (error) {
+											if (error.code !== 'EEXIST' || !(await matches(target, saved))) throw error;
+										}
+										if (process.platform !== 'win32') await syncFile(parent);
+									}
 								}
-								if (process.platform !== 'win32') await syncFile(parent);
-							} finally {
-								await rm(work, { recursive: true, force: true });
-							}
-						}
-						await syncFile(target);
-						await assertOwned();
-						db.prepare('UPDATE storage_reset_requests SET restored=? WHERE job_id=?').run(
-							++recovered,
-							jobId
+								await syncFile(target);
+								await assertOwned();
+								db.prepare('UPDATE storage_reset_requests SET restored=? WHERE job_id=?').run(
+									++recovered,
+									jobId
+								);
+							},
+							client
 						);
+					} finally {
+						for (const work of recoveryWork) await rm(work, { recursive: true, force: true });
 					}
 					let checked = 0;
-					for (const saved of rows) {
-						stage = `Rechecking recovered local audio ${++checked}/${rows.length}`;
-						await assertOwned();
-						const { target } = await localTarget(saved.path, roots);
-						if (!(await matches(target, saved)))
-							throw new StorageResetFailure('Audio disappeared before reset.');
-					}
-					await remotePlan(client, connection, setStage);
+					await storageTaskPool(
+						rows,
+						storageParallelConnections(connection),
+						async (saved) => {
+							const taskStage = `Rechecking recovered local audio ${++checked}/${rows.length}`;
+							stage = taskStage;
+							try {
+								await assertOwned();
+								const { target } = await localTarget(saved.path, roots);
+								if (!(await matches(target, saved)))
+									throw new StorageResetFailure('Audio disappeared before reset.');
+							} catch (error) {
+								callbackFailure ||= resetFailure(error, taskStage);
+								controller.abort();
+								throw error;
+							}
+						},
+						assertOwned
+					);
+					await remotePlan(client, connection, setStage, pool);
 					await assertOwned();
 					db.transaction(() => {
 						db.prepare('DELETE FROM storage_audio').run();
@@ -335,7 +410,7 @@ export async function resetStorageData(
 						);
 					})();
 				}
-				const plan = await remotePlan(client, connection, setStage);
+				const plan = await remotePlan(client, connection, setStage, pool);
 				let deleting = 0;
 				for (const path of plan.files) {
 					stage = `Deleting remote file ${++deleting}/${plan.files.length}`;

@@ -4,11 +4,16 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { storageTimeoutMs } from './storage-settings.js';
+import { storageFilePool } from './storage-file-pool.js';
 import { pipeline } from 'node:stream/promises';
-import { listRecovery, restoreRecovery, validateRecoveryManifest } from './recovery-backups.js';
+import {
+	listRecovery, restoreRecovery, validateRecoveryManifest, recoveryAudioPlan
+} from './recovery-backups.js';
+import { hashStorageFile } from './storage-shell.js';
+import { abortStorageSession } from './storage-session.js';
 import * as crypto from './storage-crypto.js';
 import * as transport from './storage-transport.js';
-import { recoveryObjects, objectDownloadBytes } from './recovery-bundles.js';
+import { recoveryObjects, objectDownloadBytes, unpackBundles, fileDigest } from './recovery-bundles.js';
 import { restoreProgress } from './restore-progress.js';
 
 export const STORAGE_RESTORE_ID =
@@ -228,7 +233,7 @@ async function download(
  */
 export async function prepareStorageRestore(
 	connection,
-	{ backupId, owned = () => true, onProgress } = {},
+	{ backupId, audioMode = 'download', owned = () => true, onProgress } = {},
 	injected = {}
 ) {
 	let work;
@@ -236,18 +241,42 @@ export async function prepareStorageRestore(
 	let published = false;
 	let progress;
 	const controller = new AbortController();
+	const clients = new Set();
+	const stop = () => {
+		controller.abort();
+		for (const client of clients) abortStorageSession(client);
+	};
+	let ownershipTimer;
 	// Leave time for transport shutdown before its independent six-hour callback limit expires.
-	const timer = setTimeout(() => controller.abort(), OPERATION_MS - 60_000);
+	const timer = setTimeout(stop, OPERATION_MS - 60_000);
 	const signal = controller.signal;
 	try {
-		if (!validBackupId(backupId) || typeof owned !== 'function') throw failure();
-		const deps = { ...crypto, ...transport, ...injected };
+		if (!validBackupId(backupId) || typeof owned !== 'function' ||
+			!['remote', 'download'].includes(audioMode)) throw failure();
+		const deps = { ...crypto, ...transport, hashStorageFile, ...injected };
+		const connect = deps.withStorage;
+		deps.withStorage = (settings, callback) => connect(settings, (client) => {
+			clients.add(client);
+			return callback(client);
+		});
 		const assertOwned = async () => {
-			signal.throwIfAborted();
-			progress?.assertHealthy();
-			if ((await owned()) !== true) throw failure();
+			try {
+				signal.throwIfAborted();
+				progress?.assertHealthy();
+				if ((await owned()) !== true) throw failure();
+			} catch (error) {
+				stop();
+				throw error;
+			}
 		};
 		await assertOwned();
+		let checkingOwnership = false;
+		ownershipTimer = setInterval(() => {
+			if (checkingOwnership) return;
+			checkingOwnership = true;
+			assertOwned().catch(stop).finally(() => { checkingOwnership = false; });
+		}, 100);
+		ownershipTimer.unref();
 		progress = restoreProgress(onProgress);
 		progress.assertHealthy();
 		await deps.assertStorageKey();
@@ -268,81 +297,144 @@ export async function prepareStorageRestore(
 		const manifestFile = path.join(work, 'manifest.enc');
 		const objectsDirectory = path.join(work, 'objects');
 		await fs.mkdir(objectsDirectory, { mode: 0o700 });
-		const manifest = await deps.withStorage(
-			{ ...connection, operationTimeoutMs: OPERATION_MS },
-			async (client) => {
-				await assertOwned();
-				progress.set({ phase: 'listing' });
-				await remotePath(client, deps.storagePath(connection, 'backups', 'indexes'), true, signal);
-				const recovery = await listRecovery(connection, {
-					...deps,
-					withStorage: async (_connection, callback) => callback(client)
-				});
-				const selected = recovery.filter((snapshot) => snapshot.id === backupId);
-				if (selected.length !== 1) throw failure();
-				const snapshot = selected[0];
-				await remotePath(
-					client,
-					deps.storagePath(connection, 'backups', 'indexes', `${backupId}.${snapshot.kind}.json`),
-					false,
-					signal,
-					MAX_MANIFEST_BYTES
-				);
-				progress.set({ phase: 'manifest' });
-				await download(
-					client,
-					deps.storagePath(connection, 'backups', 'manifests', `${backupId}.enc`),
-					manifestFile,
-					MAX_MANIFEST_BYTES + ENCRYPTION_OVERHEAD,
-					signal,
-					deps,
-					connection,
-					progress
-				);
-				const plain = path.join(work, 'manifest.json');
-				await deps.decryptFile(manifestFile, plain);
-				if ((await fs.stat(plain)).size > MAX_MANIFEST_BYTES) throw failure();
-				const parsed = validateRecoveryManifest(JSON.parse(await fs.readFile(plain, 'utf8')));
-				await fs.unlink(plain);
-				if (
-					parsed.id !== snapshot.id ||
-					parsed.kind !== snapshot.kind ||
-					parsed.createdAt !== snapshot.createdAt ||
-					parsed.files.length > MAX_FILES
-				)
-					throw failure();
-				let bytes = 0;
-				const objects = new Set();
-				for (const entry of parsed.files) {
-					bytes += entry.bytes;
-					if (!Number.isSafeInteger(bytes) || bytes > MAX_BYTES) throw failure();
-				}
-				progress.set({
-					phase: 'downloading',
-					totalFiles: parsed.files.length,
-					totalObjects: new Set(recoveryObjects(parsed).map((entry) => entry.object)).size
-				});
-				for (const entry of recoveryObjects(parsed)) {
+		const transferConnection = { ...connection, signal, operationTimeoutMs: OPERATION_MS };
+		let remoteAudio = [];
+		let preparation;
+		let stopped = false;
+		let manifest;
+		try {
+			manifest = await deps.withStorage(transferConnection, (client) => {
+				if (stopped) throw failure();
+				preparation = (async () => {
 					await assertOwned();
-					if (objects.has(entry.object)) continue;
-					objects.add(entry.object);
+					progress.set({ phase: 'listing' });
+					await remotePath(
+						client,
+						deps.storagePath(connection, 'backups', 'indexes'),
+						true,
+						signal
+					);
+					const recovery = await listRecovery(connection, {
+						...deps,
+						withStorage: async (_connection, callback) => callback(client)
+					});
+					const selected = recovery.filter((snapshot) => snapshot.id === backupId);
+					if (selected.length !== 1) throw failure();
+					const snapshot = selected[0];
+					await remotePath(
+						client,
+						deps.storagePath(connection, 'backups', 'indexes', `${backupId}.${snapshot.kind}.json`),
+						false,
+						signal,
+						MAX_MANIFEST_BYTES
+					);
+					progress.set({ phase: 'manifest' });
 					await download(
 						client,
-						deps.storagePath(connection, 'backups', 'objects', entry.object),
-						path.join(objectsDirectory, entry.object),
-						objectDownloadBytes(parsed, entry),
+						deps.storagePath(connection, 'backups', 'manifests', `${backupId}.enc`),
+						manifestFile,
+						MAX_MANIFEST_BYTES + ENCRYPTION_OVERHEAD,
 						signal,
 						deps,
 						connection,
-						progress,
-						entry.remoteSha256
+						progress
 					);
-					progress.add('downloadedObjects');
-				}
-				await assertOwned();
-				return parsed;
-			}
-		);
+					const plain = path.join(work, 'manifest.json');
+					await deps.decryptFile(manifestFile, plain);
+					if ((await fs.stat(plain)).size > MAX_MANIFEST_BYTES) throw failure();
+					const parsed = validateRecoveryManifest(JSON.parse(await fs.readFile(plain, 'utf8')));
+					await fs.unlink(plain);
+					if (
+						parsed.id !== snapshot.id ||
+						parsed.kind !== snapshot.kind ||
+						parsed.createdAt !== snapshot.createdAt ||
+						parsed.files.length > MAX_FILES
+					)
+						throw failure();
+					let bytes = 0;
+					const objects = new Map();
+					for (const entry of parsed.files) {
+						bytes += entry.bytes;
+						if (!Number.isSafeInteger(bytes) || bytes > MAX_BYTES) throw failure();
+					}
+					progress.set({
+						phase: 'downloading',
+						totalFiles: parsed.files.length,
+						totalObjects: new Set(recoveryObjects(parsed).map((entry) => entry.object)).size
+					});
+					const downloaded = new Set();
+					async function downloadObjects(entries) {
+						const unique = new Map(entries.map((entry) => [entry.object, entry]));
+						await storageFilePool(deps, transferConnection,
+							[...unique.values()].filter((entry) => !downloaded.has(entry.object)),
+							async (worker, entry) => {
+								try {
+									await download(worker,
+										deps.storagePath(connection, 'backups', 'objects', entry.object),
+										path.join(objectsDirectory, entry.object), objectDownloadBytes(parsed, entry),
+										signal, deps, connection, progress, entry.remoteSha256);
+									downloaded.add(entry.object);
+									progress.add('downloadedObjects');
+								} catch (error) { stop(); throw error; }
+							}, assertOwned, client);
+					}
+					if (audioMode === 'remote') {
+						const database = parsed.files.find((entry) => entry.role === 'database');
+						await downloadObjects(recoveryObjects(parsed, [database]));
+						const inspection = path.join(work, 'inspection');
+						await fs.mkdir(inspection, { mode: 0o700 });
+						const databaseFile = path.join(inspection, 'db', 'pacs.db');
+						if (parsed.version === 2) {
+							await unpackBundles(parsed, objectsDirectory, inspection, work,
+								deps.decryptFile, async (object, entry) => {
+									await assertOwned();
+									if ((await fileDigest(object)) !== entry.remoteSha256) throw failure();
+								}, { files: [database], parallelConnections: connection.parallelConnections,
+									assertActive: assertOwned, activity: () => progress.set({}) });
+						} else {
+							await fs.mkdir(path.dirname(databaseFile), { mode: 0o700 });
+							await deps.decryptFile(path.join(objectsDirectory, database.object), databaseFile);
+							if ((await fs.stat(databaseFile)).size !== database.bytes ||
+								(await fileDigest(databaseFile)) !== database.sha256) throw failure();
+						}
+						await assertOwned();
+						remoteAudio = recoveryAudioPlan(parsed, databaseFile, connection);
+						await fs.rm(inspection, { recursive: true, force: true });
+						const archives = new Map(remoteAudio.map((entry) => [entry.archive.object_key, entry.archive]));
+						progress.set({ phase: 'verifying' });
+						await storageFilePool(deps, transferConnection, [...archives.values()], async (worker, archive) => {
+							try {
+								const remote = deps.storagePath(connection, 'audio', archive.object_key);
+								const bytes = archive.bytes + ENCRYPTION_OVERHEAD;
+								await remotePath(worker, remote, false, signal, bytes);
+								if ((await bounded(() => worker.lstat(remote), signal)).size !== bytes ||
+									(await deps.hashStorageFile(worker, remote, connection, {
+										assertActive: () => { signal.throwIfAborted(); progress.assertHealthy(); },
+										onProgress: () => progress.set({})
+									})) !== archive.remote_sha256) throw failure();
+								await remotePath(worker, remote, false, signal, bytes);
+								progress.add('verificationBytes', bytes);
+							} catch (error) { stop(); throw error; }
+						}, assertOwned, client);
+					}
+					const omitted = new Set(remoteAudio.map((entry) => entry.path));
+					const files = parsed.files.filter((entry) => !omitted.has(entry.path));
+					for (const entry of recoveryObjects(parsed, files)) objects.set(entry.object, entry);
+					progress.set({ phase: 'downloading', totalFiles: files.length, totalObjects: objects.size });
+					await downloadObjects([...objects.values()]);
+					await assertOwned();
+					return parsed;
+				})();
+				return preparation;
+			});
+		} catch (error) {
+			stopped = true;
+			stop();
+			throw error;
+		} finally {
+			stopped = true;
+			await preparation?.catch(() => {});
+		}
 		await assertOwned();
 		const verified = path.join(work, 'verified');
 		const result = await restoreRecovery(
@@ -350,12 +442,15 @@ export async function prepareStorageRestore(
 				manifestFile,
 				objectsDirectory,
 				outputDirectory: verified,
+				parallelConnections: connection.parallelConnections,
+				audioMode, remoteAudio, remoteConnection: connection,
 				owned: assertOwned,
 				onProgress: (update) => progress.set(update)
 			},
 			deps
 		);
-		if (result.id !== backupId || result.files !== manifest.files.length) throw failure();
+		if (result.id !== backupId || result.files + result.remoteAudioFiles !== manifest.files.length)
+			throw failure();
 		progress.set({ phase: 'publishing' });
 		await localDirectories(root);
 		await separateStaging(cwd, root, env);
@@ -366,7 +461,7 @@ export async function prepareStorageRestore(
 		work = undefined;
 		await assertOwned();
 		progress.set({ phase: 'complete', restoredFiles: result.files });
-		return { id: backupId, restoreId, files: result.files };
+		return { id: backupId, restoreId, files: result.files, audioMode, remoteAudioFiles: result.remoteAudioFiles };
 	} catch {
 		await Promise.all(
 			[
@@ -377,6 +472,7 @@ export async function prepareStorageRestore(
 		throw failure();
 	} finally {
 		progress?.finish();
+		clearInterval(ownershipTimer);
 		clearTimeout(timer);
 		controller.abort();
 	}

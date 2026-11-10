@@ -6,7 +6,8 @@ import { recoveryProgress } from './recovery-progress.js';
 import { MAX_MANIFEST_BYTES } from './recovery-bundles.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { syncStorageData, remoteFileStat, ensureFileDirectory } from './storage-sync.js';
-import { storageFilePool } from './storage-file-pool.js';
+import { storageFilePool, storageTaskPool } from './storage-file-pool.js';
+import { storageParallelConnections } from './storage-settings.js';
 import {
 	ensureStorageFileState,
 	fileState,
@@ -55,6 +56,7 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 			let running;
 			try {
 				return await withStorage(settings, (client) => {
+					if (aborted) throw new Error('Recovery backup aborted.');
 					running = (async () => operation(client))();
 					return running;
 				});
@@ -337,41 +339,87 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 						throw new Error('Recovery object changed.');
 				}
 				assertActive();
-				db.prepare(
-					'UPDATE storage_file_objects SET backup_linked_at=? WHERE destination=? AND object_key=?'
-				).run(now, destination, object.object_key);
 			}
+			await storageTaskPool(
+				independent,
+				storageParallelConnections(connection),
+				async (entry) => {
+					entry.sha256 = await storageFileDigest(entry.source, progress.activity);
+					entry.bytes = (await fs.stat(entry.source)).size;
+				},
+				assertActive
+			);
+			const prepared = new Map();
 			for (const entry of independent) {
-				assertActive();
-				const sha256 = await storageFileDigest(entry.source, progress.activity);
-				const bytes = (await fs.stat(entry.source)).size;
-				let object = db
-					.prepare(
-						'SELECT * FROM storage_file_objects WHERE destination=? AND sha256=? AND bytes=? ORDER BY created_at LIMIT 1'
-					)
-					.get(destination, sha256, bytes);
-				if (object) {
-					validObject(object);
-					reusedObjects++;
-				} else {
-					const encrypted = path.join(work, `${randomUUID()}.enc`);
-					await deps.encryptFile(entry.source, encrypted);
-					const remote_sha256 = await storageFileDigest(encrypted, progress.activity);
-					const encrypted_bytes = (await fs.stat(encrypted)).size;
-					const object_key = `${remote_sha256}.enc`;
-					const target = deps.storagePath(connection, 'files', 'objects', object_key);
-					await upload(client, encrypted, target);
-					if ((await hashRemote(client, target)) !== remote_sha256)
-						throw new Error('Recovery verification failed.');
-					assertActive();
-					db.prepare(
-						'INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)'
-					).run(destination, object_key, sha256, remote_sha256, bytes, encrypted_bytes, now, now);
-					object = objectRow.get(destination, object_key);
-					await fs.rm(encrypted);
-					uploadedObjects++;
+				const key = `${entry.sha256}:${entry.bytes}`;
+				if (!prepared.has(key)) {
+					const object = db
+						.prepare(
+							'SELECT * FROM storage_file_objects WHERE destination=? AND sha256=? AND bytes=? ORDER BY created_at LIMIT 1'
+						)
+						.get(destination, entry.sha256, entry.bytes);
+					prepared.set(key, { ...entry, object });
 				}
-				await preserve(client, object);
+				entry.prepared = prepared.get(key);
+			}
+			await storageFilePool(
+				deps,
+				connection,
+				[...prepared.values()].filter((entry) => !entry.object),
+				async (worker, entry) => {
+					const encrypted = path.join(work, `${randomUUID()}.enc`);
+					try {
+						await deps.encryptFile(entry.source, encrypted);
+						assertActive();
+						const remote_sha256 = await storageFileDigest(encrypted, progress.activity);
+						const encrypted_bytes = (await fs.stat(encrypted)).size;
+						const object_key = `${remote_sha256}.enc`;
+						const target = deps.storagePath(connection, 'files', 'objects', object_key);
+						await upload(worker, encrypted, target);
+						if ((await hashRemote(worker, target)) !== remote_sha256)
+							throw new Error('Recovery verification failed.');
+						assertActive();
+						entry.object = {
+							destination,
+							object_key,
+							sha256: entry.sha256,
+							remote_sha256,
+							bytes: entry.bytes,
+							encrypted_bytes,
+							created_at: now,
+							verified_at: now
+						};
+						entry.uploaded = true;
+					} finally {
+						await fs.rm(encrypted, { force: true });
+					}
+				},
+				assertActive,
+				client
+			);
+			for (const entry of prepared.values()) {
+				assertActive();
+				if (!entry.uploaded) continue;
+				const object = entry.object;
+				db.prepare(
+					'INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)'
+				).run(
+					destination,
+					object.object_key,
+					object.sha256,
+					object.remote_sha256,
+					object.bytes,
+					object.encrypted_bytes,
+					now,
+					now
+				);
+				uploadedObjects++;
+			}
+			const objects = new Map();
+			for (const entry of independent) {
+				const object = validObject(entry.prepared.object);
+				objects.set(object.object_key, object);
+				if (!entry.prepared.uploaded) reusedObjects++;
 				manifest.files.push({
 					path: entry.path,
 					role: entry.role,
@@ -382,7 +430,6 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 				});
 				progress.add('files');
 			}
-			const objects = new Map();
 			for (const entry of frozen) {
 				assertActive();
 				const object = validObject(objectRow.get(destination, entry.object_key));
@@ -443,6 +490,13 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 				assertActive,
 				client
 			);
+			// Persist linkage only after every independent remote operation has drained.
+			for (const object of objects.values()) {
+				assertActive();
+				db.prepare(
+					'UPDATE storage_file_objects SET backup_linked_at=? WHERE destination=? AND object_key=?'
+				).run(now, destination, object.object_key);
+			}
 			for (const entry of frozen) {
 				assertActive();
 				const object = validObject(objectRow.get(destination, entry.object_key));

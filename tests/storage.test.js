@@ -1565,6 +1565,13 @@ test('restore preparation is explicitly selected, durable and deduplicated even 
 	const backupId = `${now}-${randomUUID()}`;
 	const id = queueStorageJob(db, 'restore', { now, backupId });
 	assert.equal(queueStorageJob(db, 'restore', { now, backupId }), id);
+	assert.equal(queueStorageJob(db, 'restore', { now, backupId, audioMode: 'download' }), id);
+	assert.throws(
+		() => queueStorageJob(db, 'restore', { backupId, audioMode: 'remote' }),
+		/existing restore/
+	);
+	for (const audioMode of [null, '', 'REMOTE', 'local', '../outside', 1, {}, ['remote']])
+		assert.throws(() => queueStorageJob(db, 'restore', { backupId, audioMode }), /audio mode/);
 	assert.throws(
 		() => queueStorageJob(db, 'restore', { backupId: `${now}-${randomUUID()}` }),
 		/existing restore/
@@ -1573,8 +1580,119 @@ test('restore preparation is explicitly selected, durable and deduplicated even 
 		db.prepare('SELECT backup_id FROM storage_restore_requests WHERE job_id=?').get(id).backup_id,
 		backupId
 	);
+	assert.equal(
+		db.prepare('SELECT audio_mode FROM storage_restore_requests WHERE job_id=?').get(id).audio_mode,
+		'download'
+	);
+	assert.equal(storageStatus(db, now).jobs[0].audioMode, 'download');
 	scheduleStorageJobs(db, now);
 	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
+});
+
+test('restore audio schema migrates existing requests to download and enforces supported modes', (t) => {
+	const db = new Database(':memory:');
+	t.after(() => db.close());
+	db.exec(`CREATE TABLE storage_restore_requests (
+		job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+		backup_id TEXT NOT NULL
+	)`);
+	initializeSchema(db, schema);
+	db.exec("INSERT INTO storage_jobs(kind,created_at) VALUES('restore',1)");
+	db.prepare('INSERT INTO storage_restore_requests(job_id,backup_id) VALUES(1,?)').run('legacy');
+	// Simulate the deployed table before the audio-mode migration.
+	db.exec('ALTER TABLE storage_restore_requests DROP COLUMN audio_mode');
+	initializeSchema(db, schema);
+	initializeSchema(db, schema);
+	assert.deepEqual(db.prepare('SELECT * FROM storage_restore_requests').get(), {
+		job_id: 1,
+		backup_id: 'legacy',
+		audio_mode: 'download'
+	});
+	for (const mode of [null, '', 'REMOTE', 'local'])
+		assert.throws(() => db.prepare('UPDATE storage_restore_requests SET audio_mode=?').run(mode));
+	db.prepare("UPDATE storage_restore_requests SET audio_mode='remote'").run();
+	initializeSchema(db, schema);
+	assert.equal(
+		db.prepare('SELECT audio_mode FROM storage_restore_requests').get().audio_mode,
+		'remote'
+	);
+	assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=1').get().status, 'pending');
+	assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('remote restore mode survives restart, deduplication and retry and publishes only safe counts', async (t) => {
+	const { db, settings, directory } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	const backupId = `${now}-${randomUUID()}`;
+	const id = queueStorageJob(db, 'restore', { now, backupId, audioMode: 'remote' });
+	assert.equal(queueStorageJob(db, 'restore', { backupId, audioMode: 'remote' }), id);
+	assert.equal(storageStatus(db, now).jobs[0].audioMode, 'remote');
+	await processStorageJob(db, {
+		now,
+		prepareRestore: async (_connection, { audioMode }) => {
+			assert.equal(audioMode, 'remote');
+			throw new Error('synthetic-private-error');
+		}
+	});
+	assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status, 'failed');
+	const filename = join(directory, 'restore-requests.db');
+	writeFileSync(filename, db.serialize());
+	const reopened = new Database(filename);
+	try {
+		initializeSchema(reopened, schema);
+		assert.throws(
+			() => queueStorageJob(reopened, 'restore', { backupId, audioMode: 'download' }),
+			/existing restore/
+		);
+		assert.equal(
+			queueStorageJob(reopened, 'restore', { now, backupId, audioMode: 'remote', retryNow: true }),
+			id
+		);
+		assert.equal(
+			reopened.prepare('SELECT retry_at FROM storage_jobs WHERE id=?').get(id).retry_at,
+			now
+		);
+		const restoreId = randomUUID();
+		await processStorageJob(reopened, {
+			now,
+			prepareRestore: async (_connection, { backupId: savedId, audioMode, onProgress }) => {
+				assert.equal(savedId, backupId);
+				assert.equal(audioMode, 'remote');
+				const initial = JSON.parse(
+					reopened.prepare('SELECT result FROM storage_jobs WHERE id=?').get(id).result
+				);
+				assert.equal(initial.audioMode, 'remote');
+				onProgress({
+					...initial,
+					phase: 'complete',
+					audioMode: 'download',
+					privateValue: 'synthetic-private'
+				});
+				return {
+					restoreId,
+					audioMode,
+					files: 7,
+					remoteAudioFiles: 3,
+					privateValue: 'synthetic-private'
+				};
+			}
+		});
+		const saved = reopened.prepare('SELECT * FROM storage_jobs WHERE id=?').get(id);
+		assert.equal(saved.status, 'succeeded');
+		assert.equal(saved.attempts, 2);
+		assert.equal(JSON.parse(saved.result).audioMode, 'remote');
+		assert.equal(JSON.parse(saved.result).remoteAudioFiles, 3);
+		const status = storageStatus(reopened, now);
+		assert.equal(status.jobs[0].audioMode, 'remote');
+		assert.equal(status.jobs[0].remoteAudioFiles, 3);
+		assert.equal(status.preparedRestores[0].audioMode, 'remote');
+		assert.equal(status.preparedRestores[0].remoteAudioFiles, 3);
+		assert.equal(status.preparedRestores[0].directory, `restore-staging/${restoreId}`);
+		assert.ok(!JSON.stringify(status).includes('synthetic-private'));
+		assert.ok(!saved.result.includes('synthetic-private'));
+	} finally {
+		reopened.close();
+	}
 });
 
 test('paused worker prepares a restore without backup pruning or live mutations and retains safe status', async (t) => {
@@ -1591,6 +1709,7 @@ test('paused worker prepares a restore without backup pruning or live mutations 
 				preparations++;
 				assert.equal(connection.host, settings.host);
 				assert.equal(options.backupId, backupId);
+				assert.equal(options.audioMode, 'download');
 				assert.equal(options.owned(), true);
 				return { id: backupId, restoreId, files: 3, privateValue: 'must-not-appear' };
 			},
@@ -1652,7 +1771,7 @@ test('restore preparation persists safe live counts with bounded writes and reta
 				error: 'synthetic-private-error'
 			});
 			const persisted = read();
-			assert.deepEqual(JSON.parse(persisted), progress);
+			assert.deepEqual(JSON.parse(persisted), { ...progress, audioMode: 'download' });
 			assert.match(storageStatus(db, now + 1).jobs[0].progress, /objects downloaded: 1\/2/);
 			assert.equal(storageStatus(db, now + 1).jobs[0].restoreDirectory, null);
 			for (let i = 0; i < 100; i++) onProgress({ ...progress, downloadedBytes: 101 + i });
@@ -2399,19 +2518,28 @@ for (const scenario of ['pending', 'unexpected', 'permission']) {
 			};
 		}
 		const before = new Map(objects);
-		let connected = 0;
-		let closed = 0;
+		let activeSessions = 0;
+		let maximumSessions = 0;
 		const transport = (config, action) =>
-			withStorage(config, action, () => ({
-				...client,
-				async connect(config) {
-					assert.equal(config.hostVerifier(hostKey), true);
-					connected++;
-				},
-				async end() {
-					closed++;
-				}
-			}));
+			withStorage(config, action, () => {
+				let active = false;
+				const close = () => {
+					if (active) activeSessions--;
+					active = false;
+				};
+				return {
+					...client,
+					async connect(config) {
+						assert.equal(config.hostVerifier(hostKey), true);
+						active = true;
+						maximumSessions = Math.max(maximumSessions, ++activeSessions);
+					},
+					async end() {
+						close();
+					},
+					destroy: close
+				};
+			});
 		const id = queueStorageReset(db, { now });
 		await processStorageJob(db, {
 			now,
@@ -2423,8 +2551,8 @@ for (const scenario of ['pending', 'unexpected', 'permission']) {
 				})
 		});
 		const job = storageStatus(db, now).jobs.find((row) => row.id === id);
-		assert.equal(connected, 1);
-		assert.equal(closed, 1);
+		assert.equal(maximumSessions, Math.min(storageParallelConnections(connection), 4));
+		assert.equal(activeSessions, 0);
 		assert.equal(readFileSync(audio, 'utf8'), 'synthetic audio');
 		if (scenario === 'pending') {
 			assert.equal(job.status, 'succeeded');
@@ -2534,12 +2662,14 @@ for (const stage of ['connect', 'root', 'list', 'get', 'delete', 'rmdir']) {
 			const { db, settings, options, audio, objects, client, directory } = resetFixture(t);
 			const hostKey = Buffer.from('synthetic cancellable reset host key');
 			const fingerprint = `SHA256:${createHash('sha256').update(hostKey).digest('base64').replace(/=$/, '')}`;
-			saveStorageSettings(db, { ...settings, fingerprint });
+			saveStorageSettings(db, { ...settings, fingerprint, parallelConnections: 1 });
 			await archiveAudio(db, getStorageConnection(db), options);
 			unlinkSync(audio);
 			await client.mkdir('/radiology/backups/indexes');
 			const entered = Promise.withResolvers();
 			const blocked = Promise.withResolvers();
+			const aborted = Promise.withResolvers();
+			let recoveryDirectory;
 			t.after(() => blocked.resolve());
 			let destroyed = 0;
 			let ended = 0;
@@ -2554,6 +2684,7 @@ for (const stage of ['connect', 'root', 'list', 'get', 'delete', 'rmdir']) {
 				},
 				destroy() {
 					destroyed++;
+					aborted.resolve();
 				},
 				end() {
 					ended++;
@@ -2569,6 +2700,7 @@ for (const stage of ['connect', 'root', 'list', 'get', 'delete', 'rmdir']) {
 						(stage === 'list' && args[0] !== '/radiology/backups/indexes')
 					)
 						return original(...args);
+					if (stage === 'get') recoveryDirectory = join(args[1], '..');
 					entered.resolve();
 					await blocked.promise;
 					return stage === 'root' ? { isDirectory: true } : stage === 'list' ? [] : undefined;
@@ -2587,8 +2719,31 @@ for (const stage of ['connect', 'root', 'list', 'get', 'delete', 'rmdir']) {
 			await entered.promise;
 			const before = new Map(objects);
 			const metadata = db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(id);
+			let settled = false;
+			running.then(
+				() => {
+					settled = true;
+				},
+				() => {
+					settled = true;
+				}
+			);
 			cancelStorageJob(db, id, { now });
+			await aborted.promise;
+			if (!['connect', 'root'].includes(stage)) {
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.equal(settled, false, 'reset must drain the blocked callback before returning');
+				assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_worker_lock').get().n, 1);
+				assert.deepEqual(objects, before);
+				assert.deepEqual(
+					db.prepare('SELECT * FROM storage_reset_requests WHERE job_id=?').get(id),
+					metadata
+				);
+				if (recoveryDirectory) assert.ok(existsSync(recoveryDirectory));
+				blocked.resolve();
+			}
 			await running;
+			if (recoveryDirectory) assert.equal(existsSync(recoveryDirectory), false);
 			assert.equal(destroyed, 1);
 			assert.equal(ended, 0);
 			assert.equal(storageStatus(db, now).jobs.find((job) => job.id === id).status, 'cancelled');

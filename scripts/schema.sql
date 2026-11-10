@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS storage_job_cancellations (
 
 CREATE TABLE IF NOT EXISTS storage_restore_requests (
   job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
-  backup_id TEXT NOT NULL
+  backup_id TEXT NOT NULL,
+  audio_mode TEXT NOT NULL DEFAULT 'download' CHECK (audio_mode IN ('remote', 'download'))
 );
 
 CREATE TABLE IF NOT EXISTS storage_job_log_hidden (

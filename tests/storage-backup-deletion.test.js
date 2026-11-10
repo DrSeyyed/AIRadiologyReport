@@ -53,7 +53,7 @@ function fixture() {
 			entries.delete(path);
 		}
 	};
-	const injected = { withStorage: async (_connection, callback) => callback(client) };
+	const injected = { withStorage: async (_connection, callback) => callback({ ...client }) };
 	const options = {
 		backupIds: [newest],
 		onPlan(value) {
@@ -230,10 +230,15 @@ test('late metadata completion after cancellation cannot resume deletion', async
 	active = false;
 	// Keep the event loop alive while the helper's unref'ed cancellation monitor fires.
 	const keepAlive = setTimeout(() => {}, 1000);
+	let settled = false;
+	running.catch(() => {
+		settled = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(settled, false, 'must drain the late preflight before returning');
+	release();
 	await assert.rejects(running);
 	clearTimeout(keepAlive);
-	release();
-	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(f.removed, []);
 });
 
@@ -252,3 +257,223 @@ test('deletion progress never serializes arbitrary remote data', () => {
 	])
 		assert.equal(safeBackupDeletionProgress(value), null);
 });
+
+for (const limit of [1, 3, 16]) {
+	test(`deletion uses saved limit ${limit}, drains full preflight and plan before independent removals`, async () => {
+		const f = fixture();
+		f.options.backupIds = [older, newest];
+		let sessions = 0;
+		let maximumSessions = 0;
+		let inspecting = 0;
+		let maximumInspection = 0;
+		let deleting = 0;
+		let maximumDeletion = 0;
+		let persisted = false;
+		const inspected = new Set();
+		const indexesRemoved = new Set();
+		const planEntered = Promise.withResolvers();
+		const planReleased = Promise.withResolvers();
+		const persist = f.options.onPlan;
+		f.options.onPlan = async (plan) => {
+			assert.equal(inspected.size, 4);
+			assert.deepEqual(f.removed, []);
+			planEntered.resolve();
+			await planReleased.promise;
+			persist(plan);
+			persisted = true;
+		};
+		f.injected.withStorage = async (_config, callback) => {
+			maximumSessions = Math.max(maximumSessions, ++sessions);
+			try {
+				return await callback({
+					...f.client,
+					async lstat(path) {
+						if (!persisted && /\.(enc|json)$/.test(path)) {
+							maximumInspection = Math.max(maximumInspection, ++inspecting);
+							await new Promise((resolve) => setImmediate(resolve));
+							inspecting--;
+							inspected.add(path);
+						}
+						return f.client.lstat(path);
+					},
+					async delete(path) {
+						assert.ok(persisted, 'durable onPlan must finish first');
+						if (path === manifest(older)) assert.ok(indexesRemoved.has(index(older, 'database')));
+						if (path === manifest(newest)) assert.ok(indexesRemoved.has(index(newest)));
+						maximumDeletion = Math.max(maximumDeletion, ++deleting);
+						await new Promise((resolve) => setImmediate(resolve));
+						await f.client.delete(path);
+						indexesRemoved.add(path);
+						deleting--;
+					}
+				});
+			} finally {
+				sessions--;
+			}
+		};
+		const running = deleteRecoveryPoints(
+			{ ...connection, parallelConnections: limit },
+			f.options,
+			f.injected
+		);
+		await planEntered.promise;
+		assert.deepEqual(f.removed, []);
+		assert.equal(sessions, 1, 'preflight sessions close before durable plan');
+		planReleased.resolve();
+		assert.deepEqual(await running, { deleted: 2, total: 2, objectsRetained: true });
+		assert.equal(maximumSessions, Math.min(limit, 4));
+		assert.equal(maximumInspection, Math.min(limit, 4));
+		assert.equal(maximumDeletion, Math.min(limit, 2));
+		assert.equal(sessions, 0);
+		assert.deepEqual(f.progress, [
+			{ deleted: 0, total: 2 },
+			{ deleted: 1, total: 2 },
+			{ deleted: 2, total: 2 }
+		]);
+	});
+}
+
+test('parallel point failure aborts all active sessions and drains late index completion before exact-plan retry', async () => {
+	const f = fixture();
+	f.options.backupIds = [older, newest];
+	const entered = Promise.withResolvers();
+	const failure = Promise.withResolvers();
+	const late = Promise.withResolvers();
+	let started = 0;
+	let destroyed = 0;
+	let sessions = 0;
+	let failing = true;
+	f.injected.withStorage = async (_config, callback) => {
+		sessions++;
+		try {
+			return await callback({
+				...f.client,
+				destroy() {
+					destroyed++;
+				},
+				async delete(path) {
+					if (failing && path.endsWith('.json')) {
+						if (++started === 2) entered.resolve();
+						if (path === index(older, 'database')) {
+							await failure.promise;
+							throw new Error('sensitive deletion error');
+						}
+						await late.promise;
+					}
+					return f.client.delete(path);
+				}
+			});
+		} finally {
+			sessions--;
+		}
+	};
+	const running = deleteRecoveryPoints(
+		{ ...connection, parallelConnections: 2 },
+		f.options,
+		f.injected
+	);
+	let settled = false;
+	running.catch(() => {
+		settled = true;
+	});
+	await entered.promise;
+	failure.resolve();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(destroyed, 2);
+	assert.equal(settled, false);
+	late.resolve();
+	await assert.rejects(running, (error) => !error.message.includes('sensitive'));
+	assert.equal(sessions, 0);
+	assert.deepEqual(f.removed, [index(newest)]);
+	assert.ok(f.entries.has(manifest(newest)));
+	assert.ok(f.entries.has(manifest(older)));
+	failing = false;
+	await deleteRecoveryPoints(
+		{ ...connection, parallelConnections: 2 },
+		{
+			...f.options,
+			plan: f.plan,
+			onPlan() {
+				assert.fail('retry must reuse exact persisted plan');
+			}
+		},
+		f.injected
+	);
+	assert.equal(f.removed.length, 4);
+	assert.equal(sessions, 0);
+});
+
+for (const mode of ['failure', 'cancellation']) {
+	test(
+		`parallel selection preflight ${mode} aborts and drains all sessions without plan or mutation`,
+		{ timeout: 5000 },
+		async () => {
+			const f = fixture();
+			f.options.backupIds = [older, newest];
+			let active = true;
+			f.options.owned = () => active;
+			const entered = Promise.withResolvers();
+			const trigger = Promise.withResolvers();
+			const release = Promise.withResolvers();
+			let started = 0;
+			let destroyed = 0;
+			let sessions = 0;
+			f.injected.withStorage = async (config, callback) => {
+				sessions++;
+				try {
+					return await Promise.race([
+						callback({
+							...f.client,
+							destroy() {
+								destroyed++;
+							},
+							async lstat(path) {
+								if (/\.(enc|json)$/.test(path)) {
+									const index = started++;
+									if (started === 3) entered.resolve();
+									if (mode === 'failure' && index === 0) {
+										await trigger.promise;
+										return { isSymbolicLink: true };
+									}
+									await release.promise;
+								}
+								return f.client.lstat(path);
+							}
+						}),
+						new Promise((_, reject) =>
+							config.signal.addEventListener('abort', () => reject(new Error('aborted')), {
+								once: true
+							})
+						)
+					]);
+				} finally {
+					sessions--;
+				}
+			};
+			const running = deleteRecoveryPoints(
+				{ ...connection, parallelConnections: 3 },
+				f.options,
+				f.injected
+			);
+			let settled = false;
+			running.catch(() => {
+				settled = true;
+			});
+			await entered.promise;
+			if (mode === 'failure') trigger.resolve();
+			else active = false;
+			if (mode === 'cancellation') await new Promise((resolve) => setTimeout(resolve, 150));
+			else await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(destroyed, 3);
+			assert.equal(settled, false);
+			assert.equal(f.plan, undefined);
+			assert.deepEqual(f.removed, []);
+			release.resolve();
+			await assert.rejects(running, /Backup deletion stopped/);
+			assert.equal(sessions, 0);
+			assert.equal(started, 3, 'must not start the fourth item after stopping');
+			assert.equal(f.plan, undefined);
+			assert.deepEqual(f.removed, []);
+		}
+	);
+}

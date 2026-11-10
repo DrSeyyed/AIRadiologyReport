@@ -327,7 +327,15 @@ test('admin restore requires explicit confirmation and a single valid recovery I
 	invalid.set('backupId', '../outside');
 	const wrong = body();
 	wrong.set('confirmation', 'activate');
-	for (const input of [missing, duplicate, invalid, wrong])
+	const invalidModes = ['', 'REMOTE', 'local', '../outside'].map((mode) => {
+		const form = body();
+		form.set('audioMode', mode);
+		return form;
+	});
+	const duplicateMode = body();
+	duplicateMode.append('audioMode', 'remote');
+	duplicateMode.append('audioMode', 'remote');
+	for (const input of [missing, duplicate, invalid, wrong, ...invalidModes, duplicateMode])
 		assert.equal((await submit('restore', input)).status, 400);
 	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 0);
 	const result = await submit('restore', body());
@@ -336,12 +344,36 @@ test('admin restore requires explicit confirmation and a single valid recovery I
 		kind: 'restore',
 		status: 'pending'
 	});
-	assert.equal(db.prepare('SELECT backup_id FROM storage_restore_requests').get().backup_id, id);
+	assert.deepEqual(db.prepare('SELECT backup_id,audio_mode FROM storage_restore_requests').get(), {
+		backup_id: id, audio_mode: 'download'
+	});
 	assert.ok((await submit('restore', body())).message);
 	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
 	const conflicting = body();
 	conflicting.set('backupId', `1800000001-${randomUUID()}`);
 	assert.equal((await submit('restore', conflicting)).status, 400);
+});
+
+test('admin restore saves explicit remote and download modes without reusing a conflicting request', async (t) => {
+	const { submit, db, page } = await fixture(t);
+	const backupId = `1800000000-${randomUUID()}`;
+	const form = new FormData();
+	form.set('backupId', backupId);
+	form.set('confirmation', 'prepare');
+	form.set('audioMode', 'remote');
+	assert.ok((await submit('restore', form)).message);
+	assert.equal(db.prepare('SELECT audio_mode FROM storage_restore_requests').get().audio_mode, 'remote');
+	assert.equal(page.load({ locals: admin }).status.jobs[0].audioMode, 'remote');
+	assert.ok((await submit('restore', form)).message);
+	form.set('audioMode', 'download');
+	assert.equal((await submit('restore', form)).status, 400);
+	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
+	db.exec("UPDATE storage_jobs SET status='failed',attempts=8");
+	assert.ok((await submit('restore', form)).message);
+	assert.deepEqual(db.prepare('SELECT audio_mode FROM storage_restore_requests ORDER BY job_id').all(), [
+		{ audio_mode: 'remote' }, { audio_mode: 'download' }
+	]);
+	assert.equal(page.load({ locals: admin }).status.jobs[0].audioMode, 'download');
 });
 
 test('admin cancel validates one job ID, stops queued tests and preserves completed jobs', async (t) => {
@@ -655,10 +687,14 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		{ id: 1000, kind: 'restore', status: 'running', attempts: 1, created_at: 1,
 			canCancel: true, progress: 'Preparing restore: downloading files 2 of 4' },
 		{ id: 1001, kind: 'restore', status: 'succeeded', attempts: 1, created_at: 1,
-			restoreDirectory: '/recovery/verified-copy' },
+			restoreDirectory: '/recovery/verified-copy', audioMode: 'remote', remoteAudioFiles: 12 },
 		{ id: 1002, kind: 'delete', status: 'failed', attempts: 2, created_at: 1,
 			error: 'Selected backup deletion failed.', retry_at: 2, canCancel: true }
 	);
+	data.status.preparedRestores = [
+		{ id: 1001, finished_at: 1, directory: '/recovery/verified-copy', audioMode: 'remote', remoteAudioFiles: 12 },
+		{ id: 998, finished_at: 1, directory: '/recovery/download-copy', audioMode: 'download', remoteAudioFiles: 0 }
+	];
 	const { body: restoreBody } = render(component.default, {
 		props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } }
 	});
@@ -670,12 +706,28 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(restorePanel, /Preparing restore: downloading files 2 of 4/);
 	assert.match(restorePanel, /Verified copy ready: \/recovery\/verified-copy/);
 	assert.match(restorePanel, /Manual activation required/);
+	assert.match(restorePanel, /<select[^>]*name="audioMode"[^>]*required[^>]*>/);
+	assert.match(restorePanel, /<option value="remote" selected(?:="")?>Keep archived audio on storage \(less local disk\)<\/option>/);
+	assert.match(restorePanel, /<option value="download">Download all audio \(independent copy\)<\/option>/);
+	assert.match(restorePanel, /playback after activation needs the saved matching storage destination, original archive paths and original encryption key/);
+	assert.match(restorePanel, /Downloading all audio needs full disk space and is the offline restore default/);
+	assert.match(restorePanel, /match authenticated snapshot archive metadata/);
+	assert.match(restorePanel, /Missing or mismatching archives fail preparation/);
+	assert.match(restorePanel, /Legacy mixed bundles may still transfer archived audio bytes/);
+	assert.match(restorePanel, /Storage services start paused in either mode/);
+	assert.match(restorePanel, /audio files kept remote: 12/);
+	assert.match(restorePanel, /audio files kept remote: 0/);
+	assert.match(restorePanel, /not self-contained; matching storage and original key required/);
+	assert.match(restorePanel, /Download all audio/);
 	assert.match(restorePanel, /Selected backup deletion failed/);
 	assert.match(restorePanel, /Retry:/);
 	assert.match(restorePanel, /action="\?\/cancel&(?:amp;)?tab=restore"/);
 	assert.doesNotMatch(restorePanel, /Copied: 97/);
 	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
 	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);
+	assert.match(archiveBody, /Connection tests probe every configured session/);
+	assert.match(archiveBody, /Database checks, publication and ordering-dependent cleanup stay serial/);
+	assert.match(archiveBody, /Independent downloads, decryption and verification use the saved parallel connection limit/);
 	assert.match(archiveBody, /<input[^>]*name="syncIntervalMinutes"[^>]*min="1"[^>]*max="1440"[^>]*value="1"/);
 	assert.match(archiveBody, /every 1–1440 minutes \(default 1\)/);
 	assert.match(archiveBody, /Pending batches continue on the short worker cycle/);

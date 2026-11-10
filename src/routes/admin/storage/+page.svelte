@@ -73,6 +73,9 @@
 			if (result.type === 'success') settings.enabled = false;
 		};
 	}
+	function restoreAudioLabel(mode) {
+		return mode === 'remote' ? 'Keep archived audio on storage' : 'Download all audio';
+	}
 	function time(value) {
 		if (!value) return '—';
 		const date = new Date(value * 1000);
@@ -144,7 +147,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<p class="text-sm text-base-content/70">Only audio is eligible for local removal, after verified sync and a subsequent full backup. Reports stay local. Keep an independent offsite backup.</p>
 		<details class="space-y-2 text-sm">
 			<summary class="cursor-pointer font-medium">Synchronization, parallelism and retention</summary>
-			<p>Parallel storage connections: 1–16, default 4. More connections use more memory, temporary space and SSH slots. Respect your storage server's limits.</p>
+			<p>Parallel storage connections: 1–16, default 4. Applies to independent file transfers and checks in synchronization, backups, restores, audits and maintenance. Connection tests probe every configured session. Database checks, publication and ordering-dependent cleanup stay serial; jobs still run one at a time. More workers use more memory, temporary space and SSH slots. Respect your storage server's limits.</p>
 			<p>Either service enables file sync. Files are immutable, individually encrypted objects without gzip compression; unchanged objects are reused. Keep backups enabled for eviction. Pausing does not disable archived playback.</p>
 			<p>Full backups capture the database, managed files and server configuration. Missed slots coalesce into the latest due backup. Integrity audits run in batches (default every 7 days).</p>
 			<p>Retention removes recovery manifests, not shared objects; it does not fully reclaim storage space.</p>
@@ -180,7 +183,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<p class="text-sm">Prepare a verified copy in a separate server folder. <strong>The live site is not replaced.</strong> Manual activation during downtime is required.</p>
 		<details class="text-sm">
 			<summary class="cursor-pointer font-medium">Restore requirements and activation</summary>
-			<p class="mt-2 text-base-content/70">Allow disk space for restored data and temporary downloads. Protect prepared copies like patient data and remove them manually when no longer needed. Preparation works while schedules are paused. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
+			<p class="mt-2 text-base-content/70">Allow disk space for locally restored files and temporary downloads; downloading all audio requires space for the full dataset. Keeping archived audio on storage is not a self-contained copy: after activation, playback requires the saved matching storage destination and original encryption key. Only audio whose hash and size match authenticated snapshot archive metadata can remain remote; other files restore locally. Retained audio is checksum-verified at the original archive paths, not just in backup objects. Missing or mismatching archives fail preparation; choose download mode instead. Legacy mixed bundles may still transfer archived audio bytes when needed for the database or other local files; audio-only bundles are skipped. Storage services start paused in either mode. Original storage objects are kept. Protect prepared copies like patient data and remove them manually when no longer needed. Preparation works while schedules are paused. Independent downloads, decryption and verification use the saved parallel connection limit. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
 		</details>
 		<form method="POST" action="?/recoveryPoints&tab=restore" use:enhance={recoveryEnhance}>
 			<button class="btn btn-outline" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Load recovery points from storage</button>
@@ -196,6 +199,13 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 						{/each}
 					</select>
 				</label>
+				<label class="form-control">Restore audio
+					<select class="select select-bordered" name="audioMode" required aria-describedby="restore-audio-help">
+						<option value="remote" selected>Keep archived audio on storage (less local disk)</option>
+						<option value="download">Download all audio (independent copy)</option>
+					</select>
+				</label>
+				<p id="restore-audio-help" class="text-sm text-base-content/70">Keeping archived audio remote is not self-contained: playback after activation needs the saved matching storage destination, original archive paths and original encryption key. Other files restore locally. Downloading all audio needs full disk space and is the offline restore default.</p>
 				<label class="flex items-center gap-3"><input class="checkbox" type="checkbox" name="confirmation" value="prepare" required /> I understand this creates a separate recovery copy, not an automatic live restore.</label>
 				<button class="btn btn-warning" type="submit" disabled={data.status.resetActive}>Prepare restore</button>
 				</fieldset>
@@ -205,7 +215,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		{#if data.status.preparedRestores.length}
 			<h4 class="font-semibold">Recent verified copies (manual activation required)</h4>
 			{#each data.status.preparedRestores as restore (restore.id)}
-				<p>Job {restore.id} — {time(restore.finished_at)}: <code class="break-all">{restore.directory}</code></p>
+				<p>Job {restore.id} — {time(restore.finished_at)}: <code class="break-all">{restore.directory}</code> — {restoreAudioLabel(restore.audioMode)}{#if restore.remoteAudioFiles !== undefined}; audio files kept remote: {restore.remoteAudioFiles}{/if}{#if restore.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>
 			{/each}
 		{/if}
 		{@render jobLog('restore', ['restore', 'delete'])}
@@ -276,7 +286,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs.filter((job) => !kinds || kinds.includes(job.kind)) as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'restore'}<p>{restoreAudioLabel(job.audioMode)}{#if job.remoteAudioFiles !== undefined}; audio files kept remote: {job.remoteAudioFiles}{/if}{#if job.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>{/if}{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{:else}
 				<tr><td colspan="6">No {tab === 'restore' ? 'restore or backup deletion ' : ''}jobs in the recent log.</td></tr>
 			{/each}

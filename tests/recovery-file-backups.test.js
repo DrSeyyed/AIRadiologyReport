@@ -686,6 +686,153 @@ test('a coordinator transport rejecting early drains its callback before cleanup
 	await f.unpublished();
 });
 
+for (const concurrency of [1, 2, 4]) {
+	test(
+		`immutable metadata preparation and v1 restore use ${concurrency} bounded local slots`,
+		{ timeout: 10000 },
+		async (t) => {
+			const f = await fixture(t, { ...connection, parallelConnections: concurrency });
+			await f.write('.env', 'PORT=4321\n');
+			let encryptRelease;
+			const encryptGate = new Promise((resolve) => {
+				encryptRelease = resolve;
+			});
+			let encryptActive = 0;
+			let encryptPeak = 0;
+			let encryptArrivals = 0;
+			const encrypt = f.deps.encryptFile;
+			f.deps.withStorage = async (_settings, callback) => callback(Object.create(f.client));
+			f.deps.encryptFile = async (source, target) => {
+				if (!['database.sqlite', 'environment.json', 'app.env'].includes(path.basename(source)))
+					return encrypt(source, target);
+				encryptPeak = Math.max(encryptPeak, ++encryptActive);
+				if (++encryptArrivals === Math.min(concurrency, 3)) encryptRelease();
+				try {
+					await encryptGate;
+					return await encrypt(source, target);
+				} finally {
+					encryptActive--;
+				}
+			};
+			const backup = await f.run();
+			assert.equal(encryptPeak, Math.min(concurrency, 3));
+			assert.equal(encryptActive, 0);
+			const manifest = await f.manifest(backup);
+			let release;
+			const gate = new Promise((resolve) => {
+				release = resolve;
+			});
+			let active = 0;
+			let peak = 0;
+			let arrivals = 0;
+			const decrypt = f.deps.decryptFile;
+			const outputDirectory = path.join(f.root, 'bounded-restore');
+			await restoreRecovery(
+				{
+					manifestFile: path.join(f.remote, 'backups', 'manifests', `${backup.id}.enc`),
+					objectsDirectory: path.join(f.remote, 'backups', 'objects'),
+					outputDirectory,
+					parallelConnections: concurrency
+				},
+				{
+					...f.deps,
+					async decryptFile(source, target) {
+						if (path.basename(path.dirname(source)) !== 'objects') return decrypt(source, target);
+						peak = Math.max(peak, ++active);
+						if (++arrivals === Math.min(concurrency, manifest.files.length)) release();
+						try {
+							await gate;
+							return await decrypt(source, target);
+						} finally {
+							active--;
+						}
+					}
+				}
+			);
+			assert.equal(peak, Math.min(concurrency, manifest.files.length));
+			assert.equal(active, 0);
+			assert.equal(
+				await fs.readFile(path.join(outputDirectory, 'uploads', 'audio', 'part.ogg'), 'utf8'),
+				'audio payload'
+			);
+		}
+	);
+}
+
+for (const mode of ['failure', 'cancel']) {
+	test(
+		`v1 restore ${mode} drains all started decryptions before rejecting`,
+		{ timeout: 10000 },
+		async (t) => {
+			const f = await fixture(t);
+			const backup = await f.run();
+			let release;
+			const sibling = new Promise((resolve) => {
+				release = resolve;
+			});
+			t.after(release);
+			let ready;
+			const started = new Promise((resolve) => {
+				ready = resolve;
+			});
+			let failed;
+			const failing = new Promise((resolve) => {
+				failed = resolve;
+			});
+			let active = 0;
+			let arrivals = 0;
+			let owned = true;
+			let settled = false;
+			const decrypt = f.deps.decryptFile;
+			const outputDirectory = path.join(f.root, 'failed-restore');
+			const operation = restoreRecovery(
+				{
+					manifestFile: path.join(f.remote, 'backups', 'manifests', `${backup.id}.enc`),
+					objectsDirectory: path.join(f.remote, 'backups', 'objects'),
+					outputDirectory,
+					parallelConnections: 2,
+					owned: () => owned
+				},
+				{
+					...f.deps,
+					async decryptFile(source, target) {
+						if (path.basename(path.dirname(source)) !== 'objects') return decrypt(source, target);
+						const ordinal = ++arrivals;
+						active++;
+						if (ordinal === 2) ready();
+						try {
+							await started;
+							if (ordinal === 1) {
+								failed();
+								if (mode === 'failure') throw new Error('private decrypt failure');
+								owned = false;
+							} else await sibling;
+							return await decrypt(source, target);
+						} finally {
+							active--;
+						}
+					}
+				}
+			).finally(() => {
+				settled = true;
+			});
+			const rejected = assert.rejects(operation, {
+				message: 'Recovery restore failed. Output was not published.'
+			});
+			await failing;
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(settled, false);
+			assert.ok((await fs.readdir(f.root)).some((name) => name.startsWith('.recovery-work-')));
+			release();
+			await rejected;
+			assert.equal(active, 0);
+			assert.equal(arrivals, 2);
+			await assert.rejects(fs.stat(outputDirectory), { code: 'ENOENT' });
+			assert.ok(!(await fs.readdir(f.root)).some((name) => name.startsWith('.recovery-work-')));
+		}
+	);
+}
+
 for (const concurrency of [1, 4, 8, 16]) {
 	test(`full recovery respects ${concurrency} connections and its progress survives sanitization`, async (t) => {
 		const f = await fixture(t, { ...connection, parallelConnections: concurrency });

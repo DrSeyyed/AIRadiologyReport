@@ -5,6 +5,7 @@ import { createWriteStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { setImmediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { syncStorageData, remoteFileStat, ensureFileDirectory } from '../src/lib/server/storage-sync.js';
 import { storageDestination } from '../src/lib/server/storage-settings.js';
@@ -27,7 +28,7 @@ async function fixture(t, settings = connection) {
 	const db = new Database(path.join(root, 'state.sqlite'));
 	t.after(async () => {
 		if (db.open) db.close();
-		await fs.rm(root, { recursive: true, force: true });
+		await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 	});
 	const calls = { puts: [], hashes: [], links: [], deletes: [], encryptions: [], decryptions: [], stats: [], sessions: 0, keyChecks: 0 };
 	const hooks = {};
@@ -156,14 +157,67 @@ async function audioFixture(t) {
 		CREATE TABLE storage_audio (
 			path TEXT PRIMARY KEY, object_key TEXT, sha256 TEXT, remote_sha256 TEXT,
 			bytes INTEGER, archived_at INTEGER, evicted_at INTEGER, destination TEXT);
-		CREATE TABLE storage_jobs (id INTEGER PRIMARY KEY, kind TEXT, status TEXT, started_at INTEGER);
+		CREATE TABLE storage_jobs (id INTEGER PRIMARY KEY, kind TEXT, status TEXT, started_at INTEGER, result TEXT);
+		CREATE TABLE storage_deleted_recovery_points (backup_id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL);
 	`);
-	f.db.prepare('INSERT INTO storage_jobs VALUES(1,?,?,?)').run('full', 'succeeded', initialTime - 10);
+	f.db.prepare('INSERT INTO storage_jobs(id,kind,status,started_at) VALUES(1,?,?,?)').run('full', 'succeeded', initialTime - 10);
 	const recording = await f.write('uploads/audio/recording.ogg', 'referenced recording');
 	const part = await f.write('uploads/audio/part.ogg', 'referenced recording part');
 	f.db.prepare('INSERT INTO study_recordings VALUES(1,?,?,0)').run(recording, '2020-01-01 00:00:00');
 	f.db.prepare('INSERT INTO recording_audio_parts VALUES(1,1,?,?)').run(part, '2020-01-01 00:00:00');
 	return { ...f, recording, part, archiveWork: work };
+}
+
+for (const parallelConnections of [1, 4, 16]) {
+	test(`synchronization bounds preparation, uploads and scheduled checksums to ${parallelConnections} workers`, async (t) => {
+		const f = await fixture(t, { ...connection, parallelConnections });
+		await Promise.all(Array.from({ length: 32 }, (_, i) => f.write(`uploads/file-${i}.txt`, `unique ${i}`)));
+		let activeSessions = 0;
+		let peakSessions = 0;
+		f.injected.withStorage = async (_settings, action) => {
+			peakSessions = Math.max(peakSessions, ++activeSessions);
+			try { return await action({ ...f.client }); }
+			finally { activeSessions--; }
+		};
+		function phase() {
+			let release;
+			const gate = new Promise((resolve) => { release = resolve; });
+			const state = { active: 0, peak: 0, started: 0 };
+			return {
+				state,
+				async track(operation) {
+					state.peak = Math.max(state.peak, ++state.active);
+					if (++state.started === parallelConnections) release();
+					try {
+						await gate;
+						await setImmediate();
+						return await operation();
+					} finally { state.active--; }
+				}
+			};
+		}
+		const preparing = phase();
+		const uploading = phase();
+		let verifying = phase();
+		f.hooks.encrypt = (source, target) => preparing.track(() => fs.copyFile(source, target));
+		f.hooks.beforePut = () => uploading.track(async () => {});
+		f.hooks.hash = (target) => verifying.track(async () => digest(await fs.readFile(f.local(target))));
+		assert.equal((await f.run()).copied, 32);
+		for (const stage of [preparing, uploading, verifying]) {
+			assert.equal(stage.state.peak, parallelConnections);
+			assert.equal(stage.state.active, 0);
+			assert.equal(stage.state.started, 32);
+		}
+		verifying = phase();
+		await f.run({ now: initialTime + week + 1 });
+		assert.equal(verifying.state.peak, parallelConnections);
+		assert.equal(verifying.state.started, 32);
+		assert.equal(verifying.state.active, 0);
+		assert.equal(peakSessions, parallelConnections);
+		assert.equal(activeSessions, 0);
+		assert.equal(f.calls.puts.length, 32);
+		await f.clean();
+	});
 }
 
 test('discovers nested uploads, synchronizes verified immutable objects and reports progress', async (t) => {

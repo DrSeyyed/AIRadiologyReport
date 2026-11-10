@@ -6,12 +6,15 @@ import {
 	getStorageSettings,
 	getStorageConnection,
 	storageDestination,
+	storageParallelConnections,
 	MAX_STORAGE_PARALLEL_CONNECTIONS
 } from './storage-settings.js';
 import { withStorage, storagePath, hashRemote } from './storage-transport.js';
 import { hashLocal } from './storage-audio.js';
 import { syncStorageData } from './storage-sync.js';
 import { uploadStorageFile } from './storage-upload.js';
+import { storageTaskPool } from './storage-file-pool.js';
+import { abortStorageSession, storageRequest } from './storage-session.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { safeRecoveryProgress } from './recovery-progress.js';
 import { prepareStorageRestore } from './storage-restore.js';
@@ -35,13 +38,16 @@ export function queueStorageJob(
 		now = Math.floor(Date.now() / 1000),
 		scheduleKey = null,
 		retryNow = false,
-		backupId = null
+		backupId = null,
+		audioMode = 'download'
 	} = {}
 ) {
 	if (!['test', 'archive', 'full', 'restore'].includes(kind))
 		throw new Error('Invalid storage job.');
 	if (kind === 'restore' && (typeof backupId !== 'string' || !backupIdPattern.test(backupId)))
 		throw new Error('Select a valid recovery point.');
+	if (kind === 'restore' && !['remote', 'download'].includes(audioMode))
+		throw new Error('Select a valid restore audio mode.');
 	return db.transaction(() => {
 		if (storageResetActive(db)) throw new Error('Wait for the storage reset to finish.');
 		if (kind === 'restore' && activeMaintenance(db, 'delete'))
@@ -63,13 +69,13 @@ export function queueStorageJob(
 		if (existing) {
 			if (db.prepare('SELECT 1 FROM storage_job_cancellations WHERE job_id=?').get(existing.id))
 				throw new Error('Wait for cancellation to finish before requesting another job.');
-			if (
-				kind === 'restore' &&
-				db
-					.prepare('SELECT backup_id FROM storage_restore_requests WHERE job_id = ?')
-					.get(existing.id)?.backup_id !== backupId
-			)
-				throw new Error('Wait for the existing restore preparation to finish.');
+			if (kind === 'restore') {
+				const request = db
+					.prepare('SELECT backup_id,audio_mode FROM storage_restore_requests WHERE job_id = ?')
+					.get(existing.id);
+				if (request?.backup_id !== backupId || request.audio_mode !== audioMode)
+					throw new Error('Wait for the existing restore preparation to finish.');
+			}
 			if (retryNow)
 				db.prepare("UPDATE storage_jobs SET retry_at = ? WHERE id = ? AND status = 'failed'").run(
 					now,
@@ -83,10 +89,9 @@ export function queueStorageJob(
 		if (!result.changes) return null;
 		const id = Number(result.lastInsertRowid);
 		if (kind === 'restore')
-			db.prepare('INSERT INTO storage_restore_requests(job_id,backup_id) VALUES(?,?)').run(
-				id,
-				backupId
-			);
+			db.prepare(
+				'INSERT INTO storage_restore_requests(job_id,backup_id,audio_mode) VALUES(?,?,?)'
+			).run(id, backupId, audioMode);
 		return id;
 	})();
 }
@@ -287,25 +292,77 @@ export function scheduleStorageJobs(db, now = Math.floor(Date.now() / 1000)) {
 	}
 }
 
-export async function testStorageConnection(connection, transport = withStorage) {
+export async function testStorageConnection(
+	connection,
+	transport = withStorage,
+	{ owned = () => true, signal } = {}
+) {
+	const concurrency = storageParallelConnections(connection);
 	const directory = await mkdtemp(join(tmpdir(), 'radiology-storage-test-'));
-	const name = `.connection-test-${randomUUID()}`;
+	const controller = new AbortController();
+	const clients = new Set();
+	let failure;
+	const stop = () => {
+		failure ||= new Error('Storage read/write verification failed.');
+		controller.abort();
+		for (const client of clients) abortStorageSession(client);
+	};
+	const assertActive = () => {
+		if (failure || signal?.aborted || typeof owned !== 'function' || owned() !== true) {
+			stop();
+			throw failure;
+		}
+	};
+	const poll = setInterval(() => {
+		try { assertActive(); } catch { stop(); }
+	}, 100);
+	poll.unref();
+	signal?.addEventListener('abort', stop, { once: true });
 	try {
+		assertActive();
 		const local = join(directory, 'probe');
 		await writeFile(local, randomUUID(), { mode: 0o600 });
-		return await transport(connection, async (client) => {
-			await client.mkdir(connection.root, true);
-			const remote = storagePath(connection, name);
+		const digest = await hashLocal(local);
+		const settings = { ...connection, signal: controller.signal };
+		let rootReady;
+		await storageTaskPool(Array.from({ length: concurrency }), concurrency, async () => {
+			let running;
 			try {
-				await uploadStorageFile(client, local, remote, connection);
-				if ((await hashRemote(client, remote, connection)) !== (await hashLocal(local)))
-					throw new Error('Storage read/write verification failed.');
-				return { verified: true };
+				await transport(settings, (client) => {
+					clients.add(client);
+					running = (async () => {
+						assertActive();
+						rootReady ||= storageRequest(client, () => client.mkdir(connection.root, true));
+						await rootReady;
+						assertActive();
+						const remote = storagePath(connection, `.connection-test-${randomUUID()}`);
+						try {
+							await uploadStorageFile(client, local, remote, settings, { assertActive });
+							assertActive();
+							if ((await hashRemote(client, remote, settings)) !== digest)
+								throw new Error('Storage read/write verification failed.');
+							assertActive();
+						} finally {
+							await storageRequest(client, () => client.delete(remote, true));
+						}
+					})();
+					return running;
+				});
+			} catch {
+				stop();
+				throw failure;
 			} finally {
-				await client.delete(remote, true);
+				await running?.catch(() => {});
 			}
-		});
+		}, assertActive);
+		assertActive();
+		return { verified: true };
+	} catch {
+		stop();
+		throw failure;
 	} finally {
+		clearInterval(poll);
+		signal?.removeEventListener('abort', stop);
 		await rm(directory, { recursive: true, force: true });
 	}
 }
@@ -456,22 +513,27 @@ export async function processStorageJob(
 					: result.deleted !== result.total)
 			)
 				throw new Error('Invalid storage maintenance result.');
-		} else if (job.kind === 'test') result = await testConnection(connection);
+		} else if (job.kind === 'test') result = await testConnection(connection, undefined, { owned });
 		else if (db.prepare('SELECT 1 FROM storage_reset_requests WHERE job_id=?').get(job.id)) {
 			result = await resetStorage(db, connection, { jobId: job.id, owned });
 		} else if (job.kind === 'restore') {
 			const request = db
-				.prepare('SELECT backup_id FROM storage_restore_requests WHERE job_id = ?')
+				.prepare('SELECT backup_id,audio_mode FROM storage_restore_requests WHERE job_id = ?')
 				.get(job.id);
-			if (!request || !backupIdPattern.test(request.backup_id))
+			if (
+				!request ||
+				!backupIdPattern.test(request.backup_id) ||
+				!['remote', 'download'].includes(request.audio_mode)
+			)
 				throw new Error('Invalid restore request.');
 			let latestProgress;
 			let lastProgressAt = -Infinity;
 			let completionReported = false;
 			const onProgress = (progress) => {
 				if (!owned()) return;
-				const safe = safeRestoreProgress(progress);
-				if (!safe) return;
+				const progressCounts = safeRestoreProgress(progress);
+				if (!progressCounts) return;
+				const safe = { ...progressCounts, audioMode: request.audio_mode };
 				latestProgress = safe;
 				const time = Date.now();
 				if (time - lastProgressAt < 1_000 && (safe.phase !== 'complete' || completionReported))
@@ -499,6 +561,7 @@ export async function processStorageJob(
 			});
 			result = await prepareRestore(connection, {
 				backupId: request.backup_id,
+				audioMode: request.audio_mode,
 				owned,
 				onProgress
 			});
@@ -508,6 +571,10 @@ export async function processStorageJob(
 				phase: 'complete',
 				id: request.backup_id,
 				restoreId: result.restoreId,
+				audioMode: request.audio_mode,
+				...(Number.isSafeInteger(result.remoteAudioFiles) && result.remoteAudioFiles >= 0
+					? { remoteAudioFiles: result.remoteAudioFiles }
+					: {}),
 				...(Number.isSafeInteger(result.files) && result.files >= 0 ? { files: result.files } : {})
 			};
 		} else if (job.kind === 'archive')
@@ -632,11 +699,12 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested,
 			(SELECT operation FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AS maintenance,
 			EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS isReset,
+			COALESCE((SELECT audio_mode FROM storage_restore_requests r WHERE r.job_id=storage_jobs.id),'download') AS restoreAudioMode,
 			(SELECT phase||': audio '||restored||'/'||total||', remote files removed '||deleted FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS progress
 			FROM storage_jobs WHERE NOT EXISTS(SELECT 1 FROM storage_job_log_hidden h WHERE h.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 30`
 		)
 		.all()
-		.map(({ result, cancelRequested, maintenance, isReset, ...job }) => {
+		.map(({ result, cancelRequested, maintenance, isReset, restoreAudioMode, ...job }) => {
 			const displayedKind = maintenance || (job.kind === 'restore' && isReset ? 'reset' : job.kind);
 			let backupId = null;
 			let restoreDirectory = null;
@@ -680,7 +748,9 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 				if (!maintenance && displayedKind === 'restore') {
 					const progress = safeRestoreProgress(parsed);
 					if (progress)
-						job.progress = `Phase: ${progress.phase}; objects downloaded: ${progress.downloadedObjects}/${progress.totalObjects}; files restored and verified: ${progress.restoredFiles}/${progress.totalFiles}. Downloaded: ${(progress.downloadedBytes / (1024 * 1024)).toFixed(2)} MiB; remote checksum reads: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB; elapsed: ${progress.elapsedSeconds}s. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+						job.progress = `Phase: ${progress.phase}; objects downloaded: ${progress.downloadedObjects}/${progress.totalObjects}; local files restored and verified: ${progress.restoredFiles}/${progress.totalFiles}. Downloaded: ${(progress.downloadedBytes / (1024 * 1024)).toFixed(2)} MiB; remote checksum reads: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB; elapsed: ${progress.elapsedSeconds}s. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+					if (Number.isSafeInteger(parsed?.remoteAudioFiles) && parsed.remoteAudioFiles >= 0)
+						job.remoteAudioFiles = parsed.remoteAudioFiles;
 				}
 				if (!maintenance && typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id))
 					backupId = parsed.id;
@@ -698,6 +768,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			return {
 				...job,
 				kind: displayedKind,
+				...(displayedKind === 'restore' ? { audioMode: restoreAudioMode } : {}),
 				status: cancelRequested
 					? job.status === 'running'
 						? 'cancelling'
@@ -713,14 +784,23 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 		});
 	const preparedRestores = db
 		.prepare(
-			"SELECT id,finished_at,result FROM storage_jobs WHERE kind='restore' AND status='succeeded' AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 10"
+			"SELECT id,finished_at,result,COALESCE((SELECT audio_mode FROM storage_restore_requests r WHERE r.job_id=storage_jobs.id),'download') AS audioMode FROM storage_jobs WHERE kind='restore' AND status='succeeded' AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 10"
 		)
 		.all()
 		.flatMap(({ result, ...job }) => {
 			try {
-				const restoreId = JSON.parse(result)?.restoreId;
+				const parsed = JSON.parse(result);
+				const restoreId = parsed?.restoreId;
 				return typeof restoreId === 'string' && restoreIdPattern.test(restoreId)
-					? [{ ...job, directory: `restore-staging/${restoreId}` }]
+					? [
+							{
+								...job,
+								directory: `restore-staging/${restoreId}`,
+								...(Number.isSafeInteger(parsed.remoteAudioFiles) && parsed.remoteAudioFiles >= 0
+									? { remoteAudioFiles: parsed.remoteAudioFiles }
+									: {})
+							}
+						]
 					: [];
 			} catch {
 				return [];

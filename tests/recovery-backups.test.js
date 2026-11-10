@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import * as fs from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { BUNDLE_BYTES } from '../src/lib/server/recovery-bundles.js';
@@ -741,6 +742,77 @@ async function savedArchive(f, { referenced = true, keepLocal = false } = {}) {
 	return { original, source, encrypted, object };
 }
 
+for (const limit of [1, 2, 4]) {
+	test(
+		`legacy archive collection downloads with ${limit} total bounded sessions`,
+		{ timeout: 10000 },
+		async (t) => {
+			const f = await fixture(t);
+			const archives = [];
+			for (let index = 0; index < limit + 1; index++) archives.push(await savedArchive(f));
+			let release;
+			const gate = new Promise((resolve) => {
+				release = resolve;
+			});
+			let active = 0;
+			let peak = 0;
+			let arrivals = 0;
+			let sessions = 0;
+			let peakSessions = 0;
+			const deps = {
+				...f.deps,
+				async withStorage(settings, callback) {
+					assert.equal(settings.parallelConnections, limit);
+					peakSessions = Math.max(peakSessions, ++sessions);
+					const client = Object.create(f.client);
+					client.createReadStream = (target) => {
+						if (!target.includes('/audio/')) return f.client.createReadStream(target);
+						return Readable.from(
+							(async function* () {
+								peak = Math.max(peak, ++active);
+								if (++arrivals === limit) release();
+								try {
+									await gate;
+									yield await fs.readFile(path.join(f.remote, 'audio', target.split('/').at(-1)));
+								} finally {
+									active--;
+								}
+							})()
+						);
+					};
+					try {
+						return await callback(client);
+					} finally {
+						sessions--;
+					}
+				}
+			};
+			const backup = await backupRecovery(
+				f.db,
+				{ ...connection, parallelConnections: limit },
+				{ ...f.options, kind: 'full' },
+				deps
+			);
+			assert.equal(peak, limit);
+			assert.equal(peakSessions, limit);
+			assert.equal(active, 0);
+			assert.equal(sessions, 0);
+			assert.equal(arrivals, archives.length);
+			await fs.rm(path.join(f.remote, 'audio'), { recursive: true });
+			const restore = f.restoreOptions(backup);
+			await restoreRecovery(restore, f.deps);
+			for (const archive of archives)
+				assert.equal(
+					await fs.readFile(
+						path.join(restore.outputDirectory, ...archive.original.split('/')),
+						'utf8'
+					),
+					'saved archive payload'
+				);
+		}
+	);
+}
+
 test('database snapshots include archived referenced audio and full snapshots include unreferenced saved archives', async (t) => {
 	const f = await fixture(t);
 	const referenced = await savedArchive(f);
@@ -1024,8 +1096,14 @@ test('restore pauses storage and clears all job and lease history while retainin
 		);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_jobs').get().n, 0);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_worker_lock').get().n, 0);
-		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_maintenance_requests').get().n, 0);
-		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_deleted_recovery_points').get().n, 0);
+		assert.equal(
+			restored.prepare('SELECT count(*) AS n FROM storage_maintenance_requests').get().n,
+			0
+		);
+		assert.equal(
+			restored.prepare('SELECT count(*) AS n FROM storage_deleted_recovery_points').get().n,
+			0
+		);
 		assert.equal(restored.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 0);
 		assert.equal(restored.pragma('integrity_check', { simple: true }), 'ok');
 	} finally {

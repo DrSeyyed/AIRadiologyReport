@@ -5,6 +5,8 @@ import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip, createGunzip } from 'node:zlib';
+import { storageTaskPool } from './storage-file-pool.js';
+import { storageParallelConnections } from './storage-settings.js';
 
 export const BUNDLE_BYTES = 256 * 1024 * 1024;
 export const MAX_RECOVERY_BYTES = 1024 ** 4;
@@ -68,8 +70,12 @@ export function bundleWriter(work, manifest, publish, limit = BUNDLE_BYTES) {
 	};
 }
 
-export function recoveryObjects(manifest) {
-	return manifest.version === 2 ? manifest.bundles : manifest.files;
+export function recoveryObjects(manifest, files = manifest.files) {
+	return manifest.version === 2
+		? [...new Set(files.flatMap((entry) => entry.parts.map((part) => part.bundle)))]
+				.sort((a, b) => a - b)
+				.map((index) => manifest.bundles[index])
+		: files;
 }
 
 export function objectDownloadBytes(manifest, object) {
@@ -83,70 +89,101 @@ export async function unpackBundles(
 	work,
 	decrypt,
 	checkObject,
-	{ activity = () => {}, verifiedFile = () => {}, phase = () => {} } = {}
+	{
+		activity = () => {},
+		verifiedFile = () => {},
+		phase = () => {},
+		assertActive = () => {},
+		parallelConnections,
+		files = manifest.files
+	} = {}
 ) {
+	const concurrency = storageParallelConnections({ parallelConnections });
 	const ranges = manifest.bundles.map(() => []);
-	for (const entry of manifest.files) {
+	for (const entry of files) {
 		const target = path.join(restored, ...entry.path.split('/'));
-		await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-		await fs.writeFile(target, '', { flag: 'wx', mode: 0o600 });
-		for (const part of entry.parts)
-			ranges[part.bundle].push({ target, offset: part.offset, bytes: part.bytes });
-		activity();
-	}
-	for (const [index, bundle] of manifest.bundles.entries()) {
-		const object = path.join(objectsDirectory, bundle.object);
-		await checkObject(object, bundle);
-		const compressed = path.join(work, 'restore.gz');
-		const raw = path.join(work, 'restore.raw');
-		try {
-			await decrypt(object, compressed);
-			if ((await fs.stat(compressed)).size !== bundle.compressedBytes)
-				throw new Error('Invalid recovery bundle.');
-			phase('verifying');
-			let bytes = 0;
-			const hash = createHash('sha256');
-			await pipeline(
-				createReadStream(compressed),
-				createGunzip(),
-				new Transform({
-					transform(chunk, _encoding, callback) {
-						bytes += chunk.length;
-						if (bytes > bundle.bytes)
-							return callback(new Error('Recovery decompression limit exceeded.'));
-						hash.update(chunk);
-						try {
-							activity();
-							callback(null, chunk);
-						} catch (error) {
-							callback(error);
-						}
-					}
-				}),
-				createWriteStream(raw, { flags: 'wx', mode: 0o600 })
-			);
-			if (bytes !== bundle.bytes || hash.digest('hex') !== bundle.sha256)
-				throw new Error('Invalid recovery bundle.');
-			for (const part of ranges[index]) {
-				await pipeline(
-					createReadStream(raw, { start: part.offset, end: part.offset + part.bytes - 1 }),
-					createWriteStream(part.target, { flags: 'a', mode: 0o600 })
-				);
-				activity();
-			}
-		} finally {
-			await fs.rm(compressed, { force: true });
-			await fs.rm(raw, { force: true });
+		let start = 0;
+		for (const part of entry.parts) {
+			ranges[part.bundle].push({ target, start, offset: part.offset, bytes: part.bytes });
+			start += part.bytes;
 		}
 	}
+	await storageTaskPool(
+		files,
+		concurrency,
+		async (entry) => {
+			const target = path.join(restored, ...entry.path.split('/'));
+			await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+			await fs.writeFile(target, '', { flag: 'wx', mode: 0o600 });
+			activity();
+		},
+		assertActive
+	);
+	await storageTaskPool(
+		[...manifest.bundles.entries()].filter(([index]) => ranges[index].length),
+		concurrency,
+		async ([index, bundle]) => {
+			const object = path.join(objectsDirectory, bundle.object);
+			await checkObject(object, bundle);
+			const compressed = path.join(work, `restore-${index}.gz`);
+			const raw = path.join(work, `restore-${index}.raw`);
+			try {
+				await decrypt(object, compressed);
+				if ((await fs.stat(compressed)).size !== bundle.compressedBytes)
+					throw new Error('Invalid recovery bundle.');
+				phase('verifying');
+				let bytes = 0;
+				const hash = createHash('sha256');
+				await pipeline(
+					createReadStream(compressed),
+					createGunzip(),
+					new Transform({
+						transform(chunk, _encoding, callback) {
+							bytes += chunk.length;
+							if (bytes > bundle.bytes)
+								return callback(new Error('Recovery decompression limit exceeded.'));
+							hash.update(chunk);
+							try {
+								activity();
+								callback(null, chunk);
+							} catch (error) {
+								callback(error);
+							}
+						}
+					}),
+					createWriteStream(raw, { flags: 'wx', mode: 0o600 })
+				);
+				if (bytes !== bundle.bytes || hash.digest('hex') !== bundle.sha256)
+					throw new Error('Invalid recovery bundle.');
+				for (const part of ranges[index]) {
+					await assertActive();
+					// Bundles may span the same file: write disjoint authenticated offsets, never append.
+					await pipeline(
+						createReadStream(raw, { start: part.offset, end: part.offset + part.bytes - 1 }),
+						createWriteStream(part.target, { flags: 'r+', start: part.start, mode: 0o600 })
+					);
+					activity();
+				}
+			} finally {
+				await fs.rm(compressed, { force: true });
+				await fs.rm(raw, { force: true });
+			}
+		},
+		assertActive
+	);
 	phase('verifying');
-	for (const entry of manifest.files) {
-		const target = path.join(restored, ...entry.path.split('/'));
-		if (
-			(await fs.stat(target)).size !== entry.bytes ||
-			(await fileDigest(target, activity)) !== entry.sha256
-		)
-			throw new Error('Invalid recovery file.');
-		verifiedFile();
-	}
+	await storageTaskPool(
+		files,
+		concurrency,
+		async (entry) => {
+			const target = path.join(restored, ...entry.path.split('/'));
+			if (
+				(await fs.stat(target)).size !== entry.bytes ||
+				(await fileDigest(target, activity)) !== entry.sha256
+			)
+				throw new Error('Invalid recovery file.');
+			verifiedFile();
+		},
+		assertActive
+	);
 }

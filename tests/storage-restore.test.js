@@ -8,7 +8,9 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
 import Database from 'better-sqlite3';
-import { backupRecovery } from '../src/lib/server/recovery-backups.js';
+import { backupRecovery, restoreRecovery, recoveryAudioPlan } from '../src/lib/server/recovery-backups.js';
+import { storageDestination, getStorageConnection } from '../src/lib/server/storage-settings.js';
+import { withAudioFile } from '../src/lib/server/storage-audio.js';
 import { ensureStorageFileState } from '../src/lib/server/storage-file-state.js';
 import { decryptFile, encryptFile } from '../src/lib/server/storage-crypto.js';
 import { hashRemote, storagePath } from '../src/lib/server/storage-transport.js';
@@ -19,10 +21,11 @@ const connection = {
 	username: 'backup',
 	password: 'private-password',
 	root: '/vault',
-	fingerprint: 'private-fingerprint'
+	port: 22,
+	fingerprint: `SHA256:${Buffer.alloc(32, 1).toString('base64').replace(/=+$/, '')}`
 };
 
-async function fixture(t) {
+async function fixture(t, { archived = false, bundleBytes } = {}) {
 	const root = path.join(process.cwd(), 'tests', `.storage-restore-${randomUUID()}`);
 	const app = path.join(root, 'app');
 	const remote = path.join(root, 'remote');
@@ -59,7 +62,8 @@ async function fixture(t) {
 	db.prepare(
 		'INSERT INTO storage_file_objects(destination,object_key,sha256,remote_sha256,bytes,encrypted_bytes,created_at,verified_at) VALUES(?,?,?,?,?,?,?,?)'
 	).run('old', 'old.enc', 'old', 'old', 1, 1, 1, 1);
-	await fs.writeFile(path.join(app, 'uploads', 'audio.ogg'), 'audio payload');
+	const archivedContent = archived ? 'old audio payload'.repeat(20000) : 'audio payload';
+	await fs.writeFile(path.join(app, 'uploads', 'audio.ogg'), archivedContent);
 	await fs.writeFile(path.join(app, 'uploads', 'report.md'), 'report payload');
 	await fs.writeFile(path.join(app, 'uploads', 'unreferenced.ogg'), 'extra audio');
 	db.prepare('INSERT INTO study_recordings VALUES(1,?,?)').run(
@@ -120,10 +124,33 @@ async function fixture(t) {
 			return callback(client);
 		}
 	};
+	const archiveObjects = [];
+	if (archived) {
+		db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(JSON.stringify({
+			enabled: true, archiveEnabled: true, backupsEnabled: true,
+			...Object.fromEntries(['host', 'port', 'username', 'root', 'fingerprint'].map((key) => [key, connection[key]]))
+		}));
+		await fs.mkdir(path.join(remote, 'audio'));
+		for (const original of [path.join(app, 'uploads', 'audio.ogg'), 'uploads/unreferenced.ogg']) {
+			const source = path.resolve(app, original);
+			const bytes = await fs.readFile(source);
+			const object = `${randomUUID()}.enc`;
+			const encrypted = path.join(remote, 'audio', object);
+			await encryptFile(source, encrypted);
+			db.prepare('INSERT INTO storage_audio VALUES(?,?,?,?,?,?,?,?)').run(original, object,
+				createHash('sha256').update(bytes).digest('hex'),
+				createHash('sha256').update(await fs.readFile(encrypted)).digest('hex'),
+				bytes.length, 1700000000, 1700000001, storageDestination(connection));
+			await fs.unlink(source);
+			archiveObjects.push(object);
+		}
+	}
+	deps.hashStorageFile = async (_client, file) =>
+		createHash('sha256').update(await fs.readFile(local(file))).digest('hex');
 	const backup = await backupRecovery(
 		db,
 		connection,
-		{ cwd: app, now: 1800000000, kind: 'full', env: {}, format: 'concat-gzip-v1' },
+		{ cwd: app, now: 1800000000, kind: 'full', env: {}, format: 'concat-gzip-v1', bundleBytes },
 		deps
 	);
 	downloads.length = 0;
@@ -162,6 +189,8 @@ async function fixture(t) {
 		deps,
 		backup,
 		manifest,
+		archiveObjects,
+		archivedContent,
 		encryptedManifest,
 		downloads,
 		calls,
@@ -222,8 +251,8 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 	assert.equal(result.id, f.backup.id);
 	assert.ok(isStorageRestoreId(result.restoreId));
 	assert.equal(result.files, f.manifest.files.length);
-	assert.equal(f.calls.length, 1);
-	assert.equal(f.calls[0].operationTimeoutMs, 21_600_000);
+	assert.equal(f.calls.length, Math.min(4, f.manifest.bundles.length));
+	assert.ok(f.calls.every((config) => config.operationTimeoutMs === 21_600_000));
 	const staging = path.join(f.app, 'restore-staging', result.restoreId);
 	assert.deepEqual(await fs.readdir(path.dirname(staging)), [result.restoreId]);
 	assert.equal(
@@ -606,8 +635,7 @@ test('local staging directory links are rejected without touching their targets'
 	assert.equal(f.calls.length, 0);
 });
 
-test('remote preparation downloads and restores legacy v1 independent objects', async (t) => {
-	const f = await fixture(t);
+async function independentObjects(f) {
 	const raw = [];
 	for (const bundle of f.manifest.bundles) {
 		const plain = path.join(f.root, `${randomUUID()}.gz`);
@@ -635,6 +663,12 @@ test('remote preparation downloads and restores legacy v1 independent objects', 
 	delete f.manifest.bundles;
 	delete f.manifest.format;
 	await f.replaceManifest(f.manifest);
+	f.downloads.length = 0;
+}
+
+test('remote preparation downloads and restores legacy v1 independent objects', async (t) => {
+	const f = await fixture(t);
+	await independentObjects(f);
 	const result = await prepareStorageRestore(connection, { backupId: f.backup.id }, f.deps);
 	assert.equal(
 		await fs.readFile(
@@ -643,6 +677,375 @@ test('remote preparation downloads and restores legacy v1 independent objects', 
 		),
 		'audio payload'
 	);
+});
+
+for (const limit of [1, 2, 4]) {
+	test(
+		`restore uses ${limit} bounded transfer/local slots and retains restored data`,
+		{ timeout: 10000 },
+		async (t) => {
+			const f = await fixture(t);
+			const expected = Math.min(limit, f.manifest.bundles.length);
+			let sessions = 0;
+			let peakSessions = 0;
+			const phases = new Map(
+				['download', 'decrypt'].map((phase) => {
+					let release;
+					const gate = new Promise((resolve) => {
+						release = resolve;
+					});
+					return [phase, { active: 0, peak: 0, arrivals: 0, gate, release }];
+				})
+			);
+			async function tracked(phase, operation) {
+				const state = phases.get(phase);
+				state.peak = Math.max(state.peak, ++state.active);
+				if (++state.arrivals === expected) state.release();
+				try {
+					await state.gate;
+					return await operation();
+				} finally {
+					state.active--;
+				}
+			}
+			const result = await prepareStorageRestore(
+				{ ...connection, parallelConnections: limit },
+				{ backupId: f.backup.id },
+				{
+					...f.deps,
+					async withStorage(settings, callback) {
+						assert.equal(settings.parallelConnections, limit);
+						assert.equal(settings.fingerprint, connection.fingerprint);
+						peakSessions = Math.max(peakSessions, ++sessions);
+						try {
+							return await callback(Object.create(f.client));
+						} finally {
+							sessions--;
+						}
+					},
+					hashRemote(client, target, settings) {
+						const operation = () => hashRemote(client, target, settings);
+						return target.includes('/objects/') ? tracked('download', operation) : operation();
+					},
+					decryptFile(source, target) {
+						const operation = () => decryptFile(source, target);
+						return path.dirname(source).endsWith('objects')
+							? tracked('decrypt', operation)
+							: operation();
+					}
+				}
+			);
+			assert.equal(peakSessions, expected, 'coordinator is included in the session cap');
+			assert.equal(sessions, 0);
+			for (const state of phases.values()) {
+				assert.equal(state.peak, expected);
+				assert.equal(state.active, 0);
+			}
+			assert.ok(isStorageRestoreId(result.restoreId));
+			assert.equal(
+				await fs.readFile(
+					path.join(f.app, 'restore-staging', result.restoreId, 'uploads', 'audio.ogg'),
+					'utf8'
+				),
+				'audio payload'
+			);
+		}
+	);
+}
+
+test(
+	'restore preparation drains a coordinator callback that outlives its transport',
+	{ timeout: 10000 },
+	async (t) => {
+		const f = await fixture(t);
+		let release;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		let ready;
+		const started = new Promise((resolve) => {
+			ready = resolve;
+		});
+		let active = 0;
+		let sessions = 0;
+		let returned = false;
+		const operation = prepareStorageRestore(
+			{ ...connection, parallelConnections: 2 },
+			{ backupId: f.backup.id },
+			{
+				...f.deps,
+				async withStorage(_settings, callback) {
+					const coordinator = ++sessions === 1;
+					const running = callback(Object.create(f.client));
+					running.catch(() => {});
+					if (coordinator) {
+						await started;
+						throw new Error('private transport failure');
+					}
+					return running;
+				},
+				async hashRemote(client, target, settings) {
+					if (!target.includes('/objects/')) return hashRemote(client, target, settings);
+					active++;
+					if (active === 2) ready();
+					try {
+						await gate;
+						return await hashRemote(client, target, settings);
+					} finally {
+						active--;
+					}
+				}
+			}
+		).finally(() => {
+			returned = true;
+		});
+		const rejected = assert.rejects(operation, { message: 'Storage restore preparation failed.' });
+		await started;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(returned, false);
+		assert.equal(active, 2);
+		assert.equal((await fs.readdir(path.join(f.app, 'restore-staging'))).length, 1);
+		release();
+		await rejected;
+		assert.equal(active, 0);
+		await f.clean();
+	}
+);
+
+for (const version of [1, 2]) {
+	for (const audioMode of ['remote', 'download']) {
+		test(`v${version} ${audioMode} restore preserves the selected audio placement`, async (t) => {
+			const f = await fixture(t, { archived: true, bundleBytes: 64 * 1024 });
+			if (version === 1) await independentObjects(f);
+			const before = await Promise.all(
+				f.archiveObjects.map((object) => fs.readFile(path.join(f.remote, 'audio', object)))
+			);
+			const result = await prepareStorageRestore(
+				connection,
+				{ backupId: f.backup.id, audioMode },
+				f.deps
+			);
+			const staging = path.join(f.app, 'restore-staging', result.restoreId);
+			const database = new Database(path.join(staging, 'db', 'pacs.db'));
+			try {
+				assert.equal(result.audioMode, audioMode);
+				assert.equal(result.remoteAudioFiles, audioMode === 'remote' ? 2 : 0);
+				assert.equal(result.files + result.remoteAudioFiles, f.manifest.files.length);
+				assert.equal(
+					await fs.readFile(path.join(staging, 'uploads', 'report.md'), 'utf8'),
+					'report payload'
+				);
+				const audio = path.join(staging, 'uploads', 'audio.ogg');
+				if (audioMode === 'remote') {
+					await assert.rejects(fs.stat(audio), { code: 'ENOENT' });
+					await assert.rejects(fs.stat(path.join(staging, 'uploads', 'unreferenced.ogg')), {
+						code: 'ENOENT'
+					});
+					assert.equal(database.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 2);
+					const saved = database
+						.prepare('SELECT * FROM storage_audio WHERE path=?')
+						.get('uploads/audio.ogg');
+					assert.equal(saved.bytes, Buffer.byteLength(f.archivedContent));
+					assert.equal(saved.destination, storageDestination(connection));
+					assert.equal(getStorageConnection(database).password, connection.password);
+					assert.equal(getStorageConnection(database).enabled, false);
+					assert.equal(
+						database.prepare('SELECT audio_report_path FROM study_recordings').get()
+							.audio_report_path,
+						'uploads/audio.ogg'
+					);
+					const previous = process.cwd();
+					try {
+						process.chdir(staging);
+						assert.equal(
+							await withAudioFile(
+								database,
+								'uploads/audio.ogg',
+								(file) => fs.readFile(file, 'utf8'),
+								{ transport: f.deps.withStorage }
+							),
+							f.archivedContent
+						);
+					} finally {
+						process.chdir(previous);
+					}
+					assert.ok(!f.downloads.some((file) => file.startsWith('/vault/audio/')));
+					const needed = new Set(
+						f.manifest.files
+							.filter((entry) => entry.role !== 'audio')
+							.flatMap((entry) =>
+								version === 1
+									? [entry.object]
+									: entry.parts.map((part) => f.manifest.bundles[part.bundle].object)
+							)
+					);
+					for (const file of f.downloads.filter((file) => file.includes('/objects/')))
+						assert.ok(
+							needed.has(path.posix.basename(file)),
+							'audio-only objects must not be downloaded'
+						);
+				} else {
+					assert.equal(await fs.readFile(audio, 'utf8'), f.archivedContent);
+					assert.equal(database.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 0);
+				}
+				assert.deepEqual(
+					await Promise.all(
+						f.archiveObjects.map((object) => fs.readFile(path.join(f.remote, 'audio', object)))
+					),
+					before
+				);
+			} finally {
+				database.close();
+			}
+		});
+	}
+}
+
+for (const kind of ['missing', 'corrupt', 'symlink']) {
+	test(`remote audio restore fails closed for ${kind} original archives without downloading them`, async (t) => {
+		const f = await fixture(t, { archived: true });
+		await independentObjects(f);
+		const object = path.join(f.remote, 'audio', f.archiveObjects[0]);
+		if (kind === 'missing') await fs.unlink(object);
+		if (kind === 'corrupt') {
+			const bytes = await fs.readFile(object);
+			bytes[bytes.length - 1] ^= 1;
+			await fs.writeFile(object, bytes);
+		}
+		if (kind === 'symlink') {
+			const lstat = f.client.lstat;
+			f.client.lstat = (file) =>
+				file.endsWith(`/audio/${f.archiveObjects[0]}`)
+					? Promise.resolve({ type: 'l' })
+					: lstat(file);
+		}
+		await f.reject({ audioMode: 'remote' });
+		assert.ok(!f.downloads.some((file) => file.startsWith('/vault/audio/')));
+		assert.equal(f.db.prepare('SELECT count(*) AS n FROM storage_audio').get().n, 2);
+	});
+}
+
+test('remote audio planning rejects a different destination and restore rejects forged omissions', async (t) => {
+	const f = await fixture(t, { archived: true });
+	await independentObjects(f);
+	assert.throws(() => recoveryAudioPlan(f.manifest, f.db.name, { ...connection, root: '/other' }));
+	const remoteAudio = recoveryAudioPlan(f.manifest, f.db.name, connection);
+	remoteAudio[0].path = 'uploads/report.md';
+	await assert.rejects(
+		restoreRecovery({
+			manifestFile: f.encryptedManifest,
+			objectsDirectory: path.join(f.remote, 'backups', 'objects'),
+			outputDirectory: path.join(f.root, 'forged'),
+			audioMode: 'remote',
+			remoteAudio,
+			remoteConnection: connection
+		}),
+		{ message: 'Recovery restore failed. Output was not published.' }
+	);
+	await assert.rejects(fs.stat(path.join(f.root, 'forged')), { code: 'ENOENT' });
+});
+
+test('restore rejects invalid audio modes before opening storage', async (t) => {
+	const f = await fixture(t);
+	for (const audioMode of ['', 'skip', null, true])
+		await assert.rejects(
+			prepareStorageRestore(connection, { backupId: f.backup.id, audioMode }, f.deps),
+			{ message: 'Storage restore preparation failed.' }
+		);
+	assert.equal(f.calls.length, 0);
+});
+
+test('remote mode restores non-archived audio locally', async (t) => {
+	const f = await fixture(t);
+	const result = await prepareStorageRestore(
+		connection,
+		{ backupId: f.backup.id, audioMode: 'remote' },
+		f.deps
+	);
+	assert.equal(result.remoteAudioFiles, 0);
+	assert.equal(result.files, f.manifest.files.length);
+	assert.equal(
+		await fs.readFile(
+			path.join(f.app, 'restore-staging', result.restoreId, 'uploads', 'unreferenced.ogg'),
+			'utf8'
+		),
+		'extra audio'
+	);
+});
+
+for (const limit of [1, 4, 16]) {
+	test(`remote audio verification uses at most ${limit} connections and drains on failure`, async (t) => {
+		const f = await fixture(t, { archived: true });
+		let sessions = 0;
+		let active = 0;
+		let peak = 0;
+		let hashing = 0;
+		let lateWrites = 0;
+		let settled = false;
+		const deps = {
+			...f.deps,
+			withStorage: async (_connection, operation) => {
+				sessions += 1;
+				active += 1;
+				peak = Math.max(peak, active);
+				try {
+					return await operation({ ...f.client });
+				} finally {
+					active -= 1;
+				}
+			},
+			hashStorageFile: async (client, remotePath) => {
+				hashing += 1;
+				try {
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					if (settled) lateWrites += 1;
+					if (remotePath.endsWith(f.archiveObjects[0]))
+						throw new Error('Archive verification failed.');
+					return await f.deps.hashStorageFile(client, remotePath);
+				} finally {
+					hashing -= 1;
+				}
+			}
+		};
+		await assert.rejects(
+			prepareStorageRestore(
+				{ ...connection, parallelConnections: limit },
+				{ backupId: f.backup.id, audioMode: 'remote' },
+				deps
+			),
+			{ message: 'Storage restore preparation failed.' }
+		);
+		settled = true;
+		await f.clean();
+		assert.equal(active, 0);
+		assert.equal(hashing, 0);
+		assert.equal(peak, Math.min(limit, f.archiveObjects.length));
+		assert.ok(sessions > 0);
+		await new Promise((resolve) => setTimeout(resolve, 45));
+		assert.equal(lateWrites, 0);
+	});
+}
+
+test('lost ownership during remote archive checks drains hashing before staging cleanup', async (t) => {
+	const f = await fixture(t, { archived: true });
+	let owned = true;
+	let hashing = 0;
+	const deps = {
+		...f.deps,
+		withStorage: async (_connection, operation) => operation({ ...f.client }),
+		hashStorageFile: async (client, remotePath) => {
+			hashing += 1;
+			owned = false;
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				return await f.deps.hashStorageFile(client, remotePath);
+			} finally {
+				hashing -= 1;
+			}
+		}
+	};
+	await f.reject({ audioMode: 'remote', owned: () => owned }, deps);
+	assert.equal(hashing, 0);
 });
 
 test('remote preparation rejects authenticated oversized bundle declarations before object download', async (t) => {

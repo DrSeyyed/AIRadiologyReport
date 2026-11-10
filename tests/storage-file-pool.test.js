@@ -1,7 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
-import { storageFilePool } from '../src/lib/server/storage-file-pool.js';
+import { storageFilePool, storageTaskPool } from '../src/lib/server/storage-file-pool.js';
+
+for (const concurrency of [undefined, 1, 4, 16]) {
+	test(`local task pool bounds independent work to ${concurrency ?? 'default 4'}`, async () => {
+		let active = 0;
+		let peak = 0;
+		const processed = [];
+		await storageTaskPool(Array.from({ length: 24 }, (_, index) => index), concurrency,
+			async (item, index) => {
+				assert.equal(item, index);
+				peak = Math.max(peak, ++active);
+				await setImmediate();
+				processed.push(item);
+				active--;
+			});
+		assert.equal(active, 0);
+		assert.equal(peak, concurrency ?? 4);
+		assert.deepEqual(processed.sort((a, b) => a - b), Array.from({ length: 24 }, (_, i) => i));
+	});
+}
+
+for (const cancel of [false, true]) {
+	test(`local task pool drains ${cancel ? 'cancelled' : 'failed'} work without starting more`, async () => {
+		let active = 0;
+		let started = 0;
+		let stopped = false;
+		const error = new Error('Stopped');
+		await assert.rejects(storageTaskPool(Array.from({ length: 40 }, (_, i) => i), 4,
+			async (item) => {
+				active++;
+				started++;
+				try {
+					await setImmediate();
+					if (item === 0) {
+						stopped = true;
+						if (!cancel) throw error;
+					}
+				} finally { active--; }
+			}, () => { if (cancel && stopped) throw error; }), error);
+		assert.equal(started, 4);
+		assert.equal(active, 0);
+	});
+}
+
+test('local task pool validates bounds before any work, including empty batches', async () => {
+	for (const concurrency of [0, 17, -1, 1.5, '4', null, NaN, Infinity])
+		await assert.rejects(storageTaskPool([], concurrency, () => assert.fail('Unexpected work')), /1–16/);
+	await storageTaskPool([], 16, () => assert.fail('Unexpected work'));
+	await assert.rejects(storageTaskPool([1], 1, () => assert.fail('Unexpected work'),
+		() => { throw new Error('Lost ownership'); }), /Lost ownership/);
+});
 
 for (const selected of [undefined, 1, 4, 8, 16]) {
 	for (const count of [0, 2, 20]) {

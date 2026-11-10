@@ -232,18 +232,19 @@ export const actions = {
 			const form = await request.formData();
 			if (field(form, 'confirmation') !== 'prepare') throw new Error();
 			const backupId = field(form, 'backupId');
+			const audioMode = form.has('audioMode') ? field(form, 'audioMode') : 'download';
 			const db = getDb();
 			const connection = getStorageConnection(db);
 			normalizeStorageSettings({ ...getStorageSettings(db), enabled: true });
 			if (!connection.password) throw new Error();
-			const id = queueStorageJob(db, 'restore', { backupId, retryNow: true });
+			const id = queueStorageJob(db, 'restore', { backupId, audioMode, retryNow: true });
 			return {
 				message: `Restore preparation job ${id} queued. Refresh status for the verified copy's location. The live site will not be replaced; activation requires a server administrator.`
 			};
 		} catch {
 			return fail(400, {
 				error:
-					'Unable to prepare restore. Select a valid completed recovery point, confirm preparation and check the saved connection. Wait for existing restore preparation or backup deletion to finish.'
+					'Unable to prepare restore. Select a valid completed recovery point and audio mode, confirm preparation and check the saved connection. Wait for existing restore preparation or backup deletion to finish.'
 			});
 		}
 	},

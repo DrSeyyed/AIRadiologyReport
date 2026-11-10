@@ -88,6 +88,11 @@ export function initializeSchema(db, schema, { resetTestStudies = false } = {}) 
 				)
 					db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
 			}
+			addColumn(
+				'storage_restore_requests',
+				'audio_mode',
+				"TEXT NOT NULL DEFAULT 'download' CHECK (audio_mode IN ('remote', 'download'))"
+			);
 			addColumn('studies', 'study_key', "TEXT NOT NULL DEFAULT ''");
 			addColumn('studies', 'patient_fullname', "TEXT NOT NULL DEFAULT ''");
 			db.exec(`UPDATE studies SET patient_fullname = trim(patient_firstname || ' ' || patient_lastname)
