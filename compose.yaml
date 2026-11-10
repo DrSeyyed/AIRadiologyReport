@@ -1,0 +1,39 @@
+services:
+  nginxproxy:
+    image: docker.io/jc21/nginx-proxy-manager:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+    networks:
+      - appnet
+
+  pacs-app:
+    build:
+      context: "https://github.com/DrSeyyed/AIRadiologyReport.git#develop"
+      dockerfile: Dockerfile
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+      STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:?Storage encryption key is required}
+      RESET_TEST_STUDIES: "0"
+    volumes:
+      - ./pacs/db:/app/db
+      - ./pacs/uploads:/app/uploads
+      - ./pacs/restore-staging:/app/restore-staging
+    ports:
+      - "127.0.0.1:5173:5173"
+    restart: unless-stopped
+    networks:
+      - appnet
+
+networks:
+  appnet:

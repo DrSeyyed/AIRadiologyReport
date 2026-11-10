@@ -45,6 +45,22 @@ The green page background covers the full document. Wide study and administratio
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
 
+## Docker Compose deployment
+
+[compose.yaml](./compose.yaml) contains the application and Nginx Proxy Manager configuration, building the application's `develop` branch. Supply credentials through your deployment environment or a private, untracked `.env`; preserve the original `STORAGE_ENCRYPTION_KEY`. Run Compose from the existing deployment directory so relative bind mounts continue using the same database, uploads and proxy data. In Portainer, retain the existing stack and its resolved host mount paths rather than creating a second stack.
+
+The configuration also persists `/app/restore-staging`. **Before adding this mount or recreating an existing container**, pause storage jobs and wait for running/cancelling jobs to finish, then copy any prepared restores to the host. From the directory containing the currently deployed Compose file, on the Docker host:
+
+```sh
+mkdir -p ./pacs/restore-staging
+docker cp "$(docker compose ps -q pacs-app):/app/restore-staging/." ./pacs/restore-staging
+ls -la ./pacs/restore-staging
+```
+
+If the copy fails or the expected restore directory is missing, stop and resolve that before redeploying. Adding the mount hides the container's previous directory; recreating the container can discard it. After confirming the copy, apply the updated configuration with `docker compose up -d --build pacs-app` or update the existing Portainer stack. Keep all existing data mounts unchanged.
+
+`restart: unless-stopped` restarts the container after its main process exits; this configuration does **not** add a web restart/activation button or activate a prepared restore. Manual recovery activation is described below.
+
 ## Persistent audio storage
 
 Browser uploads and Telegram voice recordings both default to `uploads/audio`, relative to the application's working directory. In the Docker image, this is `/app/uploads/audio`.

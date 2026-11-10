@@ -20,6 +20,11 @@ db
 # Uploads
 uploads
 
+# Compose runtime data (database, uploads, prepared restores and proxy certificates)
+/pacs/
+/data/
+/letsencrypt/
+
 # Verified recovery copies (contain private application data)
 /restore-staging/
 
