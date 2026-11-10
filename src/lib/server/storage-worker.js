@@ -15,6 +15,7 @@ import { uploadStorageFile } from './storage-upload.js';
 import { backupRecovery, pruneRecovery } from './recovery-backups.js';
 import { safeRecoveryProgress } from './recovery-progress.js';
 import { prepareStorageRestore } from './storage-restore.js';
+import { safeRestoreProgress } from './restore-progress.js';
 import { resetStorageData, storageResetFailureMessage } from './storage-reset.js';
 import { auditStorageData, safeStorageAuditProgress } from './storage-audit.js';
 import {
@@ -464,8 +465,51 @@ export async function processStorageJob(
 				.get(job.id);
 			if (!request || !backupIdPattern.test(request.backup_id))
 				throw new Error('Invalid restore request.');
-			result = await prepareRestore(connection, { backupId: request.backup_id, owned });
+			let latestProgress;
+			let lastProgressAt = -Infinity;
+			let completionReported = false;
+			const onProgress = (progress) => {
+				if (!owned()) return;
+				const safe = safeRestoreProgress(progress);
+				if (!safe) return;
+				latestProgress = safe;
+				const time = Date.now();
+				if (time - lastProgressAt < 1_000 && (safe.phase !== 'complete' || completionReported))
+					return;
+				const updated = db
+					.prepare(
+						"UPDATE storage_jobs SET result=? WHERE id=? AND status='running' AND NOT EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id)"
+					)
+					.run(JSON.stringify(safe), job.id);
+				if (updated.changes) {
+					lastProgressAt = time;
+					if (safe.phase === 'complete') completionReported = true;
+				}
+			};
+			onProgress({
+				phase: 'preparing',
+				downloadedObjects: 0,
+				totalObjects: 0,
+				restoredFiles: 0,
+				totalFiles: 0,
+				downloadedBytes: 0,
+				verificationBytes: 0,
+				elapsedSeconds: 0,
+				lastActivityAt: Math.floor(Date.now() / 1000)
+			});
+			result = await prepareRestore(connection, {
+				backupId: request.backup_id,
+				owned,
+				onProgress
+			});
 			if (!restoreIdPattern.test(result?.restoreId)) throw new Error('Invalid restore result.');
+			result = {
+				...latestProgress,
+				phase: 'complete',
+				id: request.backup_id,
+				restoreId: result.restoreId,
+				...(Number.isSafeInteger(result.files) && result.files >= 0 ? { files: result.files } : {})
+			};
 		} else if (job.kind === 'archive')
 			result = await runArchive(db, connection, {
 				now,
@@ -587,13 +631,13 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			`SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,
 			EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested,
 			(SELECT operation FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AS maintenance,
+			EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS isReset,
 			(SELECT phase||': audio '||restored||'/'||total||', remote files removed '||deleted FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS progress
 			FROM storage_jobs WHERE NOT EXISTS(SELECT 1 FROM storage_job_log_hidden h WHERE h.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 30`
 		)
 		.all()
-		.map(({ result, cancelRequested, maintenance, ...job }) => {
-			const displayedKind =
-				maintenance || (job.kind === 'restore' && job.progress ? 'reset' : job.kind);
+		.map(({ result, cancelRequested, maintenance, isReset, ...job }) => {
+			const displayedKind = maintenance || (job.kind === 'restore' && isReset ? 'reset' : job.kind);
 			let backupId = null;
 			let restoreDirectory = null;
 			try {
@@ -633,11 +677,16 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 						job.progress = `Files: ${parsed.files}; objects uploaded and verified: ${parsed.uploadedObjects}; reused: ${parsed.reusedObjects}; source data: ${(parsed.bytes / (1024 * 1024)).toFixed(2)} MiB.`;
 					}
 				}
+				if (!maintenance && displayedKind === 'restore') {
+					const progress = safeRestoreProgress(parsed);
+					if (progress)
+						job.progress = `Phase: ${progress.phase}; objects downloaded: ${progress.downloadedObjects}/${progress.totalObjects}; files restored and verified: ${progress.restoredFiles}/${progress.totalFiles}. Downloaded: ${(progress.downloadedBytes / (1024 * 1024)).toFixed(2)} MiB; remote checksum reads: ${(progress.verificationBytes / (1024 * 1024)).toFixed(2)} MiB; elapsed: ${progress.elapsedSeconds}s. Last transfer/file activity: ${Math.max(0, now - progress.lastActivityAt)}s ago.`;
+				}
 				if (!maintenance && typeof parsed?.id === 'string' && backupIdPattern.test(parsed.id))
 					backupId = parsed.id;
 				if (
 					!maintenance &&
-					job.kind === 'restore' &&
+					displayedKind === 'restore' &&
 					job.status === 'succeeded' &&
 					typeof parsed?.restoreId === 'string' &&
 					restoreIdPattern.test(parsed.restoreId)

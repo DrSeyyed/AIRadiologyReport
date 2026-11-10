@@ -12,9 +12,12 @@ export const MAX_RECOVERY_FILES = 100_000;
 export const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 export const ENCRYPTION_OVERHEAD = 35;
 
-export async function fileDigest(file) {
+export async function fileDigest(file, activity = () => {}) {
 	const hash = createHash('sha256');
-	for await (const chunk of createReadStream(file)) hash.update(chunk);
+	for await (const chunk of createReadStream(file)) {
+		hash.update(chunk);
+		activity();
+	}
 	return hash.digest('hex');
 }
 
@@ -79,7 +82,8 @@ export async function unpackBundles(
 	restored,
 	work,
 	decrypt,
-	checkObject
+	checkObject,
+	{ activity = () => {}, verifiedFile = () => {}, phase = () => {} } = {}
 ) {
 	const ranges = manifest.bundles.map(() => []);
 	for (const entry of manifest.files) {
@@ -88,6 +92,7 @@ export async function unpackBundles(
 		await fs.writeFile(target, '', { flag: 'wx', mode: 0o600 });
 		for (const part of entry.parts)
 			ranges[part.bundle].push({ target, offset: part.offset, bytes: part.bytes });
+		activity();
 	}
 	for (const [index, bundle] of manifest.bundles.entries()) {
 		const object = path.join(objectsDirectory, bundle.object);
@@ -98,6 +103,7 @@ export async function unpackBundles(
 			await decrypt(object, compressed);
 			if ((await fs.stat(compressed)).size !== bundle.compressedBytes)
 				throw new Error('Invalid recovery bundle.');
+			phase('verifying');
 			let bytes = 0;
 			const hash = createHash('sha256');
 			await pipeline(
@@ -109,7 +115,12 @@ export async function unpackBundles(
 						if (bytes > bundle.bytes)
 							return callback(new Error('Recovery decompression limit exceeded.'));
 						hash.update(chunk);
-						callback(null, chunk);
+						try {
+							activity();
+							callback(null, chunk);
+						} catch (error) {
+							callback(error);
+						}
 					}
 				}),
 				createWriteStream(raw, { flags: 'wx', mode: 0o600 })
@@ -121,15 +132,21 @@ export async function unpackBundles(
 					createReadStream(raw, { start: part.offset, end: part.offset + part.bytes - 1 }),
 					createWriteStream(part.target, { flags: 'a', mode: 0o600 })
 				);
+				activity();
 			}
 		} finally {
 			await fs.rm(compressed, { force: true });
 			await fs.rm(raw, { force: true });
 		}
 	}
+	phase('verifying');
 	for (const entry of manifest.files) {
 		const target = path.join(restored, ...entry.path.split('/'));
-		if ((await fs.stat(target)).size !== entry.bytes || (await fileDigest(target)) !== entry.sha256)
+		if (
+			(await fs.stat(target)).size !== entry.bytes ||
+			(await fileDigest(target, activity)) !== entry.sha256
+		)
 			throw new Error('Invalid recovery file.');
+		verifiedFile();
 	}
 }

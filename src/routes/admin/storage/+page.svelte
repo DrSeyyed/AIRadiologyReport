@@ -7,7 +7,7 @@
 	const tabs = [
 		{ id: 'overview', label: 'Overview & jobs' },
 		{ id: 'settings', label: 'Settings' },
-		{ id: 'restore', label: 'Restore' },
+		{ id: 'restore', label: 'Backups & restore' },
 		{ id: 'maintenance', label: 'Maintenance' }
 	];
 	let activeTab = $state(untrack(() => data.tab || 'overview'));
@@ -201,37 +201,19 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 				</fieldset>
 			</form>
 		{/if}
+		{@render backupDeletion()}
 		{#if data.status.preparedRestores.length}
 			<h4 class="font-semibold">Recent verified copies (manual activation required)</h4>
 			{#each data.status.preparedRestores as restore (restore.id)}
 				<p>Job {restore.id} — {time(restore.finished_at)}: <code class="break-all">{restore.directory}</code></p>
 			{/each}
 		{/if}
-		<p class="text-sm text-base-content/70">After preparation, find the verified directory in Overview &amp; jobs.</p>
+		{@render jobLog('restore', ['restore', 'delete'])}
 	</div>
 	<div id="storage-panel-maintenance" role="tabpanel" aria-labelledby="storage-tab-maintenance" tabindex="0" hidden={activeTab !== 'maintenance'} class="card space-y-4 bg-base-100 p-6 shadow">
 		<h3 class="text-lg font-semibold">Storage maintenance</h3>
-		<h4 class="font-semibold">Delete selected recovery points</h4>
-		<p class="text-sm text-base-content/70">Permanently removes selected backup indexes and manifests, including the newest if selected. Shared file objects, synchronized files and live data stay intact, so this may reclaim little space. Scheduled retention still protects the newest backup.</p>
-		<form method="POST" action="?/recoveryPoints&tab=maintenance" use:enhance={recoveryEnhance}>
-			<button class="btn btn-outline" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Load recovery points for deletion</button>
-		</form>
-		{#if recoveryPoints.length}
-			<form method="POST" action="?/deleteBackups&tab=maintenance" use:enhance={recoveryEnhance} class="space-y-3">
-				<fieldset disabled={data.status.resetActive} class="space-y-3">
-					<legend class="font-medium">Select recovery points (up to 100)</legend>
-					<div class="max-h-64 space-y-2 overflow-y-auto rounded border border-base-300 p-3">
-						{#each recoveryPoints as point (point.id)}
-							<label class="flex items-start gap-3 break-all"><input class="checkbox shrink-0" type="checkbox" name="backupIds" value={point.id} /><span>{point.kind === 'full' ? 'Full backup' : 'Legacy snapshot'} — {time(Number(point.id.split('-')[0]))}<br /><span class="font-mono text-xs">{point.id}</span></span></label>
-						{/each}
-					</div>
-					<label class="form-control">Type DELETE BACKUPS to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
-					<label class="flex items-center gap-3"><input class="checkbox" type="checkbox" name="acknowledge" required /> I understand that selected recovery points are permanently lost, even if they are the newest or only backups.</label>
-					<button class="btn btn-error" type="submit" disabled={data.status.resetActive}>Delete selected backups</button>
-				</fieldset>
-			</form>
-		{/if}
-		<p class="text-sm text-base-content/70">Deletion runs as a cancellable job and works while schedules are paused. Cancelling cannot undo completed deletions. Reload this list afterward. Restore preparation must finish or be cancelled first.</p>
+		<p class="text-sm text-base-content/70">Backup deletion is beside the recovery-point list in Backups &amp; restore.</p>
+		<a class="btn btn-outline w-fit" href={resolve('/admin/storage?tab=restore')} onclick={(event) => tabClick(event, 'restore')}>Delete backups</a>
 		<form method="POST" action="?/clearLog&tab=maintenance" use:enhance class="space-y-3">
 			<p class="text-sm text-base-content/70">Hide finished jobs only. Active jobs, safety metadata, audio and backups are kept.</p>
 			<button class="btn btn-outline" name="confirmation" value="clear">Clear finished log</button>
@@ -257,8 +239,32 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 	</div>
 </div>
 
-{#snippet jobLog()}
-		<h3 class="text-lg font-semibold">Job log</h3>
+{#snippet backupDeletion()}
+	<div class="space-y-3 border-t border-base-300 pt-4">
+		<h4 class="font-semibold">Delete selected recovery points</h4>
+		<p class="text-sm text-base-content/70">Permanently removes selected backup indexes and manifests, including the newest if selected. Shared file objects and live data stay intact, so this may reclaim little space.</p>
+		{#if !recoveryPoints.length}<p class="text-sm">Load recovery points above to select backups. The delete button becomes available after loading a non-empty list.</p>{/if}
+		<form method="POST" action="?/deleteBackups&tab=restore" use:enhance={recoveryEnhance} class="space-y-3">
+			<fieldset disabled={data.status.resetActive || !recoveryPoints.length} class="space-y-3">
+				<legend class="font-medium">Select recovery points (up to 100)</legend>
+				{#if recoveryPoints.length}
+					<div class="max-h-64 space-y-2 overflow-y-auto rounded border border-base-300 p-3">
+						{#each recoveryPoints as point (point.id)}
+							<label class="flex items-start gap-3 break-all"><input class="checkbox shrink-0" type="checkbox" name="backupIds" value={point.id} /><span>{point.kind === 'full' ? 'Full backup' : 'Legacy snapshot'} — {time(Number(point.id.split('-')[0]))}<br /><span class="font-mono text-xs">{point.id}</span></span></label>
+						{/each}
+					</div>
+				{/if}
+				<label class="form-control">Type DELETE BACKUPS to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
+				<label class="flex items-center gap-3"><input class="checkbox" type="checkbox" name="acknowledge" required /> I understand that selected recovery points are permanently lost, even if they are the newest or only backups.</label>
+				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !recoveryPoints.length}>Delete selected backups</button>
+			</fieldset>
+		</form>
+		<p class="text-sm text-base-content/70">Deletion progress and cancellation appear below. Cancelling cannot undo completed deletions. Reload the list afterward. Restore preparation must finish or be cancelled first.</p>
+	</div>
+{/snippet}
+
+{#snippet jobLog(tab = 'overview', kinds = null)}
+		<h3 class="text-lg font-semibold">{tab === 'restore' ? 'Restore & backup deletion job log' : 'Job log'}</h3>
 		<p class="text-sm text-base-content/70">Status refreshes every 5 seconds while this page is visible.</p>
 		<details class="text-sm">
 			<summary class="cursor-pointer font-medium">Progress and cancellation help</summary>
@@ -269,8 +275,10 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		</details>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
-			{#each data.status.jobs as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action="?/cancel&tab=overview" use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+			{#each data.status.jobs.filter((job) => !kinds || kinds.includes(job.kind)) as job (job.id)}
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+			{:else}
+				<tr><td colspan="6">No {tab === 'restore' ? 'restore or backup deletion ' : ''}jobs in the recent log.</td></tr>
 			{/each}
 			</tbody></table>
 		</div>

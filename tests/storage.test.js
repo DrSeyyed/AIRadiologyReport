@@ -458,7 +458,11 @@ test('slow verification updates read-back bytes and activity instead of appearin
 
 test('running archive progress is sanitized, displayed as archive and frozen after cancellation', async (t) => {
 	const context = fixture(t);
-	saveStorageSettings(context.db, { ...context.settings, backupsEnabled: false, parallelConnections: 16 });
+	saveStorageSettings(context.db, {
+		...context.settings,
+		backupsEnabled: false,
+		parallelConnections: 16
+	});
 	await processStorageJob(context.db, {
 		now,
 		runArchive: async (db, connection, { onProgress }) => {
@@ -697,7 +701,9 @@ test('sync intervals default for missing settings, validate and survive a databa
 	assert.equal(normalizeStorageSettings({}).syncIntervalMinutes, 1);
 	const legacy = { ...settings };
 	delete legacy.syncIntervalMinutes;
-	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(JSON.stringify(legacy));
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(
+		JSON.stringify(legacy)
+	);
 	assert.equal(getStorageSettings(db).syncIntervalMinutes, 1);
 	for (const value of [0, -1, 1441, 1.5, '5', null, NaN, Infinity])
 		assert.throws(() => normalizeStorageSettings({ ...settings, syncIntervalMinutes: value }));
@@ -730,13 +736,18 @@ for (const minutes of [1, 7, 1440]) {
 		const seconds = minutes * 60;
 		const at = Math.floor(now / seconds) * seconds;
 		scheduleStorageJobs(db, at);
-		assert.equal(db.prepare('SELECT schedule_key FROM storage_jobs').get().schedule_key, `archive:${at / 60}`);
+		assert.equal(
+			db.prepare('SELECT schedule_key FROM storage_jobs').get().schedule_key,
+			`archive:${at / 60}`
+		);
 		db.prepare("UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=?").run(at, at);
 		scheduleStorageJobs(db, at + seconds - 1);
 		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
 		scheduleStorageJobs(db, at + seconds);
 		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 2);
-		db.prepare("UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=? WHERE status='pending'").run(at + seconds, at + seconds);
+		db.prepare(
+			"UPDATE storage_jobs SET status='succeeded',started_at=?,finished_at=? WHERE status='pending'"
+		).run(at + seconds, at + seconds);
 		scheduleStorageJobs(db, at + seconds * 10);
 		assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 3);
 	});
@@ -746,7 +757,12 @@ test('long sync intervals preserve retry backoff, immediate manual work and paus
 	const { db, settings } = fixture(t);
 	saveStorageSettings(db, { ...settings, backupsEnabled: false, syncIntervalMinutes: 1440 });
 	const at = Math.floor(now / 86400) * 86400;
-	const options = { now: at, runArchive: async () => { throw new Error('offline'); } };
+	const options = {
+		now: at,
+		runArchive: async () => {
+			throw new Error('offline');
+		}
+	};
 	assert.equal(await processStorageJob(db, options), true);
 	const failed = db.prepare("SELECT * FROM storage_jobs WHERE kind='archive'").get();
 	assert.equal(failed.status, 'failed');
@@ -756,13 +772,22 @@ test('long sync intervals preserve retry backoff, immediate manual work and paus
 	assert.equal(db.prepare('SELECT COUNT(*) n FROM storage_jobs').get().n, 1);
 	assert.equal(db.prepare('SELECT retry_at FROM storage_jobs').get().retry_at, at + 60);
 	assert.equal(queueStorageJob(db, 'archive', { now: at + 15, retryNow: true }), failed.id);
-	assert.equal(await processStorageJob(db, { now: at + 15, runArchive: async () => ({ syncPending: 0 }) }), true);
+	assert.equal(
+		await processStorageJob(db, { now: at + 15, runArchive: async () => ({ syncPending: 0 }) }),
+		true
+	);
 	const manual = queueStorageJob(db, 'archive', { now: at + 30 });
 	assert.notEqual(manual, failed.id);
-	assert.equal(await processStorageJob(db, { now: at + 30, runArchive: async () => ({ syncPending: 0 }) }), true);
+	assert.equal(
+		await processStorageJob(db, { now: at + 30, runArchive: async () => ({ syncPending: 0 }) }),
+		true
+	);
 	pauseAndCancelStorageJobs(db, { now: at + 40 });
 	assert.equal(getStorageSettings(db).syncIntervalMinutes, 1440);
-	assert.equal(await processStorageJob(db, { now: at + 86400, runArchive: async () => assert.fail('paused') }), false);
+	assert.equal(
+		await processStorageJob(db, { now: at + 86400, runArchive: async () => assert.fail('paused') }),
+		false
+	);
 });
 
 test('full backup hours default twice daily, migrate legacy schedules once and persist canonically', (t) => {
@@ -858,7 +883,9 @@ test('parallel connections default for legacy settings, validate and persist wit
 	const { db, settings } = fixture(t);
 	const legacy = { ...settings };
 	delete legacy.parallelConnections;
-	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(JSON.stringify(legacy));
+	db.prepare("UPDATE application_settings SET value=? WHERE key='storage_settings'").run(
+		JSON.stringify(legacy)
+	);
 	assert.equal(getStorageSettings(db).parallelConnections, 4);
 	assert.equal(storageParallelConnections({}), 4);
 	for (const invalid of [0, -1, 17, 1.5, '4', null, NaN, Infinity]) {
@@ -873,7 +900,9 @@ test('parallel connections default for legacy settings, validate and persist wit
 		assert.equal(storageDestination(saved), destination);
 		assert.equal(saved.password, 'synthetic-password');
 	}
-	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('archive','running',?)").run(now);
+	db.prepare("INSERT INTO storage_jobs(kind,status,created_at) VALUES('archive','running',?)").run(
+		now
+	);
 	assert.throws(() => saveStorageSettings(db, { ...settings, parallelConnections: 1 }), /running/);
 });
 
@@ -992,13 +1021,23 @@ test('manually deleted backup evidence cannot permit local audio eviction until 
 	const { db, audio, connection, options } = fixture(t);
 	await archiveAudio(db, connection, options);
 	const backupId = '1800000100-22222222-2222-2222-2222-222222222222';
-	db.prepare("INSERT INTO storage_jobs(kind,status,created_at,started_at,result) VALUES('full','succeeded',?,?,?)")
-		.run(now + 1, now + 1, JSON.stringify({ id: backupId }));
-	db.prepare('INSERT INTO storage_deleted_recovery_points(backup_id,deleted_at) VALUES(?,?)').run(backupId, now + 2);
-	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 3 }), { copied: 0, evicted: 0 });
+	db.prepare(
+		"INSERT INTO storage_jobs(kind,status,created_at,started_at,result) VALUES('full','succeeded',?,?,?)"
+	).run(now + 1, now + 1, JSON.stringify({ id: backupId }));
+	db.prepare('INSERT INTO storage_deleted_recovery_points(backup_id,deleted_at) VALUES(?,?)').run(
+		backupId,
+		now + 2
+	);
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 3 }), {
+		copied: 0,
+		evicted: 0
+	});
 	assert.ok(existsSync(audio));
 	backupCompleted(db, now + 4);
-	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 5 }), { copied: 0, evicted: 1 });
+	assert.deepEqual(await archiveAudio(db, connection, { ...options, now: now + 5 }), {
+		copied: 0,
+		evicted: 1
+	});
 	assert.equal(existsSync(audio), false);
 });
 
@@ -1581,6 +1620,97 @@ test('paused worker prepares a restore without backup pruning or live mutations 
 	);
 });
 
+test('restore preparation persists safe live counts with bounded writes and retains the completed location', async (t) => {
+	const { db, settings } = fixture(t);
+	saveStorageSettings(db, { ...settings, enabled: false });
+	t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
+	const backupId = `${now}-${randomUUID()}`;
+	const restoreId = randomUUID();
+	const id = queueStorageJob(db, 'restore', { now, backupId });
+	let report;
+	const read = () => db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(id).result;
+	const progress = {
+		phase: 'downloading',
+		downloadedObjects: 1,
+		totalObjects: 2,
+		restoredFiles: 0,
+		totalFiles: 3,
+		downloadedBytes: 100,
+		verificationBytes: 100,
+		elapsedSeconds: 1,
+		lastActivityAt: now + 1
+	};
+	await processStorageJob(db, {
+		now,
+		prepareRestore: async (_connection, { onProgress }) => {
+			report = onProgress;
+			assert.equal(JSON.parse(read()).phase, 'preparing');
+			t.mock.timers.tick(1_000);
+			onProgress({
+				...progress,
+				path: 'synthetic-private-patient',
+				error: 'synthetic-private-error'
+			});
+			const persisted = read();
+			assert.deepEqual(JSON.parse(persisted), progress);
+			assert.match(storageStatus(db, now + 1).jobs[0].progress, /objects downloaded: 1\/2/);
+			assert.equal(storageStatus(db, now + 1).jobs[0].restoreDirectory, null);
+			for (let i = 0; i < 100; i++) onProgress({ ...progress, downloadedBytes: 101 + i });
+			assert.equal(read(), persisted);
+			t.mock.timers.tick(1_000);
+			for (const invalid of [
+				{ ...progress, phase: 'synthetic-private-patient' },
+				{ ...progress, downloadedBytes: 'synthetic-private-path' },
+				{ ...progress, restoredFiles: 4 }
+			])
+				onProgress(invalid);
+			assert.equal(read(), persisted);
+			onProgress({ ...progress, phase: 'complete', downloadedObjects: 2, restoredFiles: 3 });
+			assert.equal(JSON.parse(read()).restoredFiles, 3);
+			return { id: backupId, restoreId, files: 3, path: 'synthetic-private-path' };
+		}
+	});
+	const final = read();
+	const status = storageStatus(db, now + 2);
+	assert.equal(status.jobs[0].status, 'succeeded');
+	assert.match(status.jobs[0].progress, /Phase: complete/);
+	assert.match(status.jobs[0].progress, /files restored and verified: 3\/3/);
+	assert.equal(status.jobs[0].restoreDirectory, `restore-staging/${restoreId}`);
+	assert.equal(status.preparedRestores[0].directory, `restore-staging/${restoreId}`);
+	assert.ok(!final.includes('synthetic-private'));
+	assert.ok(!JSON.stringify(status).includes('synthetic-private'));
+	report({ ...progress, phase: 'complete' });
+	assert.equal(read(), final);
+});
+
+test('cancelled or unowned restore callbacks cannot persist more progress or publish a location', async (t) => {
+	for (const reason of ['cancel', 'lease'])
+		await t.test(reason, async (t) => {
+			const { db, settings } = fixture(t);
+			saveStorageSettings(db, { ...settings, enabled: false });
+			const backupId = `${now}-${randomUUID()}`;
+			const id = queueStorageJob(db, 'restore', { now, backupId });
+			await processStorageJob(db, {
+				now,
+				prepareRestore: async (_connection, { onProgress, owned }) => {
+					const before = db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(id).result;
+					if (reason === 'cancel') cancelStorageJob(db, id, { now });
+					else db.prepare('DELETE FROM storage_worker_lock').run();
+					assert.equal(owned(), false);
+					onProgress({ ...JSON.parse(before), phase: 'complete' });
+					assert.equal(
+						db.prepare('SELECT result FROM storage_jobs WHERE id=?').get(id).result,
+						before
+					);
+					return { id: backupId, restoreId: randomUUID(), files: 0 };
+				}
+			});
+			assert.notEqual(storageStatus(db, now).jobs[0].status, 'succeeded');
+			assert.equal(storageStatus(db, now).jobs[0].restoreDirectory, null);
+			assert.deepEqual(storageStatus(db, now).preparedRestores, []);
+		});
+});
+
 test('failed restore preparation sanitizes errors and can be manually retried without changing its target', async (t) => {
 	const { db, settings } = fixture(t);
 	saveStorageSettings(db, { ...settings, enabled: false });
@@ -2116,7 +2246,10 @@ test('reset refuses changed local audio instead of overwriting it or deleting it
 	queueStorageReset(db, { now });
 	await run();
 	assert.equal(readFileSync(audio, 'utf8'), 'new local audio');
-	assert.match(storageStatus(db, now).jobs[0].error, /Recovering local audio 1\/1: Local audio differs/);
+	assert.match(
+		storageStatus(db, now).jobs[0].error,
+		/Recovering local audio 1\/1: Local audio differs/
+	);
 	assert.equal(objects.size, 1);
 	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_audio').get().count, 1);
 	assert.equal(storageStatus(db, now).jobs[0].status, 'failed');

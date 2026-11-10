@@ -9,6 +9,7 @@ import { listRecovery, restoreRecovery, validateRecoveryManifest } from './recov
 import * as crypto from './storage-crypto.js';
 import * as transport from './storage-transport.js';
 import { recoveryObjects, objectDownloadBytes } from './recovery-bundles.js';
+import { restoreProgress } from './restore-progress.js';
 
 export const STORAGE_RESTORE_ID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -148,7 +149,7 @@ async function remotePath(client, remote, directory, signal, maxBytes = 0) {
 	}
 }
 
-function limitedStream(client, remote, maxBytes, signal, readTimeoutMs) {
+function limitedStream(client, remote, maxBytes, signal, readTimeoutMs, onBytes = () => {}) {
 	signal.throwIfAborted();
 	const source = client.createReadStream(remote);
 	let bytes = 0;
@@ -156,6 +157,11 @@ function limitedStream(client, remote, maxBytes, signal, readTimeoutMs) {
 	const limited = new Transform({
 		transform(chunk, _encoding, callback) {
 			bytes += chunk.length;
+			try {
+				onBytes(chunk.length);
+			} catch {
+				return callback(failure());
+			}
 			clearTimeout(timer);
 			timer = setTimeout(() => limited.destroy(failure()), readTimeoutMs);
 			callback(bytes > maxBytes ? failure() : null, chunk);
@@ -173,12 +179,25 @@ function limitedStream(client, remote, maxBytes, signal, readTimeoutMs) {
 	return source.pipe(limited);
 }
 
-async function download(client, remote, target, maxBytes, signal, deps, connection, expected) {
+async function download(
+	client,
+	remote,
+	target,
+	maxBytes,
+	signal,
+	deps,
+	connection,
+	progress,
+	expected
+) {
 	const readTimeoutMs = storageTimeoutMs(connection, 'verificationTimeoutSeconds');
 	await remotePath(client, remote, false, signal, maxBytes);
 	const guarded = {
 		lstat: (...args) => client.lstat(...args),
-		createReadStream: (file) => limitedStream(client, file, maxBytes, signal, readTimeoutMs)
+		createReadStream: (file) =>
+			limitedStream(client, file, maxBytes, signal, readTimeoutMs, (bytes) =>
+				progress.add('verificationBytes', bytes)
+			)
 	};
 	const remoteDigest = await deps.hashRemote(guarded, remote, connection);
 	if (expected !== undefined && remoteDigest !== expected) throw failure();
@@ -190,7 +209,9 @@ async function download(client, remote, target, maxBytes, signal, deps, connecti
 		}
 	});
 	await pipeline(
-		limitedStream(client, remote, maxBytes, signal, readTimeoutMs),
+		limitedStream(client, remote, maxBytes, signal, readTimeoutMs, (bytes) =>
+			progress.add('downloadedBytes', bytes)
+		),
 		digestStream,
 		createWriteStream(target, { flags: 'wx', mode: 0o600 }),
 		{ signal }
@@ -207,12 +228,13 @@ async function download(client, remote, target, maxBytes, signal, deps, connecti
  */
 export async function prepareStorageRestore(
 	connection,
-	{ backupId, owned = () => true } = {},
+	{ backupId, owned = () => true, onProgress } = {},
 	injected = {}
 ) {
 	let work;
 	let destination;
 	let published = false;
+	let progress;
 	const controller = new AbortController();
 	// Leave time for transport shutdown before its independent six-hour callback limit expires.
 	const timer = setTimeout(() => controller.abort(), OPERATION_MS - 60_000);
@@ -222,9 +244,12 @@ export async function prepareStorageRestore(
 		const deps = { ...crypto, ...transport, ...injected };
 		const assertOwned = async () => {
 			signal.throwIfAborted();
+			progress?.assertHealthy();
 			if ((await owned()) !== true) throw failure();
 		};
 		await assertOwned();
+		progress = restoreProgress(onProgress);
+		progress.assertHealthy();
 		await deps.assertStorageKey();
 		const cwd = path.resolve(injected.cwd || process.cwd());
 		await localDirectories(cwd);
@@ -247,6 +272,7 @@ export async function prepareStorageRestore(
 			{ ...connection, operationTimeoutMs: OPERATION_MS },
 			async (client) => {
 				await assertOwned();
+				progress.set({ phase: 'listing' });
 				await remotePath(client, deps.storagePath(connection, 'backups', 'indexes'), true, signal);
 				const recovery = await listRecovery(connection, {
 					...deps,
@@ -262,6 +288,7 @@ export async function prepareStorageRestore(
 					signal,
 					MAX_MANIFEST_BYTES
 				);
+				progress.set({ phase: 'manifest' });
 				await download(
 					client,
 					deps.storagePath(connection, 'backups', 'manifests', `${backupId}.enc`),
@@ -269,7 +296,8 @@ export async function prepareStorageRestore(
 					MAX_MANIFEST_BYTES + ENCRYPTION_OVERHEAD,
 					signal,
 					deps,
-					connection
+					connection,
+					progress
 				);
 				const plain = path.join(work, 'manifest.json');
 				await deps.decryptFile(manifestFile, plain);
@@ -289,6 +317,11 @@ export async function prepareStorageRestore(
 					bytes += entry.bytes;
 					if (!Number.isSafeInteger(bytes) || bytes > MAX_BYTES) throw failure();
 				}
+				progress.set({
+					phase: 'downloading',
+					totalFiles: parsed.files.length,
+					totalObjects: new Set(recoveryObjects(parsed).map((entry) => entry.object)).size
+				});
 				for (const entry of recoveryObjects(parsed)) {
 					await assertOwned();
 					if (objects.has(entry.object)) continue;
@@ -301,8 +334,10 @@ export async function prepareStorageRestore(
 						signal,
 						deps,
 						connection,
+						progress,
 						entry.remoteSha256
 					);
+					progress.add('downloadedObjects');
 				}
 				await assertOwned();
 				return parsed;
@@ -311,10 +346,17 @@ export async function prepareStorageRestore(
 		await assertOwned();
 		const verified = path.join(work, 'verified');
 		const result = await restoreRecovery(
-			{ manifestFile, objectsDirectory, outputDirectory: verified },
+			{
+				manifestFile,
+				objectsDirectory,
+				outputDirectory: verified,
+				owned: assertOwned,
+				onProgress: (update) => progress.set(update)
+			},
 			deps
 		);
 		if (result.id !== backupId || result.files !== manifest.files.length) throw failure();
+		progress.set({ phase: 'publishing' });
 		await localDirectories(root);
 		await separateStaging(cwd, root, env);
 		await assertOwned();
@@ -323,6 +365,7 @@ export async function prepareStorageRestore(
 		await fs.rm(work, { recursive: true, force: true });
 		work = undefined;
 		await assertOwned();
+		progress.set({ phase: 'complete', restoredFiles: result.files });
 		return { id: backupId, restoreId, files: result.files };
 	} catch {
 		await Promise.all(
@@ -333,6 +376,7 @@ export async function prepareStorageRestore(
 		).catch(() => {});
 		throw failure();
 	} finally {
+		progress?.finish();
 		clearTimeout(timer);
 		controller.abort();
 	}

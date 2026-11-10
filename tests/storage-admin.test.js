@@ -616,7 +616,6 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		'Sync files now',
 		'Full recovery backup now',
 		'Run full checksum audit',
-		'Load recovery points for deletion',
 		'Delete selected backups',
 		'Load recovery points from storage',
 		'Prepare restore',
@@ -647,6 +646,34 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	const { body: archiveBody } = render(component.default, { props: { data } });
 	assert.match(archiveBody, /Copied: 97; preparing: 0; uploading: 2; verifying: 1/);
 	assert.match(archiveBody, /Status refreshes every 5 seconds/);
+	assert.match(archiveBody, /Backups &amp; restore/);
+	assert.match(archiveBody, /Load recovery points above to select backups/);
+	assert.match(archiveBody, /<button[^>]*disabled[^>]*>Delete selected backups<\/button>/);
+	assert.match(archiveBody, /No restore or backup deletion jobs in the recent log/);
+	assert.match(archiveBody, /href="\/admin\/storage\?tab=restore"[^>]*>Delete backups<\/a>/);
+	data.status.jobs.push(
+		{ id: 1000, kind: 'restore', status: 'running', attempts: 1, created_at: 1,
+			canCancel: true, progress: 'Preparing restore: downloading files 2 of 4' },
+		{ id: 1001, kind: 'restore', status: 'succeeded', attempts: 1, created_at: 1,
+			restoreDirectory: '/recovery/verified-copy' },
+		{ id: 1002, kind: 'delete', status: 'failed', attempts: 2, created_at: 1,
+			error: 'Selected backup deletion failed.', retry_at: 2, canCancel: true }
+	);
+	const { body: restoreBody } = render(component.default, {
+		props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } }
+	});
+	const restorePanel = restoreBody.split('id="storage-panel-restore"')[1]
+		.split('id="storage-panel-maintenance"')[0];
+	assert.match(restorePanel, /action="\?\/deleteBackups&(?:amp;)?tab=restore"/);
+	assert.match(restorePanel, /<button(?![^>]*disabled)[^>]*>Delete selected backups<\/button>/);
+	assert.match(restorePanel, /Restore &amp; backup deletion job log/);
+	assert.match(restorePanel, /Preparing restore: downloading files 2 of 4/);
+	assert.match(restorePanel, /Verified copy ready: \/recovery\/verified-copy/);
+	assert.match(restorePanel, /Manual activation required/);
+	assert.match(restorePanel, /Selected backup deletion failed/);
+	assert.match(restorePanel, /Retry:/);
+	assert.match(restorePanel, /action="\?\/cancel&(?:amp;)?tab=restore"/);
+	assert.doesNotMatch(restorePanel, /Copied: 97/);
 	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
 	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);
 	assert.match(archiveBody, /<input[^>]*name="syncIntervalMinutes"[^>]*min="1"[^>]*max="1440"[^>]*value="1"/);
@@ -856,7 +883,7 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /action="\?\/job&tab=overview"/);
 	assert.match(page, /action="\?\/recoveryPoints&tab=restore"/);
 	assert.match(page, /action="\?\/restore&tab=restore"/);
-	assert.match(page, /action="\?\/cancel&tab=overview"/);
+	assert.ok(page.includes('action={`?/cancel&tab=${tab}`}'));
 	assert.match(page, /action="\?\/pause&tab=overview" use:enhance=\{pauseEnhance\}/);
 	assert.match(page, /action="\?\/clearLog&tab=maintenance"/);
 	assert.match(page, /action="\?\/reset&tab=maintenance" use:enhance=\{pauseEnhance\}/);

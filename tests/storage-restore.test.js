@@ -186,7 +186,39 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 		),
 		'{}'
 	);
-	const result = await prepareStorageRestore(connection, { backupId: f.backup.id }, f.deps);
+	const progress = [];
+	const result = await prepareStorageRestore(
+		connection,
+		{ backupId: f.backup.id, onProgress: (value) => progress.push(value) },
+		f.deps
+	);
+	assert.equal(progress[0].phase, 'preparing');
+	for (const phase of [
+		'listing',
+		'manifest',
+		'downloading',
+		'decrypting',
+		'verifying',
+		'database',
+		'publishing',
+		'complete'
+	])
+		assert.ok(
+			progress.some((value) => value.phase === phase),
+			phase
+		);
+	assert.ok(progress.some((value) => value.phase === 'decrypting' && value.downloadedObjects > 0));
+	const completed = progress.at(-1);
+	assert.equal(completed.phase, 'complete');
+	assert.equal(completed.downloadedObjects, f.manifest.bundles.length);
+	assert.equal(completed.totalObjects, f.manifest.bundles.length);
+	assert.equal(completed.restoredFiles, f.manifest.files.length);
+	assert.equal(completed.totalFiles, f.manifest.files.length);
+	assert.ok(completed.downloadedBytes > 0);
+	assert.equal(completed.verificationBytes, completed.downloadedBytes);
+	assert.ok(!JSON.stringify(progress).includes('audio.ogg'));
+	assert.ok(!JSON.stringify(progress).includes(f.app));
+	assert.ok(!JSON.stringify(progress).includes('private'));
 	assert.equal(result.id, f.backup.id);
 	assert.ok(isStorageRestoreId(result.restoreId));
 	assert.equal(result.files, f.manifest.files.length);
@@ -253,6 +285,19 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 		assert.equal((await fs.stat(staging)).mode & 0o777, 0o700);
 		assert.equal((await fs.stat(path.join(staging, 'db', 'pacs.db'))).mode & 0o777, 0o600);
 	}
+});
+
+test('progress observer failures during restore verification remove staging and never report completion', async (t) => {
+	const f = await fixture(t);
+	const phases = [];
+	await f.reject({
+		onProgress(progress) {
+			phases.push(progress.phase);
+			if (progress.phase === 'verifying') throw new Error('private/patient/path');
+		}
+	});
+	assert.ok(phases.includes('verifying'));
+	assert.ok(!phases.includes('complete'));
 });
 
 test('strict backup IDs reject malformed IDs and traversal before contacting remote', async (t) => {

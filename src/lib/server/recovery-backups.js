@@ -1020,13 +1020,24 @@ export async function pruneRecovery(
 
 /** Offline restore only. objectsDirectory contains downloaded backups/objects/*.enc. */
 export async function restoreRecovery(
-	{ manifestFile, objectsDirectory, outputDirectory },
+	{ manifestFile, objectsDirectory, outputDirectory, onProgress = () => {}, owned = () => {} },
 	injected = {}
 ) {
 	let work;
 	let database;
+	let restoredFiles = 0;
+	const activity = () => onProgress({});
+	const phase = (phase) => onProgress({ phase });
+	const verifiedFile = () => onProgress({ restoredFiles: ++restoredFiles });
 	try {
 		const deps = await dependencies(injected, false);
+		const decrypt = async (source, target) => {
+			await owned();
+			phase('decrypting');
+			await deps.decryptFile(source, target);
+			await owned();
+			activity();
+		};
 		await deps.assertStorageKey();
 		const output = path.resolve(outputDirectory);
 		await noLinks(output, true);
@@ -1040,41 +1051,47 @@ export async function restoreRecovery(
 		await noLinks(objectsDirectory);
 		const plainManifest = path.join(work, 'manifest.json');
 		if ((await fs.stat(manifestFile)).size > MAX_MANIFEST_BYTES + 35) throw new Error();
-		await deps.decryptFile(manifestFile, plainManifest);
+		await decrypt(manifestFile, plainManifest);
 		if ((await fs.stat(plainManifest)).size > MAX_MANIFEST_BYTES) throw new Error();
 		const manifest = validateManifest(JSON.parse(await fs.readFile(plainManifest, 'utf8')));
 		const restored = path.join(work, 'restored');
 		await fs.mkdir(restored, { mode: 0o700 });
 		async function checkObject(object, entry) {
+			await owned();
+			phase('verifying');
 			await noLinks(object);
 			const stat = await fs.stat(object);
 			if (
 				!stat.isFile() ||
 				stat.size > objectDownloadBytes(manifest, entry) ||
-				(await sha256(object)) !== entry.remoteSha256
+				(await sha256(object, activity)) !== entry.remoteSha256
 			)
 				throw new Error();
 		}
 		if (manifest.version === 2) {
-			await unpackBundles(
-				manifest,
-				objectsDirectory,
-				restored,
-				work,
-				deps.decryptFile,
-				checkObject
-			);
+			await unpackBundles(manifest, objectsDirectory, restored, work, decrypt, checkObject, {
+				activity,
+				verifiedFile,
+				phase
+			});
 		} else
 			for (const entry of manifest.files) {
 				const object = path.join(objectsDirectory, entry.object);
 				await checkObject(object, entry);
 				const target = path.join(restored, ...entry.path.split('/'));
 				await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-				await deps.decryptFile(object, target);
+				await decrypt(object, target);
 				await fs.chmod(target, 0o600);
-				if ((await fs.stat(target)).size !== entry.bytes || (await sha256(target)) !== entry.sha256)
+				phase('verifying');
+				if (
+					(await fs.stat(target)).size !== entry.bytes ||
+					(await sha256(target, activity)) !== entry.sha256
+				)
 					throw new Error();
+				verifiedFile();
 			}
+		await owned();
+		phase('database');
 		database = new Database(path.join(restored, 'db', 'pacs.db'));
 		if (database.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
 		const remap = database.transaction(() => {
@@ -1113,6 +1130,8 @@ export async function restoreRecovery(
 		} catch (error) {
 			if (error.code !== 'ENOENT') throw error;
 		}
+		await owned();
+		phase('publishing');
 		await fs.rmdir(output).catch((error) => {
 			if (error.code !== 'ENOENT') throw error;
 		});
