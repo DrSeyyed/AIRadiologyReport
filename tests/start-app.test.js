@@ -30,6 +30,24 @@ function inspectMounts(mounts, cwd = '/app') {
 	});
 }
 
+test('private config persistence requires its own covering durable mount, not just clinical mounts', async () => {
+	const inspect = (mounts) =>
+		detectRestoreDataPersistence({
+			cwd: '/app',
+			platform: 'linux',
+			roots: ['config'],
+			readMountInfo: async () => [rootMount, ...mounts].join('\n')
+		});
+	assert.equal(
+		await inspect(dataRoots.map((name, index) => mount(`/app/${name}`, 'ext4', 'rw', index + 2))),
+		false
+	);
+	assert.equal(await inspect([mount('/app/config')]), true);
+	assert.equal(await inspect([mount('/app/config', 'tmpfs')]), false);
+	assert.equal(await inspect([mount('/app/config', 'ext4', 'ro')]), false);
+	assert.equal(await inspect([mount('/app')]), true);
+});
+
 test('persistence accepts four exact mounts and shared non-root ancestors', async () => {
 	assert.equal(
 		await inspectMounts(
@@ -207,6 +225,7 @@ function fixture({
 		cwd: process.cwd(),
 		env: {},
 		activationApi: api,
+		initializeConfiguration: () => {},
 		detectPersistence: async () => true,
 		signalSource: signals,
 		readinessTimeoutMs: 100,
@@ -252,6 +271,59 @@ function fixture({
 	};
 	return { options, events, children, signals, api };
 }
+
+test('private config initializes before persistence inspection, activation and database startup', async () => {
+	const f = fixture();
+	f.options.initializeConfiguration = (options) => {
+		assert.deepEqual(options, { cwd: f.options.cwd });
+		f.events.push(['config']);
+	};
+	f.options.detectPersistence = async () => {
+		f.events.push(['persistence']);
+		return true;
+	};
+	assert.equal(await superviseApp(f.options), 7);
+	assert.deepEqual(
+		f.events.slice(0, 4).map((event) => event[0]),
+		['config', 'persistence', 'apply', 'spawn']
+	);
+});
+
+for (const persisted of [false, true]) {
+	test(`Docker config persistence ${persisted ? 'permits initialization' : 'blocks migration before any writes'}`, async () => {
+		const f = fixture();
+		f.options.env.REQUIRE_PRIVATE_CONFIG_VOLUME = '1';
+		let initialized = false;
+		f.options.initializeConfiguration = () => {
+			initialized = true;
+		};
+		f.options.detectConfigurationPersistence = async (options) => {
+			assert.deepEqual(options, { cwd: f.options.cwd });
+			return persisted;
+		};
+		assert.equal(await superviseApp(f.options), persisted ? 7 : 1);
+		assert.equal(initialized, persisted);
+		if (!persisted) {
+			assert.equal(f.children.length, 0);
+			assert.ok(!f.events.some((event) => ['apply', 'rollback'].includes(event[0])));
+			assert.match(f.events[0][1], /\/app\/config persistent volume/);
+		}
+	});
+}
+
+test('private config failure stops before database or restore mutation and logs no sensitive cause', async () => {
+	const f = fixture();
+	f.options.initializeConfiguration = () => {
+		throw Object.assign(new Error('synthetic-private-secret'), {
+			code: 'INTEGRATION_CONFIGURATION_INIT_FAILED'
+		});
+	};
+	assert.equal(await superviseApp(f.options), 1);
+	assert.equal(f.children.length, 0);
+	assert.ok(!f.events.some((event) => ['apply', 'rollback', 'spawn'].includes(event[0])));
+	assert.match(f.events[0][1], /Private integration configuration initialization failed/);
+	assert.doesNotMatch(JSON.stringify(f.events), /synthetic-private-secret/);
+});
 
 const names = (events) => events.map((event) => event[0]);
 

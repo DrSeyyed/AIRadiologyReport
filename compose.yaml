@@ -12,38 +12,7 @@ services:
     networks:
       - appnet
 
-  integration-settings-init:
-    image: node:24-alpine
-    user: '0:0'
-    restart: 'no'
-    network_mode: none
-    read_only: true
-    cap_drop:
-      - ALL
-    cap_add:
-      - FOWNER
-      - DAC_OVERRIDE
-    entrypoint: ['sh', '-ec']
-    command:
-      - |
-        chmod 700 /private-integrations
-        test "$$(stat -c %a /private-integrations)" = 700
-        if [ ! -e /private-integrations/settings.json ] && { [ -e /legacy-staging/.integrations/settings.json ] || [ -L /legacy-staging/.integrations/settings.json ]; }; then
-          echo "Existing integration settings found. Migrate them into the private volume before starting the application. See README Docker Compose deployment." >&2
-          exit 1
-        fi
-    volumes:
-      - type: volume
-        source: integration-settings
-        target: /private-integrations
-        volume:
-          nocopy: true
-      - ./pacs/restore-staging:/legacy-staging:ro
-
   pacs-app:
-    depends_on:
-      integration-settings-init:
-        condition: service_completed_successfully
     build:
       context: 'https://github.com/DrSeyyed/AIRadiologyReport.git#develop'
       dockerfile: Dockerfile
@@ -57,7 +26,7 @@ services:
       - ./pacs/restore-staging:/app/restore-staging
       - type: volume
         source: integration-settings
-        target: /app/restore-staging/.integrations
+        target: /app/config
         volume:
           nocopy: true
     ports:

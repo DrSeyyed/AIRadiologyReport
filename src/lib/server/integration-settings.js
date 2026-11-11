@@ -71,7 +71,8 @@ function publicHostname(hostname) {
 export function normalizeIntegrationValue(key, value) {
 	const field = INTEGRATION_FIELDS.find((field) => field.key === key);
 	if (
-		!field || typeof value !== 'string' ||
+		!field ||
+		typeof value !== 'string' ||
 		value.length > field.maxLength ||
 		/[\p{Cc}\p{Cf}]/u.test(value)
 	) {
@@ -95,9 +96,11 @@ export function normalizeIntegrationValue(key, value) {
 	return value;
 }
 
-function location(cwd) {
-	// Deployment configuration intentionally lives outside the restored application database.
-	const directory = path.resolve(cwd, 'restore-staging', '.integrations');
+function location(cwd, legacy = false) {
+	// Deployment configuration intentionally lives outside all clinical restore roots.
+	const directory = legacy
+		? path.resolve(cwd, 'restore-staging', '.integrations')
+		: path.resolve(cwd, 'config');
 	return { directory, filename: path.join(directory, 'settings.json') };
 }
 
@@ -128,21 +131,21 @@ function directorySafe(directory, create = false) {
 	if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(READ_ERROR);
 }
 
-function fileSafe(stat) {
+function fileSafe(stat, legacy = false) {
 	if (
 		!stat.isFile() ||
 		stat.isSymbolicLink() ||
 		stat.nlink !== 1 ||
 		stat.size > 65536 ||
-		(process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
+		(!legacy && process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
 	)
 		throw new Error(READ_ERROR);
 }
 
-function readRecord(cwd) {
-	const { directory, filename } = location(cwd);
+function readRecord(cwd, legacy = false) {
+	const { directory, filename } = location(cwd, legacy);
 	directorySafe(directory);
-	if (process.platform !== 'win32') {
+	if (!legacy && process.platform !== 'win32') {
 		try {
 			if ((fs.lstatSync(directory).mode & 0o077) !== 0) throw new Error(READ_ERROR);
 		} catch (error) {
@@ -156,48 +159,64 @@ function readRecord(cwd) {
 		if (error.code === 'ENOENT') return undefined;
 		throw error;
 	}
-	fileSafe(stat);
+	fileSafe(stat, legacy);
 	const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
 	try {
 		const opened = fs.fstatSync(fd);
-		fileSafe(opened);
+		fileSafe(opened, legacy);
 		if (stat.ino !== opened.ino || stat.dev !== opened.dev) throw new Error(READ_ERROR);
-		return JSON.parse(fs.readFileSync(fd, 'utf8'));
+		const buffer = Buffer.alloc(65537);
+		let length = 0;
+		while (length < buffer.length) {
+			const count = fs.readSync(fd, buffer, length, buffer.length - length, null);
+			if (!count) break;
+			length += count;
+		}
+		fileSafe(fs.fstatSync(fd), legacy);
+		if (length > 65536) throw new Error(READ_ERROR);
+		return JSON.parse(buffer.toString('utf8', 0, length));
 	} finally {
 		fs.closeSync(fd);
 	}
 }
 
+function decodeRecord(record) {
+	assertStorageKey();
+	if (
+		!record ||
+		record.version !== 1 ||
+		Object.keys(record).length !== 2 ||
+		typeof record.ciphertext !== 'string'
+	)
+		throw invalid();
+	const payload = JSON.parse(decryptSecret(record.ciphertext));
+	if (
+		!payload ||
+		payload.scope !== 'AIRadiologyReport/integrations/v1' ||
+		Object.keys(payload).some((key) => !['scope', 'fields', 'restoreOperationId'].includes(key)) ||
+		(payload.restoreOperationId !== undefined &&
+			!/^[a-f0-9-]{36}$/.test(payload.restoreOperationId)) ||
+		!payload.fields ||
+		typeof payload.fields !== 'object' ||
+		Array.isArray(payload.fields) ||
+		Object.keys(payload.fields).some((key) => !keys.has(key))
+	)
+		throw invalid();
+	const saved = new Map();
+	for (const [key, value] of Object.entries(payload.fields)) {
+		saved.set(key, normalizeIntegrationValue(key, value));
+	}
+	saved.restoreOperationId = payload.restoreOperationId;
+	return saved;
+}
+
 function savedSettings(cwd) {
 	try {
 		const record = readRecord(cwd);
-		if (record === undefined) return new Map();
-		assertStorageKey();
-		if (
-			!record ||
-			record.version !== 1 ||
-			Object.keys(record).length !== 2 ||
-			typeof record.ciphertext !== 'string'
-		)
-			throw invalid();
-		const payload = JSON.parse(decryptSecret(record.ciphertext));
-		if (
-			!payload ||
-			payload.scope !== 'AIRadiologyReport/integrations/v1' ||
-			Object.keys(payload).some((key) => !['scope', 'fields', 'restoreOperationId'].includes(key)) ||
-			(payload.restoreOperationId !== undefined && !/^[a-f0-9-]{36}$/.test(payload.restoreOperationId)) ||
-			!payload.fields ||
-			typeof payload.fields !== 'object' ||
-			Array.isArray(payload.fields) ||
-			Object.keys(payload.fields).some((key) => !keys.has(key))
-		)
-			throw invalid();
-		const saved = new Map();
-		for (const [key, value] of Object.entries(payload.fields)) {
-			saved.set(key, normalizeIntegrationValue(key, value));
-		}
-		saved.restoreOperationId = payload.restoreOperationId;
-		return saved;
+		if (record !== undefined) return decodeRecord(record);
+		// Reads must not silently fall back to environment values before legacy migration.
+		if (readRecord(cwd, true) !== undefined) throw new Error(READ_ERROR);
+		return new Map();
 	} catch {
 		throw new Error(READ_ERROR);
 	}
@@ -231,6 +250,50 @@ function writeRecord(cwd, record) {
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
 		if (created) fs.rmSync(pending, { force: true });
+	}
+}
+
+/** Run before application/database startup; never changes or deletes the legacy ciphertext. */
+export function initializeIntegrationSettings({ cwd = process.cwd() } = {}) {
+	try {
+		const { directory } = location(cwd);
+		directorySafe(directory, true);
+		if (process.platform !== 'win32') {
+			const before = fs.lstatSync(directory);
+			const fd = fs.openSync(
+				directory,
+				fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | (fs.constants.O_NOFOLLOW ?? 0)
+			);
+			try {
+				const opened = fs.fstatSync(fd);
+				if (!opened.isDirectory() || before.ino !== opened.ino || before.dev !== opened.dev)
+					throw invalid();
+				fs.fchmodSync(fd, 0o700);
+				if ((fs.fstatSync(fd).mode & 0o777) !== 0o700) throw invalid();
+				fs.fsyncSync(fd);
+			} finally {
+				fs.closeSync(fd);
+			}
+		}
+		const current = readRecord(cwd);
+		if (current !== undefined) {
+			decodeRecord(current);
+			return { migrated: false };
+		}
+		// Legacy mounts may ignore chmod. Only authenticate and copy their bounded encrypted file.
+		const legacy = readRecord(cwd, true);
+		if (legacy === undefined) return { migrated: false };
+		decodeRecord(legacy);
+		writeRecord(cwd, legacy);
+		savedSettings(cwd);
+		return { migrated: true };
+	} catch {
+		throw Object.assign(
+			new Error(
+				'Private integration configuration initialization failed. Check config volume permissions, the retained server encryption key and legacy settings. No credentials were reset.'
+			),
+			{ code: 'INTEGRATION_CONFIGURATION_INIT_FAILED' }
+		);
 	}
 }
 
@@ -290,7 +353,10 @@ export function integrationRestoreApplied(operationId, { cwd = process.cwd() } =
 }
 
 /** Atomic partial updates. Empty strings are encrypted overrides, not deletions. Never applies env. */
-export function saveIntegrationSettings(updates, { env = process.env, cwd = process.cwd(), restoreOperationId } = {}) {
+export function saveIntegrationSettings(
+	updates,
+	{ env = process.env, cwd = process.cwd(), restoreOperationId } = {}
+) {
 	let normalized;
 	try {
 		if (
@@ -312,14 +378,18 @@ export function saveIntegrationSettings(updates, { env = process.env, cwd = proc
 		assertStorageKey();
 		// Authenticate the existing file before permitting updates with a different master key.
 		const saved = savedSettings(cwd);
-		if (restoreOperationId !== undefined && !/^[a-f0-9-]{36}$/.test(restoreOperationId)) throw invalid();
-		if (restoreOperationId && saved.restoreOperationId === restoreOperationId) return readIntegrationSettings({ env, cwd });
+		if (restoreOperationId !== undefined && !/^[a-f0-9-]{36}$/.test(restoreOperationId))
+			throw invalid();
+		if (restoreOperationId && saved.restoreOperationId === restoreOperationId)
+			return readIntegrationSettings({ env, cwd });
 		for (const [key, value] of normalized) saved.set(key, value);
 		const ciphertext = encryptSecret(
 			JSON.stringify({
 				scope: 'AIRadiologyReport/integrations/v1',
 				fields: Object.fromEntries(saved),
-				...((restoreOperationId || saved.restoreOperationId) ? { restoreOperationId: restoreOperationId || saved.restoreOperationId } : {})
+				...(restoreOperationId || saved.restoreOperationId
+					? { restoreOperationId: restoreOperationId || saved.restoreOperationId }
+					: {})
 			})
 		);
 		writeRecord(cwd, { version: 1, ciphertext });

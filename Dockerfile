@@ -11,4 +11,5 @@ RUN npm run build
 EXPOSE 5173
 ENV PORT=5173
 ENV BODY_SIZE_LIMIT=50M
+ENV REQUIRE_PRIVATE_CONFIG_VOLUME=1
 CMD ["node", "scripts/start-app.mjs"]

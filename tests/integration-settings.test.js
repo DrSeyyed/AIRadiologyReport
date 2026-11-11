@@ -10,6 +10,8 @@ import {
 	INTEGRATION_FIELDS,
 	resolveIntegrationSettings,
 	applyIntegrationSettings,
+	initializeIntegrationSettings,
+	integrationRestoreApplied,
 	readIntegrationSettings,
 	saveIntegrationSettings
 } from '../src/lib/server/integration-settings.js';
@@ -32,7 +34,7 @@ function setup(t) {
 	process.env.STORAGE_ENCRYPTION_KEY = master;
 	const cwd = path.resolve(`.integration-settings-test-${randomUUID()}`);
 	fs.mkdirSync(cwd, { mode: 0o700 });
-	const directory = path.join(cwd, 'restore-staging', '.integrations');
+	const directory = path.join(cwd, 'config');
 	const filename = path.join(directory, 'settings.json');
 	t.after(() => {
 		fs.rmSync(cwd, { recursive: true, force: true });
@@ -401,25 +403,22 @@ test('deployment settings survive a separate process restart and restored databa
 	assert.equal(contents(fixture), before);
 });
 
-for (const component of ['restore-staging', '.integrations']) {
-	test(`symlinked ${component} directories fail closed without touching the target`, (t) => {
-		const fixture = setup(t);
-		const { cwd } = fixture;
-		const target = path.join(cwd, 'protected-target');
-		fs.mkdirSync(target, { mode: 0o700 });
-		const link = component === 'restore-staging' ? path.join(cwd, component) : fixture.directory;
-		if (component === '.integrations') fs.mkdirSync(path.dirname(link), { mode: 0o700 });
-		try {
-			fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
-		} catch (error) {
-			if (error.code === 'EPERM') return t.skip('Directory symlinks unavailable');
-			throw error;
-		}
-		sanitized(() => readIntegrationSettings({ cwd, env: {} }));
-		sanitized(() => saveIntegrationSettings(valid, { cwd, env: {} }));
-		assert.deepEqual(fs.readdirSync(target), []);
-	});
-}
+test('symlinked config directories fail closed without touching the target', (t) => {
+	const fixture = setup(t);
+	const { cwd } = fixture;
+	const target = path.join(cwd, 'protected-target');
+	fs.mkdirSync(target, { mode: 0o700 });
+	try {
+		fs.symlinkSync(target, fixture.directory, process.platform === 'win32' ? 'junction' : 'dir');
+	} catch (error) {
+		if (error.code === 'EPERM') return t.skip('Directory symlinks unavailable');
+		throw error;
+	}
+	sanitized(() => initializeIntegrationSettings({ cwd }));
+	sanitized(() => readIntegrationSettings({ cwd, env: {} }));
+	sanitized(() => saveIntegrationSettings(valid, { cwd, env: {} }));
+	assert.deepEqual(fs.readdirSync(target), []);
+});
 
 test('hardlinked settings files are rejected without modifying the protected target', (t) => {
 	const fixture = setup(t);
@@ -498,4 +497,176 @@ test('repeated apply preserves per-object startup fallback through updates, clea
 	assert.equal(env.GEMINI_API_KEY, '');
 	assert.equal(env.OTHER, 'untouched');
 	assert.equal(Object.hasOwn(env, 'STORAGE_ENCRYPTION_KEY'), false);
+});
+
+function legacyFixture(t, values = valid, restoreOperationId) {
+	const fixture = setup(t);
+	saveIntegrationSettings(values, { cwd: fixture.cwd, env: {}, restoreOperationId });
+	const legacyDirectory = path.join(fixture.cwd, 'restore-staging', '.integrations');
+	fs.mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
+	const legacyFile = path.join(legacyDirectory, 'settings.json');
+	fs.renameSync(fixture.filename, legacyFile);
+	return { ...fixture, legacyDirectory, legacyFile };
+}
+
+test('startup provisions a private config directory without a key or creating a vault', (t) => {
+	const fixture = setup(t);
+	delete process.env.STORAGE_ENCRYPTION_KEY;
+	assert.deepEqual(initializeIntegrationSettings({ cwd: fixture.cwd }), { migrated: false });
+	assert.deepEqual(fs.readdirSync(fixture.directory), []);
+	assert.equal(fs.existsSync(path.join(fixture.cwd, 'restore-staging')), false);
+	if (process.platform !== 'win32')
+		assert.equal(fs.statSync(fixture.directory).mode & 0o777, 0o700);
+	assert.equal(readIntegrationSettings({ cwd: fixture.cwd, env: {} }).encryptionConfigured, false);
+});
+
+test('legacy settings cannot silently fall back to environment values before migration', (t) => {
+	const fixture = legacyFixture(t);
+	const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+	sanitized(() =>
+		resolveIntegrationSettings({ cwd: fixture.cwd, env: { OPENAI_API_KEY: 'environment-key' } })
+	);
+	sanitized(() =>
+		saveIntegrationSettings({ OPENAI_API_KEY: 'replacement' }, { cwd: fixture.cwd, env: {} })
+	);
+	assert.equal(fs.existsSync(fixture.filename), false);
+	assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), original);
+});
+
+test('startup authenticates and migrates legacy ciphertext, blanks and restore receipt without changing its source', (t) => {
+	const operation = randomUUID();
+	const values = { ...valid, GEMINI_API_KEY: '' };
+	const fixture = legacyFixture(t, values, operation);
+	fs.chmodSync(fixture.legacyDirectory, 0o777);
+	fs.chmodSync(fixture.legacyFile, 0o777);
+	fs.chmodSync(fixture.directory, 0o755);
+	const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+	assert.deepEqual(initializeIntegrationSettings({ cwd: fixture.cwd }), { migrated: true });
+	assert.equal(contents(fixture), original);
+	assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), original);
+	assert.deepEqual(
+		resolveIntegrationSettings({ cwd: fixture.cwd, env: { GEMINI_API_KEY: 'environment-key' } }),
+		values
+	);
+	assert.equal(integrationRestoreApplied(operation, { cwd: fixture.cwd }), true);
+	assert.equal(fs.statSync(fixture.filename).nlink, 1);
+	assert.deepEqual(fs.readdirSync(fixture.directory), ['settings.json']);
+	if (process.platform !== 'win32') {
+		assert.equal(fs.statSync(fixture.directory).mode & 0o777, 0o700);
+		assert.equal(fs.statSync(fixture.filename).mode & 0o777, 0o600);
+		assert.equal(fs.statSync(fixture.legacyFile).mode & 0o777, 0o777);
+	}
+});
+
+test('existing private volume settings always win and restart never replays a legacy copy', (t) => {
+	const fixture = legacyFixture(t);
+	initializeIntegrationSettings({ cwd: fixture.cwd });
+	saveIntegrationSettings(
+		{ OPENAI_API_KEY: 'synthetic-later-edit' },
+		{ cwd: fixture.cwd, env: {} }
+	);
+	const current = contents(fixture);
+	fs.writeFileSync(fixture.legacyFile, 'corrupt stale legacy file');
+	assert.deepEqual(initializeIntegrationSettings({ cwd: fixture.cwd }), { migrated: false });
+	assert.equal(contents(fixture), current);
+	assert.equal(
+		resolveIntegrationSettings({ cwd: fixture.cwd, env: {} }).OPENAI_API_KEY,
+		'synthetic-later-edit'
+	);
+});
+
+test('wrong key never migrates a legacy vault or overwrites an existing private vault', (t) => {
+	const fixture = legacyFixture(t);
+	const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+	process.env.STORAGE_ENCRYPTION_KEY = otherMaster;
+	assert.throws(() => initializeIntegrationSettings({ cwd: fixture.cwd }), {
+		code: 'INTEGRATION_CONFIGURATION_INIT_FAILED'
+	});
+	assert.equal(contents(fixture), null);
+	assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), original);
+	process.env.STORAGE_ENCRYPTION_KEY = master;
+	initializeIntegrationSettings({ cwd: fixture.cwd });
+	const current = contents(fixture);
+	process.env.STORAGE_ENCRYPTION_KEY = otherMaster;
+	sanitized(() => initializeIntegrationSettings({ cwd: fixture.cwd }));
+	assert.equal(contents(fixture), current);
+});
+
+for (const corruption of ['json', 'ciphertext', 'scope', 'unknown-field', 'oversize']) {
+	test(`legacy ${corruption} corruption fails closed without publishing a new vault`, (t) => {
+		const fixture = legacyFixture(t);
+		const record = JSON.parse(fs.readFileSync(fixture.legacyFile, 'utf8'));
+		if (corruption === 'ciphertext') record.ciphertext = 'v1:invalid';
+		if (corruption === 'scope' || corruption === 'unknown-field') {
+			const payload = JSON.parse(decryptSecret(record.ciphertext));
+			if (corruption === 'scope') payload.scope = 'invalid';
+			else payload.fields.STORAGE_ENCRYPTION_KEY = master;
+			record.ciphertext = encryptSecret(JSON.stringify(payload));
+		}
+		const corrupted =
+			corruption === 'json'
+				? '{invalid'
+				: corruption === 'oversize'
+					? 'x'.repeat(65537)
+					: JSON.stringify(record);
+		fs.writeFileSync(fixture.legacyFile, corrupted);
+		sanitized(() => initializeIntegrationSettings({ cwd: fixture.cwd }));
+		assert.equal(contents(fixture), null);
+		assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), corrupted);
+	});
+}
+
+test('legacy hardlinks are rejected without modifying either source name', (t) => {
+	const fixture = legacyFixture(t);
+	const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+	const alias = path.join(fixture.cwd, 'protected-legacy.json');
+	fs.linkSync(fixture.legacyFile, alias);
+	sanitized(() => initializeIntegrationSettings({ cwd: fixture.cwd }));
+	assert.equal(contents(fixture), null);
+	assert.equal(fs.readFileSync(alias, 'utf8'), original);
+	assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), original);
+});
+
+for (const kind of ['directory', 'file']) {
+	test(`legacy ${kind} symlinks cannot redirect migration`, (t) => {
+		const fixture = legacyFixture(t);
+		const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+		const source = kind === 'directory' ? fixture.legacyDirectory : fixture.legacyFile;
+		const protectedPath = path.join(fixture.cwd, `protected-${kind}`);
+		fs.renameSync(source, protectedPath);
+		try {
+			fs.symlinkSync(
+				protectedPath,
+				source,
+				kind === 'directory' ? (process.platform === 'win32' ? 'junction' : 'dir') : 'file'
+			);
+		} catch (error) {
+			if (error.code === 'EPERM') return t.skip('Symlinks unavailable');
+			throw error;
+		}
+		sanitized(() => initializeIntegrationSettings({ cwd: fixture.cwd }));
+		assert.equal(contents(fixture), null);
+		assert.equal(
+			fs.readFileSync(
+				kind === 'directory' ? path.join(protectedPath, 'settings.json') : protectedPath,
+				'utf8'
+			),
+			original
+		);
+	});
+}
+
+test('failed atomic migration leaves the source recoverable and can be retried', (t) => {
+	const fixture = legacyFixture(t);
+	const original = fs.readFileSync(fixture.legacyFile, 'utf8');
+	const rename = t.mock.method(fs, 'renameSync', () => {
+		throw new Error('synthetic sensitive failure');
+	});
+	sanitized(() => initializeIntegrationSettings({ cwd: fixture.cwd }));
+	assert.equal(contents(fixture), null);
+	assert.deepEqual(fs.readdirSync(fixture.directory), []);
+	assert.equal(fs.readFileSync(fixture.legacyFile, 'utf8'), original);
+	rename.mock.restore();
+	assert.deepEqual(initializeIntegrationSettings({ cwd: fixture.cwd }), { migrated: true });
+	assert.equal(contents(fixture), original);
 });

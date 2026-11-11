@@ -4,6 +4,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { posix, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { initializeIntegrationSettings } from '../src/lib/server/integration-settings.js';
 
 const RESTORE_DATA_ROOTS = ['db', 'uploads', 'voice', 'restore-staging'];
 // Unknown and memory/pseudo filesystems cannot establish durable activation support.
@@ -43,7 +44,8 @@ function mountPath(encoded) {
 export async function detectRestoreDataPersistence({
 	cwd = process.cwd(),
 	platform = process.platform,
-	readMountInfo = () => readFile('/proc/self/mountinfo', 'utf8')
+	readMountInfo = () => readFile('/proc/self/mountinfo', 'utf8'),
+	roots = RESTORE_DATA_ROOTS
 } = {}) {
 	if (platform !== 'linux' || !posix.isAbsolute(cwd)) return false;
 	try {
@@ -72,7 +74,7 @@ export async function detectRestoreDataPersistence({
 		mounts.sort((a, b) => b.path.length - a.path.length);
 		const covers = (ancestor, target) =>
 			ancestor === target || target.startsWith(`${ancestor === '/' ? '' : ancestor}/`);
-		return RESTORE_DATA_ROOTS.every((name) => {
+		return roots.every((name) => {
 			const root = posix.resolve(cwd, name);
 			const covering = mounts.find((mount) => covers(mount.path, root));
 			return (
@@ -194,6 +196,9 @@ export async function superviseApp({
 	spawnProcess = spawn,
 	signalSource = process,
 	activationApi,
+	initializeConfiguration = initializeIntegrationSettings,
+	detectConfigurationPersistence = (options) =>
+		detectRestoreDataPersistence({ ...options, roots: ['config'] }),
 	detectPersistence = detectRestoreDataPersistence,
 	checkHealth = probeRestoreHealth,
 	readinessTimeoutMs = 120_000,
@@ -246,6 +251,16 @@ export async function superviseApp({
 	};
 	let exitCode = 1;
 	try {
+		if (
+			env.REQUIRE_PRIVATE_CONFIG_VOLUME === '1' &&
+			(await interruptible(detectConfigurationPersistence({ cwd }))) !== true
+		) {
+			throw Object.assign(new Error('Private configuration persistence is required.'), {
+				code: 'INTEGRATION_CONFIGURATION_INIT_FAILED'
+			});
+		}
+		await interruptible(Promise.resolve().then(() => initializeConfiguration({ cwd })));
+		checkInterrupted();
 		let dataPersisted = false;
 		try {
 			dataPersisted = (await detectPersistence({ cwd })) === true;
@@ -331,9 +346,14 @@ export async function superviseApp({
 		}
 		const result = await interruptible(server.done);
 		exitCode = result.code > 0 ? result.code : 1;
-	} catch {
+	} catch (cause) {
 		failed = true;
-		if (!interruption) logger.error('Application startup or supervision failed.');
+		if (!interruption)
+			logger.error(
+				cause?.code === 'INTEGRATION_CONFIGURATION_INIT_FAILED'
+					? 'Private integration configuration initialization failed. Check the /app/config persistent volume mount and permissions, the retained server encryption key and legacy settings. No credentials were reset.'
+					: 'Application startup or supervision failed.'
+			);
 	} finally {
 		controller.abort();
 		let stopped = false;

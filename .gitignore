@@ -25,6 +25,9 @@ uploads
 /data/
 /letsencrypt/
 
+# Private deployment credentials
+/config/
+
 # Verified recovery copies (contain private application data)
 /restore-staging/
 
