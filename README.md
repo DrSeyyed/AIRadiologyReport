@@ -59,6 +59,28 @@ ls -la ./pacs/restore-staging
 
 If the copy fails or the expected restore directory is missing, stop and resolve that before redeploying. Adding the mount hides the container's previous directory; recreating the container can discard it. If the old container already contains `/app/voice`, also copy its contents into `./pacs/voice` before adding that mount. After confirming the copies, apply the updated configuration with `docker compose up -d --build pacs-app` or update the existing Portainer stack. Keep all existing data mounts unchanged.
 
+### Private integration credential volume
+
+Compose stores encrypted integration credentials in the Docker-managed `integration-settings` volume, mounted only at `/app/restore-staging/.integrations`. Database, audio and prepared-restore bind mounts remain unchanged. This avoids credential import failures on host filesystems that report permissions as `777` even after `chmod`. A network-isolated initialization service enforces and verifies directory mode `700` before the application starts; credential files still require mode `600`. Security checks are not relaxed. Use Docker Compose, not Swarm `docker stack deploy`, for the completion dependency.
+
+**Existing deployments:** preserve your original `STORAGE_ENCRYPTION_KEY` and current credential environment variables until migration/import succeeds. The new mount hides the previous `.integrations` directory. If it already contains `settings.json`, the initialization service deliberately refuses to start the application rather than silently replacing your settings. After preserving staging as described above, stop the application and copy the existing encrypted file into the new volume, without overwriting an existing destination:
+
+```sh
+docker compose stop pacs-app
+docker compose run --rm --no-deps --entrypoint sh integration-settings-init -ec '
+  test -f /legacy-staging/.integrations/settings.json
+  test ! -L /legacy-staging/.integrations/settings.json
+  test ! -e /private-integrations/settings.json
+  test ! -L /private-integrations/settings.json
+  chmod 700 /private-integrations
+  cp /legacy-staging/.integrations/settings.json /private-integrations/settings.json
+  chmod 600 /private-integrations/settings.json
+'
+docker compose up -d pacs-app
+```
+
+If there is no previous `settings.json` (for example, the first import failed on a `777` filesystem), skip the copy and run `docker compose up -d pacs-app` with the updated Compose file. Verify that the initialization service completed successfully, then open **Admin → Integrations** and import the retained environment values. Keep the old encrypted copy until the settings are verified. Never use `docker compose down -v` on a production deployment: it deletes this credential volume. A named volume cannot fix a Docker data directory whose own filesystem also lacks private Unix permissions; in that case initialization fails safely and Docker storage must be moved to a suitable filesystem.
+
 The Docker image starts a supervisor before opening the database. With `restart: unless-stopped`, administrators can explicitly activate a verified restore from the storage panel; the supervisor stops the application and Docker restarts it to install the copy offline. `stop_grace_period: 45s` allows graceful shutdown. Persist `/app/voice` as well as the database, uploads and staging; the prepared copy's relocated voice files install there. The current deployment environment and original encryption key are retained, not replaced by the restored `.env` or `environment.json`. The supervisor verifies Linux persistent-mount coverage for all four roots and disables activation if inspection fails, a root is ephemeral/unmounted, the supervisor/IPC channel is absent, or `VOICE_SAVE_DIR` is external. Ordinary startup still works without activation support; a pending activation with missing persistence blocks startup instead of installing against changed mounts. Unsupported deployments require manual activation. No Docker socket or privileged container is required.
 
 ## Persistent audio storage

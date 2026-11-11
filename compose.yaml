@@ -3,29 +3,65 @@ services:
     image: docker.io/jc21/nginx-proxy-manager:latest
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
+      - '80:80'
+      - '81:81'
+      - '443:443'
     volumes:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
     networks:
       - appnet
 
+  integration-settings-init:
+    image: node:24-alpine
+    user: '0:0'
+    restart: 'no'
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - FOWNER
+      - DAC_OVERRIDE
+    entrypoint: ['sh', '-ec']
+    command:
+      - |
+        chmod 700 /private-integrations
+        test "$$(stat -c %a /private-integrations)" = 700
+        if [ ! -e /private-integrations/settings.json ] && { [ -e /legacy-staging/.integrations/settings.json ] || [ -L /legacy-staging/.integrations/settings.json ]; }; then
+          echo "Existing integration settings found. Migrate them into the private volume before starting the application. See README Docker Compose deployment." >&2
+          exit 1
+        fi
+    volumes:
+      - type: volume
+        source: integration-settings
+        target: /private-integrations
+        volume:
+          nocopy: true
+      - ./pacs/restore-staging:/legacy-staging:ro
+
   pacs-app:
+    depends_on:
+      integration-settings-init:
+        condition: service_completed_successfully
     build:
-      context: "https://github.com/DrSeyyed/AIRadiologyReport.git#develop"
+      context: 'https://github.com/DrSeyyed/AIRadiologyReport.git#develop'
       dockerfile: Dockerfile
     environment:
       STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:?Storage encryption key is required}
-      RESET_TEST_STUDIES: "0"
+      RESET_TEST_STUDIES: '0'
     volumes:
       - ./pacs/db:/app/db
       - ./pacs/uploads:/app/uploads
       - ./pacs/voice:/app/voice
       - ./pacs/restore-staging:/app/restore-staging
+      - type: volume
+        source: integration-settings
+        target: /app/restore-staging/.integrations
+        volume:
+          nocopy: true
     ports:
-      - "127.0.0.1:5173:5173"
+      - '127.0.0.1:5173:5173'
     restart: unless-stopped
     stop_grace_period: 45s
     networks:
@@ -33,3 +69,6 @@ services:
 
 networks:
   appnet:
+
+volumes:
+  integration-settings:
