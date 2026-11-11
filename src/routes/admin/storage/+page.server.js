@@ -103,6 +103,8 @@ export const actions = {
 				message: `Restore activation ${activation.id} queued. The site will restart, preserving current data as a private rollback copy. Wait, then reload and sign in using an account from the restored backup. Site maintenance stays enabled after restart; test the restored site, then reopen it from Admin → Maintenance. Selected integration settings apply only after restoring the original Telegram group permissions when reopening maintenance; unchecked settings stay unchanged. Storage schedules remain paused.`
 			};
 		} catch (error) {
+			if (error?.code === 'TELEGRAM_MAINTENANCE_INVALID_PERMISSIONS')
+				return fail(400, { error: 'Telegram returned unsupported or invalid group permissions during maintenance preflight. Update the application to support the returned permissions before retrying. No restore activation was queued and the live database has not been replaced. Do not reset storage or delete the prepared copy.' });
 			if (error?.code === 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED')
 				return fail(400, { error: 'Selected credentials cannot be staged privately on this filesystem. Uncheck all integration settings to restore clinical data while keeping current credentials, or use database storage that supports private file permissions before restoring credentials. No restore activation was queued.' });
 			if (error?.code === 'RESTORE_PREPARED_DATABASE_HAS_JOURNALS')

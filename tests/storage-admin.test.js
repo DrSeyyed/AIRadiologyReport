@@ -1015,7 +1015,8 @@ test('admin activation requires exact confirmation and acknowledgement before qu
 	assert.ok(!JSON.stringify(failed).includes(state.activationError));
 	for (const [code, message] of [
 		['RESTORE_PREPARED_DATABASE_HAS_JOURNALS', /Prepare a fresh verified copy/],
-		['INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED', /Uncheck all integration settings/]
+		['INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED', /Uncheck all integration settings/],
+		['TELEGRAM_MAINTENANCE_INVALID_PERMISSIONS', /Telegram returned unsupported or invalid group permissions/]
 	]) {
 		state.activationErrorCode = code;
 		const specific = await submit('activateRestore', body);

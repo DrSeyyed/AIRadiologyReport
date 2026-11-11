@@ -2,16 +2,20 @@ const MAINTENANCE_TEXT = 'Website is updating. Messages are not processed during
 const SEND_PERMISSIONS = [
 	'can_send_messages', 'can_send_audios', 'can_send_documents', 'can_send_photos',
 	'can_send_videos', 'can_send_video_notes', 'can_send_voice_notes', 'can_send_polls',
-	'can_send_other_messages', 'can_add_web_page_previews'
+	'can_send_other_messages', 'can_add_web_page_previews', 'can_send_media_messages',
+	'can_react_to_messages'
 ];
 const PERMISSIONS = new Set([...SEND_PERMISSIONS,
-	'can_change_info', 'can_invite_users', 'can_pin_messages', 'can_manage_topics'
+	'can_edit_tag', 'can_change_info', 'can_invite_users', 'can_pin_messages', 'can_manage_topics'
 ]);
+const INVALID_PERMISSIONS = 'TELEGRAM_MAINTENANCE_INVALID_PERMISSIONS';
 const MEMORY_LIMIT = 1024;
 const DUPLICATE_TTL = 10 * 60_000;
 
-function fail(message) {
-	throw new Error(`Telegram maintenance: ${message}.`);
+function fail(message, code) {
+	const error = new Error(`Telegram maintenance: ${message}.`);
+	if (code) error.code = code;
+	throw error;
 }
 
 function id(value, group = false) {
@@ -33,10 +37,10 @@ function config(env) {
 function permissions(value) {
 	if (!value || typeof value !== 'object' || Array.isArray(value) ||
 		![Object.prototype, null].includes(Object.getPrototypeOf(value)))
-		fail('invalid permissions');
+		fail('invalid permissions', INVALID_PERMISSIONS);
 	const entries = Object.entries(value);
 	if (!entries.length || entries.some(([key, flag]) => !PERMISSIONS.has(key) || typeof flag !== 'boolean'))
-		fail('invalid permissions');
+		fail('invalid permissions', INVALID_PERMISSIONS);
 	return Object.fromEntries(entries);
 }
 

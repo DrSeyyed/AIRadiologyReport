@@ -118,11 +118,29 @@ test('lock disables every sending capability, preserves unrelated rights, restor
 	assert.deepEqual(mock.calls[1], mock.calls[3]);
 	const locked = mock.calls[0].body;
 	for (const [key, flag] of Object.entries(locked.permissions)) {
-		assert.equal(flag, key.startsWith('can_send_') || key === 'can_add_web_page_previews' ? false : original[key]);
+		assert.equal(flag, key.startsWith('can_send_') || ['can_add_web_page_previews', 'can_react_to_messages'].includes(key) ? false : original[key]);
 	}
 	assert.equal(locked.use_independent_chat_permissions, true);
 	assert.deepEqual(mock.calls[1].body, { chat_id: saved.chatId, permissions: original, use_independent_chat_permissions: true });
 	assert.deepEqual(saved, snapshot);
+});
+
+test('current reaction/tag flags and legacy media permissions snapshot, lock and restore exactly', async () => {
+	const current = { ...original, can_react_to_messages: true, can_edit_tag: true };
+	for (const rights of [current, { ...current, can_send_media_messages: false },
+		{ can_send_messages: true, can_send_media_messages: true }]) {
+		const mock = api({ getChat: { id: snapshot.chatId, type: 'supergroup', permissions: rights } });
+		const saved = await snapshotTelegramMaintenance({ env, request: mock.request });
+		assert.deepEqual(saved.permissions, rights);
+		await lockTelegramMaintenance(saved, { env, request: mock.request });
+		await unlockTelegramMaintenance(saved, { env, request: mock.request });
+		const mutations = mock.calls.filter(({ method }) => method === 'setChatPermissions');
+		assert.equal(mutations[0].body.permissions.can_react_to_messages, false);
+		assert.equal(mutations[0].body.permissions.can_send_media_messages, false);
+		assert.equal(mutations[0].body.permissions.can_edit_tag, rights.can_edit_tag);
+		assert.deepEqual(mutations[1].body.permissions, rights);
+		assert.deepEqual(saved.permissions, rights);
+	}
 });
 
 test('partial and already-muted boolean permissions restore without adding any rights', async () => {
@@ -141,9 +159,12 @@ test('partial and already-muted boolean permissions restore without adding any r
 test('malformed permissions and snapshots never make a mutation request', async () => {
 	for (const rights of [undefined, null, [], {}, 'all', { can_send_messages: 1 },
 		{ can_send_messages: 'false' }, { can_send_messages: true, unknown_permission: true },
-		{ can_send_messages: true, token: 'secret' }]) {
+		{ can_send_messages: true, token: 'secret' }, { can_send_media_messages: 'true' },
+		{ can_react_to_messages: 1 }, { can_edit_tag: null }]) {
 		const mock = api({ getChat: { id: snapshot.chatId, type: 'group', permissions: rights } });
-		await assert.rejects(snapshotTelegramMaintenance({ env, request: mock.request }), /invalid permissions/);
+		await assert.rejects(snapshotTelegramMaintenance({ env, request: mock.request }), {
+			message: 'Telegram maintenance: invalid permissions.', code: 'TELEGRAM_MAINTENANCE_INVALID_PERMISSIONS'
+		});
 		for (const operation of [lockTelegramMaintenance, unlockTelegramMaintenance])
 			await assert.rejects(operation({ chatId: snapshot.chatId, permissions: rights }, { env, request: mock.request }), /invalid permissions/);
 		assert.deepEqual(mock.calls.map((call) => call.method), ['getChat']);

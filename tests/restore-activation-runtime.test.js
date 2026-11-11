@@ -10,6 +10,11 @@ import { createActivationRuntime } from '../src/lib/server/restore-activation-ru
 import { activatePreparedRestore } from '../src/lib/server/restore-activation.js';
 import { queueActivationFiles } from '../src/lib/server/restore-activation-files.js';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
+import { createSiteMaintenance } from '../src/lib/server/site-maintenance.js';
+import {
+	snapshotTelegramMaintenance, lockTelegramMaintenance, unlockTelegramMaintenance,
+	notifyTelegramMaintenance
+} from '../src/lib/server/maintenance-telegram.js';
 
 function fixture(overrides = {}) {
 	const messages = [];
@@ -83,6 +88,59 @@ test('failed group locking never queues a restore or requests restart', async ()
 	await assert.rejects(f.runtime.activate({ requestedBy: 7 }), /administrator rights/);
 	assert.deepEqual(f.queued, []);
 	assert.deepEqual(f.scheduled, []);
+});
+
+test('activation accepts current Telegram permissions and reopening after restart restores original rights', async (t) => {
+	const cwd = mkdtempSync(path.join(tmpdir(), 'arr-telegram-activation-'));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const env = { TELEGRAM_BOT_TOKEN: 'synthetic-token', TELEGRAM_CHAT_ID: '-100123' };
+	const permissions = {
+		can_send_messages: true, can_send_media_messages: false, can_send_audios: false,
+		can_send_documents: true, can_send_photos: false, can_send_videos: true,
+		can_send_video_notes: false, can_send_voice_notes: true, can_send_polls: false,
+		can_send_other_messages: true, can_add_web_page_previews: false,
+		can_react_to_messages: true, can_edit_tag: true, can_change_info: false,
+		can_invite_users: true, can_pin_messages: false, can_manage_topics: true
+	};
+	const calls = [];
+	const request = async (url, options) => {
+		const method = url.split('/').at(-1);
+		calls.push({ method, body: JSON.parse(options.body) });
+		const results = {
+			getChat: { id: env.TELEGRAM_CHAT_ID, type: 'supergroup', permissions },
+			getMe: { id: 123, is_bot: true },
+			getChatMember: { status: 'administrator', can_restrict_members: true },
+			setChatPermissions: true, sendMessage: { message_id: 1 }
+		};
+		assert.ok(Object.hasOwn(results, method));
+		return { ok: true, json: async () => ({ ok: true, result: results[method] }) };
+	};
+	const options = {
+		cwd, env,
+		snapshot: (value) => snapshotTelegramMaintenance({ ...value, request }),
+		lock: (value, settings) => lockTelegramMaintenance(value, { ...settings, request }),
+		unlock: (value, settings) => unlockTelegramMaintenance(value, { ...settings, request }),
+		notify: (value, settings) => notifyTelegramMaintenance(value, { ...settings, request })
+	};
+	const maintenance = createSiteMaintenance(options);
+	const f = fixture({ cwd,
+		maintenanceEnabled: () => maintenance.status().enabled,
+		enableMaintenance: (userId) => maintenance.set({ enabled: true, userId })
+	});
+	await f.runtime.request(() => f.runtime.activate({ restoreId: 'verified-copy', requestedBy: 7 }));
+	assert.equal(f.queued.length, 1);
+	assert.equal(maintenance.status().telegram, 'locked');
+	assert.deepEqual(maintenance.context(), { chatId: env.TELEGRAM_CHAT_ID, permissions });
+	const fresh = createSiteMaintenance({ ...options, snapshot: () => assert.fail('must retain original rights') });
+	assert.equal(fresh.status().enabled, true);
+	await fresh.set({ enabled: false, userId: 7 });
+	assert.equal(fresh.status().enabled, false);
+	const mutations = calls.filter(({ method }) => method === 'setChatPermissions');
+	assert.equal(mutations.length, 2);
+	assert.equal(mutations[0].body.permissions.can_send_media_messages, false);
+	assert.equal(mutations[0].body.permissions.can_react_to_messages, false);
+	assert.equal(mutations[0].body.permissions.can_edit_tag, true);
+	assert.deepEqual(mutations[1].body.permissions, permissions);
 });
 
 test('notification scheduling failure keeps maintenance after a durable activation request', async () => {
