@@ -28,7 +28,7 @@ async function fixture(t) {
 	};
 	saveStorageSettings(db, settings, 'synthetic-storage-secret');
 	const key = randomUUID();
-	const state = { db, dbCalls: 0, probes: 0, lists: 0, recoveryPoints: [] };
+	const state = { db, dbCalls: 0, probes: 0, lists: 0, activations: 0, recoveryPoints: [] };
 	globalThis[key] = state;
 	t.after(() => {
 		db.close();
@@ -46,6 +46,10 @@ async function fixture(t) {
 				target = `data:text/javascript,${encodeURIComponent(`export async function probeStorageHost(config){if ('password' in config) throw new Error('Probe must not receive credentials');globalThis[${JSON.stringify(key)}].probes++;return 'SHA256:'+'b'.repeat(43);}`)}`;
 			else if (specifier === '$lib/server/recovery-backups.js')
 				target = `data:text/javascript,${encodeURIComponent(`export async function listRecovery(){const state=globalThis[${JSON.stringify(key)}];state.lists++;if(state.listError)throw new Error(state.listError);return state.recoveryPoints;}`)}`;
+			else if (specifier === '$lib/server/restore-activation.js')
+				target = `data:text/javascript,${encodeURIComponent(`export async function activatePreparedRestore(db,options){const state=globalThis[${JSON.stringify(key)}];state.activations++;state.activationOptions=options;if(state.activationError)throw new Error(state.activationError);return {id:'synthetic-activation'};}`)}`;
+			else if (specifier === '$lib/server/restore-activation-runtime.js')
+				target = `data:text/javascript,${encodeURIComponent(`export function restoreActivationStatus(){return {supported:true,state:'idle'};}`)}`;
 			else if (specifier.startsWith('$lib/'))
 				target = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 			else target = import.meta.resolve(specifier);
@@ -705,7 +709,10 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(restorePanel, /Restore &amp; backup deletion job log/);
 	assert.match(restorePanel, /Preparing restore: downloading files 2 of 4/);
 	assert.match(restorePanel, /Verified copy ready: \/recovery\/verified-copy/);
-	assert.match(restorePanel, /Manual activation required/);
+	assert.match(restorePanel, /Activate restore &amp; restart/);
+	assert.match(restorePanel, /name="confirmation"/);
+	assert.match(restorePanel, /name="acknowledgement"[^>]*required/);
+	assert.match(restorePanel, /name="jobId" value="1001"/);
 	assert.match(restorePanel, /<select[^>]*name="audioMode"[^>]*required[^>]*>/);
 	assert.match(restorePanel, /<option value="remote" selected(?:="")?>Keep archived audio on storage \(less local disk\)<\/option>/);
 	assert.match(restorePanel, /<option value="download">Download all audio \(independent copy\)<\/option>/);
@@ -947,7 +954,37 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /\$state\(untrack\(/);
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
 	assert.match(page, /name="confirmation" value="prepare" required/);
-	assert.match(page, /Manual activation required/);
+	assert.match(page, /Activate restore &amp; restart/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /data\.user\?\.role === 'admin'[\s\S]*\/admin\/storage/);
+});
+
+test('admin activation requires exact confirmation and acknowledgement before queueing', async (t) => {
+	const { submit, state } = await fixture(t);
+	const valid = { jobId: '42', confirmation: 'ACTIVATE RESTORE', acknowledgement: 'on' };
+	for (const values of [
+		{ ...valid, confirmation: 'activate restore' },
+		{ ...valid, acknowledgement: 'no' },
+		{ ...valid, jobId: '../42' },
+		{ ...valid, jobId: '0' }
+	]) {
+		const body = new FormData();
+		for (const [key, value] of Object.entries(values)) body.set(key, value);
+		assert.equal((await submit('activateRestore', body)).status, 400);
+	}
+	const duplicate = new FormData();
+	for (const [key, value] of Object.entries(valid)) duplicate.set(key, value);
+	duplicate.append('confirmation', 'ACTIVATE RESTORE');
+	assert.equal((await submit('activateRestore', duplicate)).status, 400);
+	assert.equal(state.activations, 0);
+	const body = new FormData();
+	for (const [key, value] of Object.entries(valid)) body.set(key, value);
+	const result = await submit('activateRestore', body);
+	assert.equal(result.activationQueued, true);
+	assert.deepEqual(state.activationOptions, { jobId: 42, userId: 1 });
+	assert.match(result.message, /restart/);
+	state.activationError = 'synthetic-private-error';
+	const failed = await submit('activateRestore', body);
+	assert.equal(failed.status, 400);
+	assert.ok(!JSON.stringify(failed).includes(state.activationError));
 });

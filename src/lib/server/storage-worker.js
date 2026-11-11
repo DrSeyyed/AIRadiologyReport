@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { runBackgroundTask } from './restore-activation-runtime.js';
+import { isSiteMaintenanceEnabled } from './site-maintenance.js';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -379,6 +381,7 @@ export async function processStorageJob(
 		deleteBackups = deleteRecoveryPoints,
 		prune = pruneRecovery,
 		testConnection = testStorageConnection,
+		maintenanceOnly = isSiteMaintenanceEnabled(),
 		heartbeatMs = 10_000
 	} = {}
 ) {
@@ -432,11 +435,12 @@ export async function processStorageJob(
 	}, heartbeatMs);
 	heartbeat.unref();
 	try {
-		scheduleStorageJobs(db, now);
+		if (!maintenanceOnly) scheduleStorageJobs(db, now);
 		const settings = getStorageSettings(db);
 		job = db
 			.prepare(
 				`SELECT * FROM storage_jobs WHERE (status = 'pending' OR (status = 'failed' AND attempts < 8)) AND retry_at <= ?
+			AND (? = 0 OR (kind IN ('test','restore') AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AND NOT EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id)))
 			AND (kind IN ('test','restore') OR (? = 1 AND ((kind = 'archive' AND ? = 1) OR (kind = 'full' AND ? = 1))))
 			ORDER BY CASE kind WHEN 'test' THEN 0 WHEN 'restore' THEN 1 ELSE 2 END,
 			COALESCE((SELECT MAX(previous.started_at) FROM storage_jobs previous WHERE previous.kind=storage_jobs.kind),0),
@@ -444,6 +448,7 @@ export async function processStorageJob(
 			)
 			.get(
 				now,
+				+maintenanceOnly,
 				+settings.enabled,
 				+(settings.archiveEnabled || settings.backupsEnabled),
 				+settings.backupsEnabled
@@ -676,7 +681,7 @@ export function startStorageWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await processStorageJob(getDb());
+			await runBackgroundTask(() => processStorageJob(getDb()), { allowDuringMaintenance: true });
 		} catch {
 			console.warn('Storage jobs unavailable; retrying later.');
 		} finally {

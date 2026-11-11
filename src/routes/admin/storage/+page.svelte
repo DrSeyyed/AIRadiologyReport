@@ -93,6 +93,10 @@
 	</div>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.message}<div class="alert alert-info" role="status">{form.message}</div>{/if}
+	{#if form?.activationQueued}<p role="status">Activation is queued. Wait for the restart, then <a class="link" href={resolve('/admin/storage?tab=restore')}>reload this page</a>.</p>{/if}
+	{#if data.activation?.state && data.activation.state !== 'idle'}
+		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.rollbackDirectory}<p>Private rollback copy: <code class="break-all">{data.activation.rollbackDirectory}</code>. Keep it until the restored site has been tested.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
+	{/if}
 	{#if form?.fingerprint}<p class="break-all font-mono">Observed (not yet trusted): {form.fingerprint}</p>{/if}
 	{#if !data.keyConfigured}
 		<div class="alert alert-warning">Server setup required: configure a permanent STORAGE_ENCRYPTION_KEY (base64, 32 random bytes) before saving. Keep a separate, secure offsite copy; losing this key makes encrypted audio and backups unrecoverable.</div>
@@ -180,7 +184,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 	</div>
 	<div id="storage-panel-restore" role="tabpanel" aria-labelledby="storage-tab-restore" tabindex="0" hidden={activeTab !== 'restore'} class="card space-y-4 bg-base-100 p-6 shadow">
 		<h3 class="text-lg font-semibold">Restore a recovery backup</h3>
-		<p class="text-sm">Prepare a verified copy in a separate server folder. <strong>The live site is not replaced.</strong> Manual activation during downtime is required.</p>
+		<p class="text-sm">Prepare a verified copy in a separate server folder. <strong>Preparation does not replace the live site.</strong> Then explicitly activate a verified copy below to preserve rollback data, replace the site and restart automatically.</p>
 		<details class="text-sm">
 			<summary class="cursor-pointer font-medium">Restore requirements and activation</summary>
 			<p class="mt-2 text-base-content/70">Allow disk space for locally restored files and temporary downloads; downloading all audio requires space for the full dataset. Keeping archived audio on storage is not a self-contained copy: after activation, playback requires the saved matching storage destination and original encryption key. Only audio whose hash and size match authenticated snapshot archive metadata can remain remote; other files restore locally. Retained audio is checksum-verified at the original archive paths, not just in backup objects. Missing or mismatching archives fail preparation; choose download mode instead. Legacy mixed bundles may still transfer archived audio bytes when needed for the database or other local files; audio-only bundles are skipped. Storage services start paused in either mode. Original storage objects are kept. Protect prepared copies like patient data and remove them manually when no longer needed. Preparation works while schedules are paused. Independent downloads, decryption and verification use the saved parallel connection limit. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
@@ -213,9 +217,26 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		{/if}
 		{@render backupDeletion()}
 		{#if data.status.preparedRestores.length}
-			<h4 class="font-semibold">Recent verified copies (manual activation required)</h4>
+			<h4 class="font-semibold">Recent verified copies</h4>
+			{#if !data.activation?.supported}
+				<p class="text-sm text-warning">Automatic activation requires the updated Docker startup supervisor and persistent restore-staging and voice mounts. External VOICE_SAVE_DIR locations require manual activation. Preparing a copy alone never changes the live site.</p>
+			{/if}
 			{#each data.status.preparedRestores as restore (restore.id)}
+				<div class="space-y-3 border-t border-base-300 pt-3">
 				<p>Job {restore.id} — {time(restore.finished_at)}: <code class="break-all">{restore.directory}</code> — {restoreAudioLabel(restore.audioMode)}{#if restore.remoteAudioFiles !== undefined}; audio files kept remote: {restore.remoteAudioFiles}{/if}{#if restore.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>
+				<details class="space-y-3">
+					<summary class="cursor-pointer font-semibold text-error">Activate this restore and restart</summary>
+					<p class="text-sm">This replaces the live database and local files, discarding changes made after this backup. The site will be briefly unavailable. Current data is preserved as a private rollback copy before replacement. Keep enough disk space for that copy and the replacement. If installation or startup validation fails, the previous data is restored. Keep the original storage encryption key; remote audio still needs the matching storage. Activation enables site maintenance and locks configured Telegram group posting (the bot needs administrator restriction permissions). Maintenance stays enabled after restart or rollback. You may need to sign in using an administrator account from the backup; test the restored site, then explicitly reopen it in Admin → Maintenance. Storage schedules remain paused separately.</p>
+					<form method="POST" action="?/activateRestore&tab=restore" use:enhance class="space-y-3">
+						<fieldset disabled={!data.activation?.supported || form?.activationQueued || data.activation?.maintenance || data.status.resetActive} class="space-y-3">
+							<input type="hidden" name="jobId" value={restore.id} />
+							<label class="form-control">Type ACTIVATE RESTORE to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
+							<label class="flex items-start gap-3"><input class="checkbox shrink-0" type="checkbox" name="acknowledgement" required /> I approve replacing the live site with this backup and automatically restarting, and have enough free disk for rollback.</label>
+							<button class="btn btn-error" type="submit">Activate restore &amp; restart</button>
+						</fieldset>
+					</form>
+				</details>
+				</div>
 			{/each}
 		{/if}
 		{@render jobLog('restore', ['restore', 'delete'])}
@@ -286,7 +307,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs.filter((job) => !kinds || kinds.includes(job.kind)) as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'restore'}<p>{restoreAudioLabel(job.audioMode)}{#if job.remoteAudioFiles !== undefined}; audio files kept remote: {job.remoteAudioFiles}{/if}{#if job.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>{/if}{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Live site unchanged. Manual activation required.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'restore'}<p>{restoreAudioLabel(job.audioMode)}{#if job.remoteAudioFiles !== undefined}; audio files kept remote: {job.remoteAudioFiles}{/if}{#if job.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>{/if}{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Preparation left the live site unchanged. Activate this copy from Recent verified copies when ready.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{:else}
 				<tr><td colspan="6">No {tab === 'restore' ? 'restore or backup deletion ' : ''}jobs in the recent log.</td></tr>
 			{/each}

@@ -1,4 +1,5 @@
 import { getStudyGroupInviteLink, sendBotMessage } from './telegram.js';
+import { runBackgroundTask } from './restore-activation-runtime.js';
 import { getTelegramWebsiteUrl, validateWebsiteUrl } from './telegram-settings.js';
 export { validateWebsiteUrl } from './telegram-settings.js';
 
@@ -141,8 +142,10 @@ export function startGroupInvitationWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await processGroupInvitation(getDb());
-			await processWebsiteLink(getDb());
+			await runBackgroundTask(async () => {
+				await processGroupInvitation(getDb());
+				await processWebsiteLink(getDb());
+			});
 		} catch {
 			console.warn('Telegram invitation queue unavailable; retrying later.');
 		} finally {

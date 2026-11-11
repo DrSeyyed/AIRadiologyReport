@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { runBackgroundTask } from './restore-activation-runtime.js';
 import { getStudyDetail } from './studies.js';
 import { editStudyMessage } from './telegram.js';
 
@@ -76,7 +77,7 @@ export function startTelegramStudyRefreshWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await processTelegramStudyRefresh(getDb());
+			await runBackgroundTask(() => processTelegramStudyRefresh(getDb()));
 		} catch {
 			console.warn('Telegram study refresh queue unavailable; retrying later.');
 		} finally {

@@ -53,6 +53,12 @@
 				{/if}
 			</div>
 		</header>
+		{#if data.user?.role === 'admin' && data.maintenance?.enabled}
+			<div class="alert alert-warning rounded-none" role="status">
+				<span>Site maintenance is enabled. Non-admin access is closed.</span>
+				<a class="link" href={resolve('/admin/maintenance')}>Manage maintenance</a>
+			</div>
+		{/if}
 		<main class="w-full min-w-0 flex-1 p-4">
 			{@render children?.()}
 		</main>
@@ -81,6 +87,7 @@
 				<li><a href={resolve('/admin/transcription')} class="link link-primary p-3">Transcription settings</a></li>
 				<li><a href={resolve('/admin/reporting')} class="link link-primary p-3">Reporting settings</a></li>
 				<li><a href={resolve('/admin/storage')} class="link link-primary p-3">Storage &amp; Backups</a></li>
+				<li><a href={resolve('/admin/maintenance')} class="link link-primary p-3">Maintenance</a></li>
 				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
 			{/if}
 		</ul>

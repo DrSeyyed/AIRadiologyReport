@@ -1,4 +1,5 @@
 import { getStudyDetail } from './studies.js';
+import { runBackgroundTask } from './restore-activation-runtime.js';
 import { assertStudyActive } from './study-state.js';
 import { appendRecording, appendRecordingAudio, getRecording, assertCanAppendRecordingAudio, recordingError } from './recordings.js';
 import { downloadFile, syncStudyMessage, sendReply } from './telegram.js';
@@ -152,9 +153,11 @@ export function startVoiceWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			const db = getDb();
-			await processTelegramVoiceDeletion(db);
-			await processVoiceJob(db);
+			await runBackgroundTask(async () => {
+				const db = getDb();
+				await processTelegramVoiceDeletion(db);
+				await processVoiceJob(db);
+			});
 		} catch {
 			console.warn('Voice queue unavailable; retrying later.');
 		} finally {

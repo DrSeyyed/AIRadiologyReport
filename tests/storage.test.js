@@ -132,6 +132,45 @@ function fixture(t) {
 	};
 }
 
+test('site maintenance allows explicit restore preparation and connection tests without scheduling other storage work', async (t) => {
+	const { db } = fixture(t);
+	const archive = queueStorageJob(db, 'archive', { now });
+	const full = queueStorageJob(db, 'full', { now });
+	const connectionTest = queueStorageJob(db, 'test', { now });
+	const restore = queueStorageJob(db, 'restore', { now, backupId: `${now}-${randomUUID()}` });
+	let prepared = 0;
+	let tested = 0;
+	const options = { now, maintenanceOnly: true,
+		testConnection: async () => { tested++; return { ok: true }; },
+		prepareRestore: async () => { prepared++; return { restoreId: randomUUID(), files: 1 }; },
+		runArchive: () => assert.fail('archiving must remain paused'),
+		runBackup: () => assert.fail('backup schedules must remain paused') };
+	assert.equal(await processStorageJob(db, options), true);
+	assert.equal(await processStorageJob(db, options), true);
+	assert.equal(await processStorageJob(db, options), false);
+	assert.equal(tested, 1);
+	assert.equal(prepared, 1);
+	for (const id of [archive, full]) assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status, 'pending');
+	for (const id of [connectionTest, restore]) assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status, 'succeeded');
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_jobs').get().count, 4);
+});
+
+test('site maintenance also pauses audit, backup deletion and reset jobs represented as connection tests', async (t) => {
+	const { db } = fixture(t);
+	const pending = [];
+	for (const operation of ['audit', 'delete', 'reset']) {
+		const jobId = Number(db.prepare("INSERT INTO storage_jobs(kind,created_at) VALUES('test',?)").run(now).lastInsertRowid);
+		pending.push(jobId);
+		if (operation === 'reset') db.prepare('INSERT INTO storage_reset_requests(job_id) VALUES(?)').run(jobId);
+		else db.prepare('INSERT INTO storage_maintenance_requests(job_id,operation,destination) VALUES(?,?,?)').run(jobId, operation, 'synthetic-destination');
+	}
+	const unexpected = () => assert.fail('maintenance must not perform remote work');
+	assert.equal(await processStorageJob(db, { now, maintenanceOnly: true, runAudit: unexpected, deleteBackups: unexpected,
+		resetStorage: unexpected, testConnection: unexpected }), false);
+	for (const id of pending) assert.equal(db.prepare('SELECT status FROM storage_jobs WHERE id=?').get(id).status, 'pending');
+	assert.equal(db.prepare('SELECT COUNT(*) AS count FROM storage_jobs').get().count, 3);
+});
+
 function extraArchiveAudio(context, count) {
 	for (let index = 0; index < count; index++) {
 		const path = join(context.directory, `extra-${index}.ogg`);

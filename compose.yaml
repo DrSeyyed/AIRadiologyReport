@@ -28,10 +28,12 @@ services:
     volumes:
       - ./pacs/db:/app/db
       - ./pacs/uploads:/app/uploads
+      - ./pacs/voice:/app/voice
       - ./pacs/restore-staging:/app/restore-staging
     ports:
       - "127.0.0.1:5173:5173"
     restart: unless-stopped
+    stop_grace_period: 45s
     networks:
       - appnet
 

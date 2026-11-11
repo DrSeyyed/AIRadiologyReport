@@ -5,6 +5,10 @@ import {
 	handleTelegramRegistration
 } from '$lib/server/telegram-registration.js';
 import { handleTelegramGroupMessage } from '$lib/server/telegram-group.js';
+import { isSiteMaintenanceEnabled, maintenanceTelegramContext } from '$lib/server/site-maintenance.js';
+import { createMaintenanceTelegramResponder } from '$lib/server/maintenance-telegram.js';
+
+const respondDuringMaintenance = createMaintenanceTelegramResponder();
 
 export const POST = async ({ request }) => {
 	try {
@@ -12,6 +16,10 @@ export const POST = async ({ request }) => {
 		if (!process.env.TELEGRAM_BOT_TOKEN)
 			return json({ error: 'Configure TELEGRAM_BOT_TOKEN.' }, { status: 503 });
 		const update = await request.json().catch(() => ({}));
+		if (isSiteMaintenanceEnabled()) {
+			await respondDuringMaintenance(update, maintenanceTelegramContext());
+			return json({ ok: true });
+		}
 		const msg = update?.message || update?.edited_message;
 		if (!msg) return json({ ok: true });
 		const db = getDb();

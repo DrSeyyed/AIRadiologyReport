@@ -1,4 +1,5 @@
 import { getStudyDetail } from './studies.js';
+import { runBackgroundTask } from './restore-activation-runtime.js';
 import { sendStudyMessage } from './telegram.js';
 
 export async function processStudyNotification(
@@ -48,7 +49,7 @@ export function startStudyNotificationWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await processStudyNotification(getDb());
+			await runBackgroundTask(() => processStudyNotification(getDb()));
 		} catch {
 			console.warn('Study notification queue unavailable; retrying later.');
 		} finally {
