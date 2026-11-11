@@ -6,6 +6,16 @@
 	let status = $derived(form?.status ?? data.status);
 	let busy = $derived(pending || ['enabling', 'disabling'].includes(status.phase));
 	let needsRetry = $derived(status.phase === 'error' || status.telegram === 'error' || !!status.error);
+	const integrationLabels = {
+		OPENAI_API_KEY: 'OpenAI API key',
+		ELEVENLABS_API_KEY: 'ElevenLabs API key',
+		GEMINI_API_KEY: 'Gemini API key',
+		TELEGRAM_BOT_TOKEN: 'Telegram bot token',
+		TELEGRAM_CHAT_ID: 'Telegram group chat ID',
+		TELEGRAM_WEBHOOK_SECRET: 'Telegram webhook secret',
+		TELEGRAM_WEBHOOK_BASE_URL: 'Telegram website URL'
+	};
+	let pendingRestoreLabels = $derived((data.pendingRestore?.fields ?? []).filter((key) => Object.hasOwn(integrationLabels, key)).map((key) => integrationLabels[key]));
 
 	function enhanceChange() {
 		pending = true;
@@ -24,6 +34,29 @@
 	<p>Close the website for updates while keeping administrator login and access available. Other visitors see a friendly updating page.</p>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.message}<div class="alert alert-success" role="status">{form.message}</div>{/if}
+	{#if data.pendingRestore?.pending}
+		<div class="alert alert-warning" role="status"><div>
+			<p>Selected integration settings are waiting for reopening below. First the original Telegram group permissions are restored, then the selected settings apply. Current settings remain active until then; unselected fields stay unchanged.</p>
+			{#if data.pendingRestore.error}<p>Pending restore details are unavailable. Check the server encryption configuration before retrying.</p>
+			{:else if pendingRestoreLabels.length}<p>Waiting settings: {pendingRestoreLabels.join(', ')}.</p>{/if}
+			<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+		</div></div>
+		<form method="POST" action="?/discardIntegrationRestore" use:enhance={enhanceChange} class="card space-y-4 border bg-base-100 p-4">
+			<fieldset disabled={busy} class="space-y-4">
+				<legend class="text-lg font-semibold">Discard pending credential restore</legend>
+				<p class="text-sm">Use this if invalid or expired backup credentials prevent reopening. This removes only the pending restore retry; it does not undo credentials already applied and leaves maintenance enabled. Then explicitly reopen the website below. After reopening, check, register or fix Telegram in Admin → Integrations if necessary.</p>
+				<label class="form-control">
+					<span class="label-text">Type DISCARD CREDENTIAL RESTORE exactly</span>
+					<input name="confirmation" class="input input-bordered w-full" required pattern="DISCARD CREDENTIAL RESTORE" autocomplete="off" spellcheck="false" />
+				</label>
+				<label class="flex items-start gap-3">
+					<input type="checkbox" name="acknowledgement" value="on" class="checkbox shrink-0" required />
+					<span>I understand this removes only the pending retry, does not undo credentials already applied, and leaves maintenance enabled.</span>
+				</label>
+				<button type="submit" class="btn btn-warning">Discard pending credential restore</button>
+			</fieldset>
+		</form>
+	{/if}
 	<div class="card border bg-base-100 p-4" aria-live="polite">
 		<dl class="space-y-2">
 			<div><dt class="font-semibold">Website</dt><dd>{status.enabled ? 'Closed for maintenance' : 'Open'}</dd></div>

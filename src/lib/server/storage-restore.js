@@ -461,7 +461,14 @@ export async function prepareStorageRestore(
 		work = undefined;
 		await assertOwned();
 		progress.set({ phase: 'complete', restoredFiles: result.files });
-		return { id: backupId, restoreId, files: result.files, audioMode, remoteAudioFiles: result.remoteAudioFiles };
+		return {
+			id: backupId,
+			restoreId,
+			files: result.files,
+			audioMode,
+			remoteAudioFiles: result.remoteAudioFiles,
+			integrationFields: result.integrationFields
+		};
 	} catch {
 		await Promise.all(
 			[

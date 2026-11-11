@@ -97,6 +97,8 @@ async function fixture(t, settings = connection) {
 		},
 		storagePath: (_settings, ...parts) => '/vault/' + parts.join('/'),
 		assertStorageKey() {},
+		exportIntegrationBackup: () => '{"fixture":"encrypted-integrations"}',
+		readIntegrationBackup: () => ({}),
 		async hashRemote() {
 			calls.remoteHashes++;
 			assert.fail('Full writer must use storage-side SHA256, not remote readback.');
@@ -224,7 +226,7 @@ test('default full writer publishes independent v1 objects and restores after fi
 	assert.equal(manifest.version, 1);
 	assert.equal(manifest.format, 'immutable-files-v1');
 	validateRecoveryManifest(manifest);
-	assert.equal(result.files, 6);
+	assert.equal(result.files, 7);
 	assert.equal(f.calls.gets + f.calls.reads, 0);
 	assert.ok(f.calls.hashes.length > 0);
 	assert.ok(f.calls.hashes.every((name) => !name.includes('/backups/objects/')));

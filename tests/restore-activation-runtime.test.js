@@ -184,6 +184,37 @@ test('activation accepts only a registered succeeded restore and checks live sto
 	await assert.rejects(activatePreparedRestore(db, { jobId, userId: 0 }, { activate }));
 });
 
+test('selected credential plan is staged before maintenance and queue inventory, without changing live settings', async (t) => {
+	const { db, jobId, saved } = databaseFixture(t);
+	const order = [];
+	const f = fixture({
+		enableMaintenance: async () => { order.push('maintenance'); },
+		queue: async () => { order.push('inventory'); return { id: 'queued' }; }
+	});
+	const fields = ['OPENAI_API_KEY', 'TELEGRAM_CHAT_ID'];
+	await activatePreparedRestore(db, { jobId, userId: 7, integrationFields: fields }, {
+		activate: options => f.runtime.activate(options),
+		stage: (directory, options) => {
+			assert.equal(directory, path.join(process.cwd(), 'restore-staging', saved.restoreId));
+			assert.deepEqual(options, { backupId: saved.id, fields });
+			order.push('staged');
+		}
+	});
+	assert.deepEqual(order, ['staged', 'maintenance', 'inventory']);
+});
+
+test('default activation clears stale staged selections and rejects unknown credentials before activation', async (t) => {
+	const { db, jobId } = databaseFixture(t);
+	let staged;
+	await activatePreparedRestore(db, { jobId, userId: 7 }, {
+		activate: async ({ validate }) => { await validate(); return {}; },
+		stage: (_directory, options) => { staged = options; }
+	});
+	assert.deepEqual(staged.fields, []);
+	for (const integrationFields of [['STORAGE_ENCRYPTION_KEY'], ['OPENAI_API_KEY', 'OPENAI_API_KEY'], 'OPENAI_API_KEY'])
+		await assert.rejects(activatePreparedRestore(db, { jobId, userId: 7, integrationFields }, { activate: () => assert.fail('must reject first') }));
+});
+
 test('activation rejects untrusted prepared paths without touching the filesystem', async (t) => {
 	const { db, jobId, saved } = databaseFixture(t);
 	for (const restoreId of ['../db', '/tmp/source', 'not-a-uuid']) {

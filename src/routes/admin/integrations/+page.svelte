@@ -8,6 +8,17 @@
 	let fields = $derived(data.settings.fields);
 	let telegramDisabled = $derived(pending || data.maintenanceEnabled || !data.settings.encryptionConfigured);
 
+	const integrationLabels = {
+		OPENAI_API_KEY: 'OpenAI API key',
+		ELEVENLABS_API_KEY: 'ElevenLabs API key',
+		GEMINI_API_KEY: 'Gemini API key',
+		TELEGRAM_BOT_TOKEN: 'Telegram bot token',
+		TELEGRAM_CHAT_ID: 'Telegram group chat ID',
+		TELEGRAM_WEBHOOK_SECRET: 'Telegram webhook secret',
+		TELEGRAM_WEBHOOK_BASE_URL: 'Telegram website URL'
+	};
+	let pendingRestoreLabels = $derived((data.pendingRestore?.fields ?? []).filter((key) => Object.hasOwn(integrationLabels, key)).map((key) => integrationLabels[key]));
+
 	const providers = [
 		{ key: 'OPENAI_API_KEY', label: 'OpenAI API key' },
 		{ key: 'ELEVENLABS_API_KEY', label: 'ElevenLabs API key' },
@@ -38,7 +49,16 @@
 <section class="w-full min-w-0 max-w-3xl space-y-4">
 	<h1 class="text-2xl font-semibold">Integrations</h1>
 	<p class="text-sm">Manage provider keys and Telegram settings. Saved settings are encrypted. Secrets stay masked and are never shown here; blank secret fields keep existing values.</p>
-	<p class="text-sm">Settings are stored separately from restored databases in <code>restore-staging\.integrations\settings.json</code>, so restoring an older backup cannot replace the active bot or secret. Preserve the <code>restore-staging\.integrations</code> directory and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This single master key also remains required for older storage backups; it is not managed here.</p>
+	<p class="text-sm">Settings are stored separately from restored databases in <code>restore-staging\.integrations\settings.json</code>. Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve the <code>restore-staging\.integrations</code> directory and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>
+	{#if data.pendingRestore?.pending}
+		<div class="alert alert-warning" role="status"><div>
+			<p>Selected integration settings are waiting for reopening in Admin → Maintenance, after the original Telegram group permissions are restored. Current settings remain active until then.</p>
+			{#if data.pendingRestore.error}<p>Pending restore details are unavailable. Check the server encryption configuration before retrying.</p>
+			{:else if pendingRestoreLabels.length}<p>Waiting settings: {pendingRestoreLabels.join(', ')}.</p>{/if}
+			<p>Provider keys remain editable, but the pending restore will replace selected fields on reopening. Unselected fields remain unchanged.</p>
+			<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+		</div></div>
+	{/if}
 	{#if !data.settings.encryptionConfigured}
 		<div class="alert alert-warning" role="alert">Server encryption is not configured. Configure STORAGE_ENCRYPTION_KEY on the server before saving integration settings.</div>
 	{/if}

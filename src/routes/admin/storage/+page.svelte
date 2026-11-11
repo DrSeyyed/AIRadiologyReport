@@ -4,6 +4,27 @@
 	import { resolve } from '$app/paths';
 	import { onMount, untrack } from 'svelte';
 	let { data, form } = $props();
+	const integrationLabels = {
+		OPENAI_API_KEY: 'OpenAI API key',
+		ELEVENLABS_API_KEY: 'ElevenLabs API key',
+		GEMINI_API_KEY: 'Gemini API key',
+		TELEGRAM_BOT_TOKEN: 'Telegram bot token',
+		TELEGRAM_CHAT_ID: 'Telegram group chat ID',
+		TELEGRAM_WEBHOOK_SECRET: 'Telegram webhook secret',
+		TELEGRAM_WEBHOOK_BASE_URL: 'Telegram website URL'
+	};
+	let selectedIntegrationFields = $state({});
+	let pendingIntegrationLabels = $derived((data.integrationRestore?.fields ?? []).filter((key) => Object.hasOwn(integrationLabels, key)).map((key) => integrationLabels[key]));
+	function selectIntegrationField(restoreId, key, checked) {
+		const selected = selectedIntegrationFields[restoreId] ?? [];
+		selectedIntegrationFields[restoreId] = checked ? [...selected, key] : selected.filter((field) => field !== key);
+	}
+	function activationEnhance(restoreId) {
+		return () => async ({ result, update }) => {
+			await update();
+			if (result.type === 'success') selectedIntegrationFields[restoreId] = [];
+		};
+	}
 	const tabs = [
 		{ id: 'overview', label: 'Overview & jobs' },
 		{ id: 'settings', label: 'Settings' },
@@ -94,6 +115,14 @@
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.message}<div class="alert alert-info" role="status">{form.message}</div>{/if}
 	{#if form?.activationQueued}<p role="status">Activation is queued. Wait for the restart, then <a class="link" href={resolve('/admin/storage?tab=restore')}>reload this page</a>.</p>{/if}
+	{#if data.integrationRestore?.pending}
+		<div class="alert alert-warning" role="status"><div>
+			<p>Selected integration settings are waiting for an administrator to reopen the website in <a class="link" href={resolve('/admin/maintenance')}>Admin → Maintenance</a>, after the original Telegram group permissions are restored. Current settings remain active until then.</p>
+			{#if data.integrationRestore.error}<p>Pending restore details are unavailable. Check the server encryption configuration before retrying.</p>
+			{:else if pendingIntegrationLabels.length}<p>Waiting settings: {pendingIntegrationLabels.join(', ')}.</p>{/if}
+			<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+		</div></div>
+	{/if}
 	{#if data.activation?.state && data.activation.state !== 'idle'}
 		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.rollbackDirectory}<p>Private rollback copy: <code class="break-all">{data.activation.rollbackDirectory}</code>. Keep it until the restored site has been tested.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
 	{/if}
@@ -227,9 +256,28 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 				<details class="space-y-3">
 					<summary class="cursor-pointer font-semibold text-error">Activate this restore and restart</summary>
 					<p class="text-sm">This replaces the live database and local files, discarding changes made after this backup. The site will be briefly unavailable. Current data is preserved as a private rollback copy before replacement. Keep enough disk space for that copy and the replacement. If installation or startup validation fails, the previous data is restored. Keep the original storage encryption key; remote audio still needs the matching storage. Activation enables site maintenance and locks configured Telegram group posting (the bot needs administrator restriction permissions). Maintenance stays enabled after restart or rollback. You may need to sign in using an administrator account from the backup; test the restored site, then explicitly reopen it in Admin → Maintenance. Storage schedules remain paused separately.</p>
-					<form method="POST" action="?/activateRestore&tab=restore" use:enhance class="space-y-3">
+					<form method="POST" action="?/activateRestore&tab=restore" use:enhance={activationEnhance(restore.id)} class="space-y-3">
 						<fieldset disabled={!data.activation?.supported || form?.activationQueued || data.activation?.maintenance || data.status.resetActive} class="space-y-3">
 							<input type="hidden" name="jobId" value={restore.id} />
+							<fieldset disabled={restore.integrationUnavailable} class="space-y-3 rounded border border-base-300 p-3">
+								<legend class="font-semibold">Integration settings from this backup (optional)</legend>
+								<p class="text-sm">All checkboxes start unchecked: keep current settings. Select only settings to restore. Selecting an empty backup field explicitly disables that current setting; unchecked fields never change.</p>
+								{#if restore.integrationUnavailable}
+									<p class="text-sm text-warning" role="alert">The encrypted integration snapshot could not be read. Credential selection is unavailable; clinical data can still be restored while keeping current credentials.</p>
+								{:else if !restore.integrationFields?.length}
+									<p class="text-sm">This older backup has no integration snapshot. Clinical data can still be restored; current credentials are retained.</p>
+								{:else}
+									{#each restore.integrationFields.filter((field) => Object.hasOwn(integrationLabels, field.key)) as descriptor (descriptor.key)}
+										<label class="flex items-start gap-3">
+											<input class="checkbox shrink-0" type="checkbox" name="integrationField" value={descriptor.key} checked={(selectedIntegrationFields[restore.id] ?? []).includes(descriptor.key)} onchange={(event) => selectIntegrationField(restore.id, descriptor.key, event.currentTarget.checked)} />
+											<span>{descriptor.label} — {descriptor.configured ? 'Configured in backup' : 'Empty in backup (disables current setting if selected)'}</span>
+										</label>
+									{/each}
+									<label class="form-control">Type RESTORE CREDENTIALS only if selecting settings<input class="input input-bordered" name="integrationConfirmation" autocomplete="off" spellcheck="false" required={!restore.integrationUnavailable && !!selectedIntegrationFields[restore.id]?.length} pattern="RESTORE CREDENTIALS" /></label>
+								{/if}
+							</fieldset>
+							<p class="text-sm">Selected settings do not apply during restore or activation. They apply only when an administrator explicitly reopens the website in Admin → Maintenance, after the original Telegram group permissions are restored. Complete Telegram settings automatically register the webhook. Application or registration failures leave maintenance enabled and the restore pending; correct the problem and retry reopening.</p>
+							<p class="text-sm">Restoring a different bot while keeping the current webhook secret may require removing the old bot's webhook separately. Unchecked fields are never changed automatically. The original master encryption key stays server-side and must match the backup; it cannot be selected or restored here.</p>
 							<label class="form-control">Type ACTIVATE RESTORE to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
 							<label class="flex items-start gap-3"><input class="checkbox shrink-0" type="checkbox" name="acknowledgement" required /> I approve replacing the live site with this backup and automatically restarting, and have enough free disk for rollback.</label>
 							<button class="btn btn-error" type="submit">Activate restore &amp; restart</button>

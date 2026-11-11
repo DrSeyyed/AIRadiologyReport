@@ -50,6 +50,8 @@ async function fixture(t) {
 				target = `data:text/javascript,${encodeURIComponent(`export async function activatePreparedRestore(db,options){const state=globalThis[${JSON.stringify(key)}];state.activations++;state.activationOptions=options;if(state.activationError)throw new Error(state.activationError);return {id:'synthetic-activation'};}`)}`;
 			else if (specifier === '$lib/server/restore-activation-runtime.js')
 				target = `data:text/javascript,${encodeURIComponent(`export function restoreActivationStatus(){return {supported:true,state:'idle'};}`)}`;
+			else if (specifier === '$lib/server/integration-restore-admin.js')
+				target = `data:text/javascript,${encodeURIComponent(`export {integrationRestoreSelection,withRestoreIntegrationMetadata} from ${JSON.stringify(new URL('../src/lib/server/integration-restore-admin.js', import.meta.url).href)};export function pendingRestoreMetadata(){const state=globalThis[${JSON.stringify(key)}];state.pendingReads=(state.pendingReads||0)+1;return state.pendingRestore??{pending:false,fields:[]};}`)}`;
 			else if (specifier.startsWith('$lib/'))
 				target = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 			else target = import.meta.resolve(specifier);
@@ -106,6 +108,7 @@ test('storage admin load and all actions reject non-admins before DB, form or ne
 	assert.equal(state.dbCalls, 0);
 	assert.equal(state.probes, 0);
 	assert.equal(state.lists, 0);
+	assert.equal(state.pendingReads, undefined);
 });
 
 test('admin save preserves passwords, rejects duplicate/out-of-range form fields and never echoes credentials', async (t) => {
@@ -702,6 +705,13 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	const { body: restoreBody } = render(component.default, {
 		props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } }
 	});
+	data.status.preparedRestores[0].integrationFields = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_WEBHOOK_BASE_URL'].map(key => ({ key, label: key, configured: key !== 'OPENAI_API_KEY' }));
+	const { body: credentialsBody } = render(component.default, { props: { data } });
+	const credentialInputs = credentialsBody.match(/<input\b[^>]*name="integrationField"[^>]*>/g) || [];
+	assert.equal(credentialInputs.length, 7);
+	for (const input of credentialInputs) assert.doesNotMatch(input, /\bchecked\b|STORAGE_ENCRYPTION_KEY/);
+	for (const { key } of data.status.preparedRestores[0].integrationFields)
+		assert.ok(credentialInputs.some(input => input.includes(`value="${key}"`)));
 	const restorePanel = restoreBody.split('id="storage-panel-restore"')[1]
 		.split('id="storage-panel-maintenance"')[0];
 	assert.match(restorePanel, /action="\?\/deleteBackups&(?:amp;)?tab=restore"/);
@@ -786,7 +796,7 @@ test('storage tabs support keyboard navigation and preserve unsaved settings', (
 	let prevented = 0;
 	const api = new Function(
 		'onMount', 'untrack', '$props', '$state', 'replaceState', 'resolve', 'window', 'document',
-		`${script}\nreturn { selectTab, tabClick, tabKeydown, settings, active: () => activeTab, hours: () => fullBackupHours };`
+		`const $derived = Object.assign(value => value, {by: read => read()});\n${script}\nreturn { selectTab, tabClick, tabKeydown, settings, active: () => activeTab, hours: () => fullBackupHours };`
 	)(
 		() => {},
 		(read) => read(),
@@ -828,7 +838,7 @@ test('loaded recovery points persist independently of polling and clear only on 
 	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
 	const points = [{ id: deletionId, kind: 'full' }];
 	const api = new Function('onMount', 'untrack', '$props', '$state',
-		`${script}\nreturn { recoveryEnhance, points: () => recoveryPoints };`)(
+		`const $derived = Object.assign(value => value, {by: read => read()});\n${script}\nreturn { recoveryEnhance, points: () => recoveryPoints };`)(
 		() => {}, (read) => read(), () => ({ data: { settings: { fullBackupHours: [0] } }, form: { recoveryPoints: points } }), (value) => value
 	);
 	assert.deepEqual(api.points(), points);
@@ -864,7 +874,7 @@ test('storage status refresh skips hidden pages and overlapping requests, preser
 		'setInterval',
 		'clearInterval',
 		'document',
-		`${script}\nreturn settings;`
+		`const $derived = Object.assign(value => value, {by: read => read()});\n${script}\nreturn settings;`
 	)(
 		(mount) => {
 			cleanup = mount();
@@ -981,8 +991,24 @@ test('admin activation requires exact confirmation and acknowledgement before qu
 	for (const [key, value] of Object.entries(valid)) body.set(key, value);
 	const result = await submit('activateRestore', body);
 	assert.equal(result.activationQueued, true);
-	assert.deepEqual(state.activationOptions, { jobId: 42, userId: 1 });
+	assert.deepEqual(state.activationOptions, { jobId: 42, userId: 1, integrationFields: [] });
 	assert.match(result.message, /restart/);
+	body.append('integrationField', 'OPENAI_API_KEY');
+	assert.equal((await submit('activateRestore', body)).status, 400);
+	body.set('integrationConfirmation', 'restore credentials');
+	assert.equal((await submit('activateRestore', body)).status, 400);
+	body.set('integrationConfirmation', 'RESTORE CREDENTIALS');
+	body.append('integrationField', 'OPENAI_API_KEY');
+	assert.equal((await submit('activateRestore', body)).status, 400);
+	body.set('integrationField', 'STORAGE_ENCRYPTION_KEY');
+	assert.equal((await submit('activateRestore', body)).status, 400);
+	body.set('integrationField', 'unknown');
+	assert.equal((await submit('activateRestore', body)).status, 400);
+	assert.equal(state.activations, 1);
+	body.set('integrationField', 'OPENAI_API_KEY');
+	body.append('integrationField', 'TELEGRAM_CHAT_ID');
+	assert.equal((await submit('activateRestore', body)).activationQueued, true);
+	assert.deepEqual(state.activationOptions.integrationFields, ['OPENAI_API_KEY', 'TELEGRAM_CHAT_ID']);
 	state.activationError = 'synthetic-private-error';
 	const failed = await submit('activateRestore', body);
 	assert.equal(failed.status, 400);

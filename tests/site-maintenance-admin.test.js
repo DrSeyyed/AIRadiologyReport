@@ -35,8 +35,16 @@ async function fixture(t) {
 	`);
 	const source = readFileSync(route, 'utf8').replace(
 		/from (['"])([^'"]+)\1/g,
-		(_statement, _quote, specifier) =>
-			`from ${JSON.stringify(specifier === '$lib/server/site-maintenance.js' ? mock : import.meta.resolve(specifier))}`
+		(_statement, _quote, specifier) => {
+			const pending = moduleUrl(`export function pendingRestoreMetadata(){const state=globalThis[${JSON.stringify(key)}];state.pendingReads=(state.pendingReads||0)+1;return state.pendingRestore??{pending:false,fields:[]};}`);
+			const discard = moduleUrl(`export function discardPendingIntegrationRestore(options){const state=globalThis[${JSON.stringify(key)}];state.discards=(state.discards||[]).concat([options]);if(state.discardError)throw new Error('private discard secret');state.pendingRestore={pending:false,fields:[]};return {discarded:true,applied:true,fields:['OPENAI_API_KEY']};}`);
+			const coordinate = moduleUrl('export async function withIntegrationConfigurationLock(operation){return operation();}');
+			const target = specifier === '$lib/server/site-maintenance.js' ? mock :
+				specifier === '$lib/server/integration-restore-admin.js' ? pending :
+				specifier === '$lib/server/integration-backup.js' ? discard :
+				specifier === '$lib/server/integration-coordination.js' ? coordinate : import.meta.resolve(specifier);
+			return `from ${JSON.stringify(target)}`;
+		}
 	);
 	const page = await import(moduleUrl(source));
 	function form(action) {
@@ -77,6 +85,7 @@ test('maintenance load and every action authorize before reading state or forms'
 		}
 	}
 	assert.equal(state.reads, 0);
+	assert.equal(state.pendingReads, undefined);
 	assert.deepEqual(state.calls, []);
 });
 
@@ -144,9 +153,35 @@ test('both directions require exact singleton confirmation and acknowledgement, 
 	assert.deepEqual(state.calls, []);
 });
 
+test('discarding credential retries requires maintenance and explicit acknowledgement, never reopening or changing settings', async (t) => {
+	const { state, page } = await fixture(t);
+	state.pendingRestore = { pending: true, fields: ['OPENAI_API_KEY'] };
+	const valid = () => new URLSearchParams({ confirmation: 'DISCARD CREDENTIAL RESTORE', acknowledgement: 'on' });
+	const submit = body => page.actions.discardIntegrationRestore({ locals: admin, request: new Request('http://localhost/admin/maintenance', { method: 'POST', body }) });
+	assert.equal((await submit(valid())).status, 400);
+	assert.equal(state.discards, undefined);
+	state.status = { ...on };
+	for (const mutate of [body => body.set('confirmation', 'discard credential restore'), body => body.delete('acknowledgement'), body => body.append('confirmation', 'DISCARD CREDENTIAL RESTORE'), body => body.set('allowApplied', 'true')]) {
+		const body = valid();
+		mutate(body);
+		assert.equal((await submit(body)).status, 400);
+	}
+	assert.equal(state.discards, undefined);
+	const result = await submit(valid());
+	assert.deepEqual(state.discards, [{ allowApplied: true }]);
+	assert.equal(result.status.enabled, true);
+	assert.equal(result.pendingRestore.pending, false);
+	assert.match(result.message, /NOT rolled back/);
+	assert.deepEqual(state.calls, []);
+	state.discardError = true;
+	const failed = await submit(valid());
+	assert.equal(failed.status, 400);
+	assert.doesNotMatch(JSON.stringify(failed), /private discard secret/);
+});
+
 test('maintenance enable, disable and retries pass only validated typed options', async (t) => {
 	const { submit, state, page } = await fixture(t);
-	assert.deepEqual(page.load({ locals: admin }), { status: off });
+	assert.deepEqual(page.load({ locals: admin }), { status: off, pendingRestore: { pending: false, fields: [] } });
 	for (const action of ['enable', 'enable', 'disable', 'disable']) {
 		const result = await submit(action);
 		assert.ok(result.message);
@@ -178,7 +213,7 @@ test('failed lock and unlock return generic errors and current closed status wit
 		assert.equal(result.status, 503);
 		assert.equal(result.data.status.enabled, true);
 		assert.equal(result.data.status.phase, 'error');
-		assert.match(result.data.error, /may remain closed/);
+		assert.match(result.data.error, /remains closed/);
 		assert.doesNotMatch(
 			JSON.stringify([result, page.load({ locals: admin })]),
 			/private|never expose|token/

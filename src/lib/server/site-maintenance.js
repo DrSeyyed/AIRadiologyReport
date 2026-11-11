@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withIntegrationConfigurationLock } from './integration-coordination.js';
+import { applyPendingIntegrationRestore } from './integration-backup.js';
 import {
 	snapshotTelegramMaintenance,
 	lockTelegramMaintenance,
@@ -59,7 +60,8 @@ function validRecord(record) {
 export function createSiteMaintenance({
 	cwd = process.cwd(), env = process.env,
 	snapshot = snapshotTelegramMaintenance, lock = lockTelegramMaintenance,
-	unlock = unlockTelegramMaintenance, notify = notifyTelegramMaintenance
+	unlock = unlockTelegramMaintenance, notify = notifyTelegramMaintenance,
+	afterUnlock = async () => {}
 } = {}) {
 	const directory = path.resolve(cwd, 'restore-staging', '.maintenance');
 	const filename = path.join(directory, 'state.json');
@@ -143,10 +145,22 @@ export function createSiteMaintenance({
 				write(record);
 				throw new Error(TELEGRAM_ERROR);
 			}
-			const previous = record;
+			const previous = structuredClone(record);
+			const originalToken = env.TELEGRAM_BOT_TOKEN;
+			const originalChat = env.TELEGRAM_CHAT_ID;
+			// Persist the completed unlock BEFORE restored credentials may replace the original bot.
+			record.telegram = { snapshot: null, status: 'disabled', lockAttempted: false };
+			write(record);
+			try { await afterUnlock({ cwd, env }); }
+			catch {
+				record.phase = 'error';
+				record.telegram.status = 'error';
+				write(record);
+				throw new Error('Integration restore could not be completed. Maintenance remains enabled; retry reopening maintenance.');
+			}
 			write({ version: 1, enabled: false, phase: 'off', updatedAt: new Date().toISOString(), requestedBy: userId,
 				telegram: { snapshot: null, status: 'disabled', lockAttempted: false } });
-			await notice(previous, false);
+			if (env.TELEGRAM_BOT_TOKEN === originalToken && env.TELEGRAM_CHAT_ID === originalChat) await notice(previous, false);
 		}
 		return status();
 	}
@@ -161,7 +175,7 @@ export function createSiteMaintenance({
 	};
 }
 
-const siteMaintenance = createSiteMaintenance();
+const siteMaintenance = createSiteMaintenance({ afterUnlock: applyPendingIntegrationRestore });
 export const siteMaintenanceStatus = () => siteMaintenance.status();
 export const isSiteMaintenanceEnabled = () => siteMaintenance.status().enabled;
 export const maintenanceTelegramContext = () => siteMaintenance.context();

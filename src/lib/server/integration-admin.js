@@ -5,6 +5,7 @@ import { readIntegrationSettings, resolveIntegrationSettings, saveIntegrationSet
 import { siteMaintenanceStatus } from './site-maintenance.js';
 import { withIntegrationConfigurationLock } from './integration-coordination.js';
 import { createWebhookRegistration } from './integration-webhook.js';
+import { pendingRestoreMetadata } from './integration-restore-admin.js';
 
 const PROVIDERS = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY'];
 const TELEGRAM = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_WEBHOOK_BASE_URL', 'TELEGRAM_WEBHOOK_SECRET'];
@@ -29,6 +30,7 @@ export function createIntegrationAdmin({
 	saveSettings = saveIntegrationSettings, applySettings = applyIntegrationSettings,
 	maintenanceStatus = siteMaintenanceStatus, coordinate = withIntegrationConfigurationLock,
 	getDatabase = getDb, webhook = createWebhookRegistration,
+	pendingRestore = pendingRestoreMetadata,
 	generateSecret = () => randomBytes(32).toString('hex')
 } = {}) {
 	const registration = () => webhook({ db: getDatabase(), env });
@@ -52,7 +54,7 @@ export function createIntegrationAdmin({
 		load({ locals }) {
 			requireAdmin(locals);
 			try {
-				return { settings: readSettings(options), webhook: registration().status(), maintenanceEnabled: maintenanceStatus().enabled };
+				return { settings: readSettings(options), webhook: registration().status(), maintenanceEnabled: maintenanceStatus().enabled, pendingRestore: pendingRestore() };
 			} catch { throw error(503, 'Integration settings are unavailable. Check the retained server encryption key and private settings file.'); }
 		},
 		actions: {

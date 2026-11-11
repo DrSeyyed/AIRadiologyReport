@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { recoveryProgress } from './recovery-progress.js';
+import { exportIntegrationBackup } from './integration-backup.js';
 import { MAX_MANIFEST_BYTES } from './recovery-bundles.js';
 import { uploadStorageFile } from './storage-upload.js';
 import { syncStorageData, remoteFileStat, ensureFileDirectory } from './storage-sync.js';
@@ -126,6 +127,15 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 		const databaseFile = path.join(work, 'database.sqlite');
 		progress.set({ phase: 'snapshotting' });
 		assertActive();
+		const id = `${now}-${randomUUID()}`;
+		// One synchronous read freezes the complete effective credential set.
+		const integrations = (deps.exportIntegrationBackup || exportIntegrationBackup)({
+			backupId: id,
+			cwd,
+			env,
+			encrypt: deps.encryptSecret
+		});
+		if (typeof integrations !== 'string') throw new Error('Invalid integration snapshot.');
 		await db.backup(databaseFile);
 		await fs.chmod(databaseFile, 0o600);
 		snapshot = new Database(databaseFile, { readonly: true });
@@ -209,7 +219,6 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 			return { ...entry };
 		});
 		const uploads = path.join(cwd, 'uploads');
-		const id = `${now}-${randomUUID()}`;
 		const manifest = {
 			version: 1,
 			format: 'immutable-files-v1',
@@ -236,7 +245,10 @@ export async function backupFileRecovery(db, connection, options = {}, deps, hel
 				roles.set(locate(archive.path).relative, 'audio');
 		const config = path.join(work, 'environment.json');
 		await fs.writeFile(config, JSON.stringify(runtime, null, 2), { mode: 0o600 });
+		const integrationFile = path.join(work, 'integration-settings.json');
+		await fs.writeFile(integrationFile, integrations, { mode: 0o600 });
 		const independent = [
+			{ source: integrationFile, path: 'integration-settings.json', role: 'integrations' },
 			{ source: databaseFile, path: 'db/pacs.db', role: 'database' },
 			{ source: config, path: 'environment.json', role: 'environment' }
 		];

@@ -22,6 +22,7 @@ import {
 import { listRecovery } from '$lib/server/recovery-backups.js';
 import { activatePreparedRestore } from '$lib/server/restore-activation.js';
 import { restoreActivationStatus } from '$lib/server/restore-activation-runtime.js';
+import { integrationRestoreSelection, pendingRestoreMetadata, withRestoreIntegrationMetadata } from '$lib/server/integration-restore-admin.js';
 
 function requireAdmin(locals) {
 	if (!locals.user) throw redirect(302, '/login');
@@ -80,8 +81,9 @@ export function load({ locals, url }) {
 		settings: getStorageSettings(db),
 		passwordConfigured: storagePasswordConfigured(db),
 		keyConfigured,
-		status: storageStatus(db),
-		activation: restoreActivationStatus()
+		status: tab === 'restore' ? withRestoreIntegrationMetadata(db, storageStatus(db)) : storageStatus(db),
+		activation: restoreActivationStatus(),
+		integrationRestore: pendingRestoreMetadata()
 	};
 }
 
@@ -94,13 +96,14 @@ export const actions = {
 				throw new Error();
 			const jobId = field(form, 'jobId');
 			if (!/^[1-9]\d{0,15}$/.test(jobId)) throw new Error();
-			const activation = await activatePreparedRestore(getDb(), { jobId: Number(jobId), userId: locals.user.id });
+			const integrationFields = integrationRestoreSelection(form);
+			const activation = await activatePreparedRestore(getDb(), { jobId: Number(jobId), userId: locals.user.id, integrationFields });
 			return {
 				activationQueued: true,
-				message: `Restore activation ${activation.id} queued. The site will restart, preserving current data as a private rollback copy. Wait, then reload and sign in using an account from the restored backup. Site maintenance stays enabled after restart; test the restored site, then reopen it from Admin → Maintenance. Storage schedules remain paused.`
+				message: `Restore activation ${activation.id} queued. The site will restart, preserving current data as a private rollback copy. Wait, then reload and sign in using an account from the restored backup. Site maintenance stays enabled after restart; test the restored site, then reopen it from Admin → Maintenance. Selected integration settings apply only after restoring the original Telegram group permissions when reopening maintenance; unchecked settings stay unchanged. Storage schedules remain paused.`
 			};
 		} catch {
-			return fail(400, { error: 'Unable to activate this restore. Type ACTIVATE RESTORE exactly and acknowledge replacement once. Use the updated supervised Docker image with persistent restore-staging and voice mounts. Wait for active requests and background jobs to finish, ensure enough free disk for rollback and replacement, and check that the verified copy and original storage encryption key are available. Configured Telegram groups require bot administrator rights to restrict members; check Admin → Maintenance for lock errors and retry. External VOICE_SAVE_DIR locations require manual activation.' });
+			return fail(400, { error: 'Unable to activate this restore. Type ACTIVATE RESTORE exactly and acknowledge replacement once. Select only available integration settings once and type RESTORE CREDENTIALS exactly if any are selected; the original storage encryption key cannot be restored. Use the updated supervised Docker image with persistent restore-staging and voice mounts. Wait for active requests and background jobs to finish, ensure enough free disk for rollback and replacement, and check that the verified copy and original storage encryption key are available. Configured Telegram groups require bot administrator rights to restrict members; check Admin → Maintenance for lock errors and retry. External VOICE_SAVE_DIR locations require manual activation.' });
 		}
 	},
 	save: async ({ locals, request }) => {

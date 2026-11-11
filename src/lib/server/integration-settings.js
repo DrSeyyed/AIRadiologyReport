@@ -68,10 +68,10 @@ function publicHostname(hostname) {
 	);
 }
 
-function normalize(key, value) {
+export function normalizeIntegrationValue(key, value) {
 	const field = INTEGRATION_FIELDS.find((field) => field.key === key);
 	if (
-		typeof value !== 'string' ||
+		!field || typeof value !== 'string' ||
 		value.length > field.maxLength ||
 		/[\p{Cc}\p{Cf}]/u.test(value)
 	) {
@@ -184,7 +184,8 @@ function savedSettings(cwd) {
 		if (
 			!payload ||
 			payload.scope !== 'AIRadiologyReport/integrations/v1' ||
-			Object.keys(payload).length !== 2 ||
+			Object.keys(payload).some((key) => !['scope', 'fields', 'restoreOperationId'].includes(key)) ||
+			(payload.restoreOperationId !== undefined && !/^[a-f0-9-]{36}$/.test(payload.restoreOperationId)) ||
 			!payload.fields ||
 			typeof payload.fields !== 'object' ||
 			Array.isArray(payload.fields) ||
@@ -193,8 +194,9 @@ function savedSettings(cwd) {
 			throw invalid();
 		const saved = new Map();
 		for (const [key, value] of Object.entries(payload.fields)) {
-			saved.set(key, normalize(key, value));
+			saved.set(key, normalizeIntegrationValue(key, value));
 		}
+		saved.restoreOperationId = payload.restoreOperationId;
 		return saved;
 	} catch {
 		throw new Error(READ_ERROR);
@@ -282,8 +284,13 @@ export function readIntegrationSettings({ env = process.env, cwd = process.cwd()
 	return { fields, encryptionConfigured };
 }
 
+/** Receipt shares the vault's atomic write, so crash retries never overwrite subsequent edits. */
+export function integrationRestoreApplied(operationId, { cwd = process.cwd() } = {}) {
+	return savedSettings(cwd).restoreOperationId === operationId;
+}
+
 /** Atomic partial updates. Empty strings are encrypted overrides, not deletions. Never applies env. */
-export function saveIntegrationSettings(updates, { env = process.env, cwd = process.cwd() } = {}) {
+export function saveIntegrationSettings(updates, { env = process.env, cwd = process.cwd(), restoreOperationId } = {}) {
 	let normalized;
 	try {
 		if (
@@ -296,7 +303,7 @@ export function saveIntegrationSettings(updates, { env = process.env, cwd = proc
 		normalized = Reflect.ownKeys(updates).map((key) => {
 			const property = Object.getOwnPropertyDescriptor(updates, key);
 			if (!property || !Object.hasOwn(property, 'value')) throw invalid();
-			return [key, normalize(key, property.value)];
+			return [key, normalizeIntegrationValue(key, property.value)];
 		});
 	} catch {
 		throw invalid();
@@ -305,11 +312,14 @@ export function saveIntegrationSettings(updates, { env = process.env, cwd = proc
 		assertStorageKey();
 		// Authenticate the existing file before permitting updates with a different master key.
 		const saved = savedSettings(cwd);
+		if (restoreOperationId !== undefined && !/^[a-f0-9-]{36}$/.test(restoreOperationId)) throw invalid();
+		if (restoreOperationId && saved.restoreOperationId === restoreOperationId) return readIntegrationSettings({ env, cwd });
 		for (const [key, value] of normalized) saved.set(key, value);
 		const ciphertext = encryptSecret(
 			JSON.stringify({
 				scope: 'AIRadiologyReport/integrations/v1',
-				fields: Object.fromEntries(saved)
+				fields: Object.fromEntries(saved),
+				...((restoreOperationId || saved.restoreOperationId) ? { restoreOperationId: restoreOperationId || saved.restoreOperationId } : {})
 			})
 		);
 		writeRecord(cwd, { version: 1, ciphertext });

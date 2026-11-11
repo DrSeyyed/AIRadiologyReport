@@ -262,7 +262,12 @@ async function databaseIntegrity(base, control, staged = false) {
 	const dbRoot = path.join(base, 'db');
 	await directories(dbRoot);
 	await regular(path.join(dbRoot, 'pacs.db'));
-	if (staged && (await fs.readdir(dbRoot)).some((name) => name !== 'pacs.db')) throw fail();
+	if (staged) {
+		for (const name of await fs.readdir(dbRoot)) {
+			if (!['pacs.db', 'integration-restore.json'].includes(name)) throw fail();
+			await regular(path.join(dbRoot, name));
+		}
+	}
 	// SQLite may recover a hot journal or update SHM even on a read-only connection.
 	// Validate a private copy, never the staged/rollback WAL+SHM set itself.
 	const scratch = path.join(control, 'verification', randomUUID());
@@ -384,7 +389,7 @@ function validateRequest(stored) {
 		!request.source.roots.includes('uploads') ||
 		request.source.files
 			.filter((file) => file.path.startsWith('db/'))
-			.some((file) => file.path !== 'db/pacs.db') ||
+			.some((file) => !['db/pacs.db', 'db/integration-restore.json'].includes(file.path)) ||
 		!request.source.files.some((file) => file.path === 'db/pacs.db')
 	)
 		throw fail();

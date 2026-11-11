@@ -83,6 +83,8 @@ async function fixture(t) {
 		storagePath: (_connection, ...segments) => '/vault/' + segments.join('/'),
 		hashRemote: async (_client, p) => digest(await fs.readFile(local(p))),
 		assertStorageKey() {},
+		exportIntegrationBackup: () => '{"fixture":"encrypted-integrations"}',
+		readIntegrationBackup: () => ({}),
 		async encryptFile(source, target) {
 			const iv = randomBytes(12);
 			const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -255,14 +257,14 @@ test('full encrypted snapshot restores SQLite, reports, uploads extras and filte
 		},
 		f.deps
 	);
-	assert.equal(result.files, 6);
+	assert.equal(result.files, 7);
 	const listing = await listRecovery(connection, f.deps);
 	assert.deepEqual(listing, [{ id: result.id, kind: 'full', createdAt: f.options.now }]);
 	const manifest = await f.manifest(result);
 	assert.equal(manifest.references.length, 2);
 	assert.equal(manifest.version, 2);
 	assert.equal(manifest.format, 'concat-gzip-v1');
-	assert.equal(manifest.bundles.length, 2);
+	assert.equal(manifest.bundles.length, 3);
 	assert.ok(manifest.bundles.every((bundle) => bundle.bytes <= BUNDLE_BYTES));
 	for (const name of await fs.readdir(path.join(f.remote, 'backups', 'objects'))) {
 		const bytes = await fs.readFile(path.join(f.remote, 'backups', 'objects', name));
@@ -309,7 +311,7 @@ test('database-only snapshots independently include referenced files and reuse v
 		f.deps
 	);
 	assert.notEqual(first.id, second.id);
-	assert.equal(second.reusedObjects, 2);
+	assert.equal(second.reusedObjects, 3);
 	assert.equal(second.uploadedObjects, 0);
 	assert.ok(
 		!(await f.manifest(second)).files.some((entry) => entry.path === 'uploads/unreferenced.txt')

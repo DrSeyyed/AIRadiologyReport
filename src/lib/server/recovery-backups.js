@@ -15,6 +15,8 @@ import {
 	normalizeStorageSettings
 } from './storage-settings.js';
 import { encryptSecret } from './storage-crypto.js';
+import { exportIntegrationBackup, readIntegrationBackup } from './integration-backup.js';
+import { INTEGRATION_FIELDS } from './integration-settings.js';
 import {
 	BUNDLE_BYTES,
 	MAX_RECOVERY_BYTES,
@@ -50,6 +52,9 @@ import {
  * Remote mode replaces saved connection credentials with the currently verified connection;
  * download mode preserves them for explicit operator review before enabling.
  * .env and environment.json contain ONLY APP_ENV_KEYS, never provider credentials or the storage key.
+ * integration-settings.json separately freezes all managed credentials in a backup-bound encrypted
+ * record. Restore authenticates it and returns only field metadata; applying it is a later action.
+ * Legacy manifests without the integration artifact remain valid and return no credential choices.
  * Retention deletes completed indexes/manifests only. Shared objects are intentionally retained:
  * safe reference-counted garbage collection is not implemented, so pruning does not reclaim objects.
  * Inject transport/crypto functions as the fourth argument for offline testing. Local options:
@@ -513,6 +518,8 @@ function validateManifest(manifest) {
 		}
 		paths.add(entry.path);
 		canonicalPaths.add(entry.path.toLowerCase());
+		if ((entry.path === 'integration-settings.json') !== (entry.role === 'integrations'))
+			throw new Error('Invalid recovery integration artifact.');
 		if (entry.role === 'database') {
 			if (entry.path !== 'db/pacs.db') throw new Error('Invalid recovery database.');
 			databases++;
@@ -520,7 +527,8 @@ function validateManifest(manifest) {
 			entry.path.startsWith('uploads/') ||
 			entry.path.startsWith('voice/') ||
 			entry.path === '.env' ||
-			entry.path === 'environment.json'
+			entry.path === 'environment.json' ||
+			entry.path === 'integration-settings.json'
 		))
 			throw new Error('Invalid recovery path.');
 	}
@@ -679,6 +687,14 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 		work = await workDirectory(cwd);
 		const databaseFile = path.join(work, 'database.sqlite');
 		progress.set({ phase: 'snapshotting' });
+		// Synchronous capture freezes all effective credentials before SQLite yields.
+		const integrations = (deps.exportIntegrationBackup || exportIntegrationBackup)({
+			backupId: id,
+			cwd,
+			env,
+			encrypt: deps.encryptSecret
+		});
+		if (typeof integrations !== 'string') throw new Error('Invalid integration snapshot.');
 		await db.backup(databaseFile);
 		await fs.chmod(databaseFile, 0o600);
 		snapshot = new Database(databaseFile, { readonly: true });
@@ -885,6 +901,12 @@ export async function backupRecovery(db, connection, options = {}, injected = {}
 					progress.set({ phase: 'collecting' });
 					await addFile(databaseFile, 'db/pacs.db', 'database');
 					// Keep frequently changing database bytes out of reusable payload bundles.
+					await writer.flush();
+					const integrationFile = path.join(work, 'integration-settings.json');
+					await fs.writeFile(integrationFile, integrations, { mode: 0o600 });
+					progress.add('totalFiles');
+					await addFile(integrationFile, 'integration-settings.json', 'integrations');
+					// Backup-bound credentials must not invalidate otherwise reusable payload bundles.
 					await writer.flush();
 					const entries = [...catalog].sort(([a], [b]) => a.localeCompare(b));
 					for (let offset = 0; offset < entries.length; offset += concurrency) {
@@ -1257,6 +1279,18 @@ export async function restoreRecovery(
 				assertActive
 			);
 		await assertActive();
+		let integrationFields = [];
+		if (manifest.files.some((entry) => entry.role === 'integrations')) {
+			const values = (deps.readIntegrationBackup || readIntegrationBackup)(
+				await fs.readFile(path.join(restored, 'integration-settings.json'), 'utf8'),
+				{ backupId: manifest.id, decrypt: deps.decryptSecret }
+			);
+			integrationFields = INTEGRATION_FIELDS.map(({ key, label }) => ({
+				key,
+				label,
+				configured: Boolean(values[key])
+			}));
+		}
 		phase('database');
 		database = new Database(path.join(restored, 'db', 'pacs.db'));
 		if (database.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
@@ -1306,7 +1340,8 @@ export async function restoreRecovery(
 			createdAt: manifest.createdAt,
 			files: files.length,
 			audioMode,
-			remoteAudioFiles: remoteAudio.length
+			remoteAudioFiles: remoteAudio.length,
+			integrationFields
 		};
 	} catch {
 		throw new Error('Recovery restore failed. Output was not published.');

@@ -19,6 +19,7 @@ function fixture(overrides = {}) {
 		saveSettings: (updates) => { calls.push(['save', { ...updates }]); Object.assign(saved, updates); },
 		applySettings: () => { calls.push(['apply']); Object.assign(env, saved); },
 		maintenanceStatus: () => ({ enabled: state.maintenance }),
+		pendingRestore: () => ({ pending: false, fields: [] }),
 		getDatabase: () => { calls.push(['database']); return {}; },
 		webhook: () => ({ status: () => ({ state: state.webhook }), register: async () => {
 			calls.push(['register']); if (state.failWebhook) throw new Error('private-token'); state.webhook = 'registered';
@@ -42,6 +43,16 @@ test('all integration data and actions require administrator before reading data
 	const loaded = f.route.load({ locals: admin });
 	assert.doesNotMatch(JSON.stringify(loaded), /legacy-openai/);
 	assert.equal(loaded.settings.fields.OPENAI_API_KEY.configured, true);
+});
+
+test('integration page exposes deferred selected fields only after administrator authentication', () => {
+	let reads = 0;
+	const pending = { pending: true, fields: ['OPENAI_API_KEY', 'TELEGRAM_CHAT_ID'], backupId: '1800000000-synthetic' };
+	const f = fixture({ pendingRestore: () => { reads++; return pending; } });
+	assert.throws(() => f.route.load({ locals: {} }), cause => cause.status === 302);
+	assert.equal(reads, 0);
+	assert.deepEqual(f.route.load({ locals: admin }).pendingRestore, pending);
+	assert.equal(reads, 1);
 });
 
 test('provider blanks retain keys, explicit clears override environment, and updates apply immediately', async () => {

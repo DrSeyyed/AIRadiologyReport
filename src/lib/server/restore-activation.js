@@ -4,10 +4,13 @@ import Database from 'better-sqlite3';
 import { isStorageRestoreId } from './storage-restore.js';
 import { getStorageConnection } from './storage-settings.js';
 import { restoreActivation } from './restore-activation-runtime.js';
+import { stageIntegrationRestore } from './integration-backup.js';
+import { validateIntegrationRestoreSelection } from './integration-restore-admin.js';
 
-export async function activatePreparedRestore(db, { jobId, userId }, {
-	cwd = process.cwd(), activate = (options) => restoreActivation.activate(options)
+export async function activatePreparedRestore(db, { jobId, userId, integrationFields = [] }, {
+	cwd = process.cwd(), activate = (options) => restoreActivation.activate(options), stage = stageIntegrationRestore
 } = {}) {
+	const fields = validateIntegrationRestoreSelection(integrationFields);
 	if (!Number.isSafeInteger(jobId) || jobId < 1 || !Number.isSafeInteger(userId) || userId < 1)
 		throw new Error('Select a verified restore.');
 	const result = db.prepare(
@@ -38,6 +41,7 @@ export async function activatePreparedRestore(db, { jobId, userId }, {
 					if (!getStorageConnection(restored).password) throw new Error('Original encryption key required.');
 				} finally { restored.close(); }
 			}
+			stage(path.join(cwd, 'restore-staging', saved.restoreId), { backupId: saved.id, fields });
 		}
 	});
 }
