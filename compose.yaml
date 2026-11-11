@@ -17,12 +17,6 @@ services:
       context: "https://github.com/DrSeyyed/AIRadiologyReport.git#develop"
       dockerfile: Dockerfile
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
       STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:?Storage encryption key is required}
       RESET_TEST_STUDIES: "0"
     volumes:

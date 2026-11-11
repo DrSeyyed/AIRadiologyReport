@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { withIntegrationConfigurationLock } from './integration-coordination.js';
 import {
 	snapshotTelegramMaintenance,
 	lockTelegramMaintenance,
@@ -164,4 +165,4 @@ const siteMaintenance = createSiteMaintenance();
 export const siteMaintenanceStatus = () => siteMaintenance.status();
 export const isSiteMaintenanceEnabled = () => siteMaintenance.status().enabled;
 export const maintenanceTelegramContext = () => siteMaintenance.context();
-export const setSiteMaintenance = (options) => siteMaintenance.set(options);
+export const setSiteMaintenance = (options) => withIntegrationConfigurationLock(() => siteMaintenance.set(options));

@@ -136,10 +136,10 @@ async function processLink(db, send, now, { table, linkColumn, label, button }, 
 
 let worker;
 export function startGroupInvitationWorker(getDb) {
-	if (worker || !process.env.TELEGRAM_BOT_TOKEN) return;
+	if (worker) return;
 	let busy = false;
 	worker = setInterval(async () => {
-		if (busy) return;
+		if (busy || !process.env.TELEGRAM_BOT_TOKEN) return;
 		busy = true;
 		try {
 			await runBackgroundTask(async () => {

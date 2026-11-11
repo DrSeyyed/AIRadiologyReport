@@ -242,6 +242,7 @@ test('server hooks gate normal requests and require the private startup health t
 			else if (specifier === '$lib/server/db') body = `export function getDb(){${access}.queries++;return {prepare:()=>({get:()=>({})})};}`;
 			else if (specifier === '$lib/server/restore-activation-runtime.js') body = `export const restoreActivation={maintenance:()=>${access}.maintenance,request:async(fn)=>{${access}.requests++;return fn();}};`;
 			else if (specifier === '$lib/server/site-maintenance.js') body = `export function siteMaintenanceStatus(){return {enabled:${access}.manual};}`;
+			else if (specifier === '$lib/server/integration-settings.js') body = 'export function applyIntegrationSettings(){};';
 			else if (specifier === '$lib/server/maintenance-response.js')
 				return `from ${JSON.stringify(new URL('../src/lib/server/maintenance-response.js', import.meta.url).href)}`;
 			else if (specifier === 'undici') body = 'export function setGlobalDispatcher(){};export class ProxyAgent{};';

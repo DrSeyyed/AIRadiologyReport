@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { queueActivationFiles, activationStatus } from './restore-activation-files.js';
 import { isSiteMaintenanceEnabled, setSiteMaintenance } from './site-maintenance.js';
+import { isIntegrationConfigurationBusy } from './integration-coordination.js';
 
 export function createActivationRuntime({
 	env = process.env,
@@ -35,7 +36,7 @@ export function createActivationRuntime({
 			finally { requests -= 1; }
 		},
 		async background(operation, { allowDuringMaintenance = false } = {}) {
-			if (maintenance() || (!allowDuringMaintenance && maintenanceEnabled())) return;
+			if (maintenance() || isIntegrationConfigurationBusy() || (!allowDuringMaintenance && maintenanceEnabled())) return;
 			background += 1;
 			try { return await operation(); }
 			finally { background -= 1; }

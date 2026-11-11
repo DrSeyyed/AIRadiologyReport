@@ -11,7 +11,7 @@ import { formatStudyReplyLinks } from './telegram-replies.js';
 function getToken() {
 	const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 	if (!TOKEN) {
-		throw new Error('Missing TELEGRAM_BOT_TOKEN in environment');
+		throw new Error('Missing TELEGRAM_BOT_TOKEN. Configure the bot token in Admin → Integrations.');
 	}
 	return TOKEN;
 }
@@ -19,7 +19,7 @@ function getToken() {
 function getChatID() {
 	const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 	if (!DEFAULT_CHAT_ID) {
-		throw new Error('Missing TELEGRAM_CHAT_ID in environment');
+		throw new Error('Missing TELEGRAM_CHAT_ID. Configure the Telegram study group in Admin → Integrations.');
 	}
 	return DEFAULT_CHAT_ID;
 }
@@ -274,7 +274,7 @@ export async function setWebhook(url) {
 		typeof secret_token === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(secret_token),
 		'Configure a valid TELEGRAM_WEBHOOK_SECRET before setting the webhook'
 	);
-	const res = await tgRequest('setWebhook', { url, secret_token, allowed_updates: ['message'] });
+	const res = await tgRequest('setWebhook', { url, secret_token, allowed_updates: ['message', 'edited_message', 'callback_query'], drop_pending_updates: false });
 	return !!res;
 }
 

@@ -43,10 +43,10 @@ export async function processStudyNotification(
 
 let worker;
 export function startStudyNotificationWorker(getDb) {
-	if (worker || !process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
+	if (worker) return;
 	let busy = false;
 	worker = setInterval(async () => {
-		if (busy) return;
+		if (busy || !process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
 		busy = true;
 		try {
 			await runBackgroundTask(() => processStudyNotification(getDb()));

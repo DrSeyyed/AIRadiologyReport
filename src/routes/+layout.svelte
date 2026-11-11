@@ -88,6 +88,7 @@
 				<li><a href={resolve('/admin/reporting')} class="link link-primary p-3">Reporting settings</a></li>
 				<li><a href={resolve('/admin/storage')} class="link link-primary p-3">Storage &amp; Backups</a></li>
 				<li><a href={resolve('/admin/maintenance')} class="link link-primary p-3">Maintenance</a></li>
+				<li><a href={resolve('/admin/integrations')} class="link link-primary p-3">Integrations</a></li>
 				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
 			{/if}
 		</ul>

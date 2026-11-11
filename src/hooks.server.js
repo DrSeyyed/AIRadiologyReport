@@ -9,6 +9,7 @@ import { startStorageWorker } from '$lib/server/storage-worker.js';
 import { restoreActivation } from '$lib/server/restore-activation-runtime.js';
 import { siteMaintenanceStatus } from '$lib/server/site-maintenance.js';
 import { maintenanceResponse } from '$lib/server/maintenance-response.js';
+import { applyIntegrationSettings } from '$lib/server/integration-settings.js';
 
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 
@@ -23,11 +24,14 @@ if (proxyUrl) {
   console.log('[proxy] Using proxy for server fetch ->', proxyUrl);
 }
 
-startVoiceWorker(getDb);
-startStudyNotificationWorker(getDb);
-startGroupInvitationWorker(getDb);
-startTelegramStudyRefreshWorker(getDb);
-if (!building) startStorageWorker(getDb);
+if (!building) {
+  applyIntegrationSettings();
+  startVoiceWorker(getDb);
+  startStudyNotificationWorker(getDb);
+  startGroupInvitationWorker(getDb);
+  startTelegramStudyRefreshWorker(getDb);
+  startStorageWorker(getDb);
+}
 
 export const handle = async ({ event, resolve }) => {
   if (event.url.pathname === '/__restore-health') {
