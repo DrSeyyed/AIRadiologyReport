@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import fs, { readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { encryptSecret } from '../src/lib/server/storage-crypto.js';
 import Database from 'better-sqlite3';
 import { createActivationRuntime } from '../src/lib/server/restore-activation-runtime.js';
 import { activatePreparedRestore } from '../src/lib/server/restore-activation.js';
+import { queueActivationFiles } from '../src/lib/server/restore-activation-files.js';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 
 function fixture(overrides = {}) {
@@ -238,14 +239,45 @@ test('remote activation requires the original key and refuses a linked staged da
 	const restored = new Database(path.join(prepared, 'db', 'pacs.db'));
 	try {
 		initializeSchema(restored, readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8'));
+		restored.pragma('journal_mode = WAL');
 		restored.prepare("INSERT INTO application_settings(key,value) VALUES('storage_password',?)").run(encryptSecret('synthetic-storage-password'));
 	} finally { restored.close(); }
 	db.prepare('UPDATE storage_jobs SET result=? WHERE id=?').run(JSON.stringify({ ...saved, audioMode: 'remote', remoteAudioFiles: 1 }), jobId);
+	const scratchDirectories = [];
+	const mkdtemp = fs.mkdtempSync;
+	t.mock.method(fs, 'mkdtempSync', (...args) => {
+		const directory = mkdtemp(...args);
+		scratchDirectories.push(directory);
+		return directory;
+	});
+	const original = readFileSync(path.join(prepared, 'db', 'pacs.db'));
 	const activate = async ({ validate }) => { await validate(); return { id: 'accepted' }; };
 	assert.equal((await activatePreparedRestore(db, { jobId, userId: 1 }, { cwd, activate })).id, 'accepted');
+	assert.deepEqual(fs.readdirSync(path.join(prepared, 'db')), ['pacs.db']);
+	assert.deepEqual(readFileSync(path.join(prepared, 'db', 'pacs.db')), original);
 	process.env.STORAGE_ENCRYPTION_KEY = Buffer.alloc(32, 72).toString('base64');
 	await assert.rejects(activatePreparedRestore(db, { jobId, userId: 1 }, { cwd, activate }), /decryption failed/);
+	assert.deepEqual(fs.readdirSync(path.join(prepared, 'db')), ['pacs.db']);
+	assert.deepEqual(readFileSync(path.join(prepared, 'db', 'pacs.db')), original);
+	assert.equal(scratchDirectories.length, 2);
+	assert.ok(scratchDirectories.every(directory => !fs.existsSync(directory)));
 	process.env.STORAGE_ENCRYPTION_KEY = Buffer.alloc(32, 71).toString('base64');
+	for (const suffix of ['-wal', '-shm', '-journal']) {
+		const journal = path.join(prepared, 'db', `pacs.db${suffix}`);
+		fs.writeFileSync(journal, 'retain-journal');
+		await assert.rejects(activatePreparedRestore(db, { jobId, userId: 1 }, { cwd, activate }),
+			error => error.code === 'RESTORE_PREPARED_DATABASE_HAS_JOURNALS');
+		assert.equal(readFileSync(journal, 'utf8'), 'retain-journal');
+		fs.unlinkSync(journal);
+	}
+	mkdirSync(path.join(prepared, 'uploads'));
+	const queued = await activatePreparedRestore(db, { jobId, userId: 1 }, {
+		cwd, activate: async ({ validate, ...options }) => { await validate(); return queueActivationFiles({ ...options, cwd }); }
+	});
+	assert.equal(queued.state, 'queued');
+	assert.deepEqual(fs.readdirSync(path.join(prepared, 'db')), ['pacs.db']);
+	assert.deepEqual(readFileSync(path.join(prepared, 'db', 'pacs.db')), original);
+	assert.ok(scratchDirectories.every(directory => !fs.existsSync(directory)));
 	rmSync(path.join(prepared, 'db'), { recursive: true });
 	const outside = path.join(cwd, 'outside');
 	mkdirSync(outside);

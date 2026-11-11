@@ -49,7 +49,15 @@ function unseal(text, decrypt = decryptSecret) {
 	if (record.version !== 1 || typeof record.ciphertext !== 'string' || !record.ciphertext) fail();
 	return parse(decrypt(record.ciphertext));
 }
-function guarded(operation) { try { return operation(); } catch { fail(); } }
+function guarded(operation) {
+	try { return operation(); }
+	catch (error) {
+		if (error?.code === 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED')
+			throw Object.assign(new Error('Selected credentials require a private restore plan. Uncheck integration settings to restore clinical data while keeping current credentials.'),
+				{ code: 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED' });
+		fail();
+	}
+}
 
 export function exportIntegrationBackup({ backupId, cwd = process.cwd(), env = process.env, encrypt = encryptSecret }) {
 	return guarded(() => {
@@ -86,21 +94,30 @@ function directorySafe(directory, create = false) {
 	}
 	if (!stat.isDirectory() || stat.isSymbolicLink()) fail();
 }
-function fileSafe(stat) {
+function fileSafe(stat, encryptedSnapshot = false) {
 	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > LIMIT ||
-		(process.platform !== 'win32' && (stat.mode & 0o077))) fail();
+		(!encryptedSnapshot && process.platform !== 'win32' && (stat.mode & 0o077))) fail();
 }
-function readFile(filename) {
+function readFile(filename, encryptedSnapshot = false) {
 	directorySafe(path.dirname(filename));
 	let stat;
 	try { stat = fs.lstatSync(filename); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
-	fileSafe(stat);
+	fileSafe(stat, encryptedSnapshot);
 	const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
 	try {
 		const opened = fs.fstatSync(fd);
-		fileSafe(opened);
+		fileSafe(opened, encryptedSnapshot);
 		if (opened.ino !== stat.ino || opened.dev !== stat.dev) fail();
-		return fs.readFileSync(fd, 'utf8');
+		const buffer = Buffer.alloc(LIMIT + 1);
+		let length = 0;
+		while (length < buffer.length) {
+			const count = fs.readSync(fd, buffer, length, buffer.length - length, null);
+			if (!count) break;
+			length += count;
+		}
+		fileSafe(fs.fstatSync(fd), encryptedSnapshot);
+		if (length > LIMIT) fail();
+		return buffer.toString('utf8', 0, length);
 	} finally { fs.closeSync(fd); }
 }
 function remove(filename) {
@@ -117,7 +134,12 @@ function writeFile(filename, text) {
 	let fd;
 	try {
 		fd = fs.openSync(temporary, 'wx', 0o600);
-		fs.fchmodSync(fd, 0o600);
+		try {
+			fs.fchmodSync(fd, 0o600);
+			fileSafe(fs.fstatSync(fd));
+		} catch {
+			throw Object.assign(new Error(ERROR), { code: 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED' });
+		}
 		fs.writeFileSync(fd, text);
 		fs.fsyncSync(fd);
 		fs.closeSync(fd);
@@ -132,7 +154,8 @@ function writeFile(filename, text) {
 	}
 }
 function snapshot(directory, backupId) {
-	const text = readFile(path.resolve(directory, 'integration-settings.json'));
+	// Exported snapshots are authenticated ciphertext bound to this backup, not live settings or plans.
+	const text = readFile(path.resolve(directory, 'integration-settings.json'), true);
 	return text === undefined ? undefined : readIntegrationBackup(text, { backupId });
 }
 export function integrationRestoreFields(directory, { backupId }) {

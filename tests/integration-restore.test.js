@@ -65,6 +65,39 @@ test('snapshot is separately encrypted, bounded, seven fields only, and uses eff
 	assert.deepEqual(integrationRestoreFields(f.directory, { backupId: f.backupId }), INTEGRATION_FIELDS.map(({ key, label }) => ({ key, label, configured: true })));
 });
 
+test('encrypted snapshots tolerate mapped permissions but still require authentication and backup binding', (t) => {
+	const f = fixture(t);
+	fs.chmodSync(f.artifact, 0o777);
+	assert.equal(integrationRestoreFields(f.directory, { backupId: f.backupId }).length, KEYS.length);
+	assert.throws(() => integrationRestoreFields(f.directory, { backupId: 'other-backup' }), /Integration restore/);
+	const correctKey = process.env.STORAGE_ENCRYPTION_KEY;
+	process.env.STORAGE_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+	assert.throws(() => integrationRestoreFields(f.directory, { backupId: f.backupId }), /Integration restore/);
+	process.env.STORAGE_ENCRYPTION_KEY = correctKey;
+	stageIntegrationRestore(f.directory, { backupId: f.backupId, fields: ['OPENAI_API_KEY'] });
+	const plan = path.join(f.directory, 'db', 'integration-restore.json');
+	fs.chmodSync(plan, 0o777);
+	if (process.platform !== 'win32') {
+		assert.throws(() => pendingIntegrationRestoreStatus({ cwd: f.directory }), /Integration restore/);
+		assert.throws(() => stageIntegrationRestore(f.directory, { backupId: f.backupId, fields: [] }), /Integration restore/);
+	}
+	fs.writeFileSync(f.artifact, '{corrupt');
+	assert.throws(() => integrationRestoreFields(f.directory, { backupId: f.backupId }), /Integration restore/);
+	fs.writeFileSync(f.artifact, 'x'.repeat(65537));
+	assert.throws(() => integrationRestoreFields(f.directory, { backupId: f.backupId }), /Integration restore/);
+});
+
+test('unavailable private plan permissions fail before installation and leave no temporary plan', (t) => {
+	const f = fixture(t);
+	t.mock.method(fs, 'fchmodSync', () => { throw new Error('synthetic-private-filesystem-error'); });
+	assert.throws(() => stageIntegrationRestore(f.directory, { backupId: f.backupId, fields: ['OPENAI_API_KEY'] }),
+		error => error.code === 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED' && !error.message.includes('synthetic-private'));
+	assert.deepEqual(fs.readdirSync(path.join(f.directory, 'db')), []);
+	assert.equal(fs.readFileSync(f.artifact, 'utf8'), f.serialized);
+	stageIntegrationRestore(f.directory, { backupId: f.backupId, fields: [] });
+	assert.deepEqual(fs.readdirSync(path.join(f.directory, 'db')), []);
+});
+
 test('wrong keys, IDs, corrupt records, duplicates, unknown/master fields and invalid values fail sanitized', (t) => {
 	const f = fixture(t);
 	assert.throws(() => readIntegrationBackup(f.serialized, { backupId: 'wrong' }), /Integration restore/);

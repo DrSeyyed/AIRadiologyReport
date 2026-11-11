@@ -47,7 +47,7 @@ async function fixture(t) {
 			else if (specifier === '$lib/server/recovery-backups.js')
 				target = `data:text/javascript,${encodeURIComponent(`export async function listRecovery(){const state=globalThis[${JSON.stringify(key)}];state.lists++;if(state.listError)throw new Error(state.listError);return state.recoveryPoints;}`)}`;
 			else if (specifier === '$lib/server/restore-activation.js')
-				target = `data:text/javascript,${encodeURIComponent(`export async function activatePreparedRestore(db,options){const state=globalThis[${JSON.stringify(key)}];state.activations++;state.activationOptions=options;if(state.activationError)throw new Error(state.activationError);return {id:'synthetic-activation'};}`)}`;
+				target = `data:text/javascript,${encodeURIComponent(`export async function activatePreparedRestore(db,options){const state=globalThis[${JSON.stringify(key)}];state.activations++;state.activationOptions=options;if(state.activationError)throw Object.assign(new Error(state.activationError),{code:state.activationErrorCode});return {id:'synthetic-activation'};}`)}`;
 			else if (specifier === '$lib/server/restore-activation-runtime.js')
 				target = `data:text/javascript,${encodeURIComponent(`export function restoreActivationStatus(){return {supported:true,state:'idle'};}`)}`;
 			else if (specifier === '$lib/server/integration-restore-admin.js')
@@ -1013,4 +1013,14 @@ test('admin activation requires exact confirmation and acknowledgement before qu
 	const failed = await submit('activateRestore', body);
 	assert.equal(failed.status, 400);
 	assert.ok(!JSON.stringify(failed).includes(state.activationError));
+	for (const [code, message] of [
+		['RESTORE_PREPARED_DATABASE_HAS_JOURNALS', /Prepare a fresh verified copy/],
+		['INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED', /Uncheck all integration settings/]
+	]) {
+		state.activationErrorCode = code;
+		const specific = await submit('activateRestore', body);
+		assert.equal(specific.status, 400);
+		assert.match(specific.data.error, message);
+		assert.doesNotMatch(JSON.stringify(specific), /synthetic-private-error/);
+	}
 });

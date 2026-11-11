@@ -102,7 +102,11 @@ export const actions = {
 				activationQueued: true,
 				message: `Restore activation ${activation.id} queued. The site will restart, preserving current data as a private rollback copy. Wait, then reload and sign in using an account from the restored backup. Site maintenance stays enabled after restart; test the restored site, then reopen it from Admin → Maintenance. Selected integration settings apply only after restoring the original Telegram group permissions when reopening maintenance; unchecked settings stay unchanged. Storage schedules remain paused.`
 			};
-		} catch {
+		} catch (error) {
+			if (error?.code === 'INTEGRATION_RESTORE_PRIVATE_PLAN_REQUIRED')
+				return fail(400, { error: 'Selected credentials cannot be staged privately on this filesystem. Uncheck all integration settings to restore clinical data while keeping current credentials, or use database storage that supports private file permissions before restoring credentials. No restore activation was queued.' });
+			if (error?.code === 'RESTORE_PREPARED_DATABASE_HAS_JOURNALS')
+				return fail(400, { error: 'This prepared restore contains SQLite journal files. Prepare a fresh verified copy using the updated application, then activate that new copy. Do not manually delete SQLite journal files; they may contain database changes. The live database has not been replaced.' });
 			return fail(400, { error: 'Unable to activate this restore. Type ACTIVATE RESTORE exactly and acknowledge replacement once. Select only available integration settings once and type RESTORE CREDENTIALS exactly if any are selected; the original storage encryption key cannot be restored. Use the updated supervised Docker image with persistent restore-staging and voice mounts. Wait for active requests and background jobs to finish, ensure enough free disk for rollback and replacement, and check that the verified copy and original storage encryption key are available. Configured Telegram groups require bot administrator rights to restrict members; check Admin → Maintenance for lock errors and retry. External VOICE_SAVE_DIR locations require manual activation.' });
 		}
 	},
