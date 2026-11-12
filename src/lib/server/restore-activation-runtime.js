@@ -41,14 +41,15 @@ export function createActivationRuntime({
 			try { return await operation(); }
 			finally { background -= 1; }
 		},
-		async activate({ validate = () => {}, ...options }) {
+		async activate({ validate = () => {}, requestAllowance = 1, ...options }) {
+			if (![0, 1].includes(requestAllowance)) throw new Error('Invalid activation request allowance.');
 			if (!supported() || maintenance()) throw new Error('Automatic activation is unavailable.');
 			preparing = true;
 			let queued = false;
 			try {
-				if (background) throw new Error('Wait for background jobs to finish.');
-				for (let attempt = 0; requests > 1; attempt += 1) {
-					if (attempt >= 600) throw new Error('Wait for active requests to finish.');
+				if (background) throw Object.assign(new Error('Wait for background jobs to finish.'), { code: 'RESTORE_ACTIVATION_BUSY' });
+				for (let attempt = 0; requests > requestAllowance; attempt += 1) {
+					if (attempt >= 600) throw Object.assign(new Error('Wait for active requests to finish.'), { code: 'RESTORE_ACTIVATION_BUSY' });
 					await wait(50);
 				}
 				if (!supported()) throw new Error('Startup supervisor is unavailable.');

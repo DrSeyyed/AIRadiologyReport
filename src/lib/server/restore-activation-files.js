@@ -8,7 +8,8 @@ import Database from 'better-sqlite3';
 // The caller must treat ANY rejection as a boot veto, and call finalize only after health checks.
 // Environment files are never installed. Missing staged voice means an empty voice root.
 // Inventories and journal checksums detect corruption, not a hostile filesystem administrator.
-// Rollback/history/verification copies are retained; capacity and eventual cleanup are operator-owned.
+// Rollback/history and failed verification copies are retained for offline recovery.
+// Only health-confirmed completion permits best-effort removal of its temporary source.
 // Directory fsync requires POSIX for power-loss durability. Windows supports file fsync only.
 // Unreadable/corrupt locks or reused live PIDs fail closed. Locks require one shared PID namespace.
 const ROOTS = ['db', 'uploads', 'voice'];
@@ -272,6 +273,9 @@ async function databaseIntegrity(base, control, staged = false) {
 	// Validate a private copy, never the staged/rollback WAL+SHM set itself.
 	const scratch = path.join(control, 'verification', randomUUID());
 	const dbInventory = await inventoryAt(base, ['db']);
+	await directories(path.dirname(scratch), true);
+	await fs.mkdir(scratch, { mode: 0o700 });
+	const identity = directoryIdentity(await fs.lstat(scratch, { bigint: true }));
 	await copyInventory(base, scratch, dbInventory);
 	let db;
 	try {
@@ -280,6 +284,107 @@ async function databaseIntegrity(base, control, staged = false) {
 		if (result.length !== 1 || result[0].integrity_check !== 'ok') throw fail();
 	} finally {
 		db?.close();
+	}
+	// Cleanup is secondary to validation, and only follows a successful check and close.
+	try {
+		await removePrivateTree(scratch, identity, control);
+	} catch {
+		// Retain evidence rather than weakening the deletion safeguards.
+	}
+}
+
+const directoryIdentity = (stat) => ({ dev: String(stat.dev), ino: String(stat.ino) });
+const identityKey = (stat) => `${stat.dev}:${stat.ino}`;
+
+// Preflight the ENTIRE tree, including preparation metadata, before deleting anything.
+// Never use recursive rm: each deletion rechecks ancestry and the preflight identity.
+async function removePrivateTree(directory, expected, control) {
+	const staging = path.dirname(control);
+	const parent = path.dirname(directory);
+	if (
+		!validId(path.basename(directory)) ||
+		(parent !== staging && parent !== path.join(control, 'verification'))
+	)
+		throw fail();
+	await directories(parent);
+	if (!(await present(directory))) {
+		await syncDirectory(parent);
+		return;
+	}
+	if (process.platform === 'linux') {
+		// Same-device bind mounts are invisible to dev comparisons. Never clear a
+		// mount point (or a tree containing one), even if rmdir would later fail.
+		const mountinfo = await fs.readFile(
+			path.join(path.parse(directory).root, 'proc', 'self', 'mountinfo'),
+			'utf8'
+		);
+		for (const line of mountinfo.trim().split('\n')) {
+			const field = line.split(' ')[4];
+			if (!field) throw fail();
+			const mounted = field.replace(/\\([0-7]{3})/g, (_, octal) =>
+				String.fromCharCode(parseInt(octal, 8))
+			);
+			if (mounted === directory || mounted.startsWith(directory + path.sep)) throw fail();
+		}
+	}
+	const protectedIds = new Set();
+	for (let ancestor = parent; ; ancestor = path.dirname(ancestor)) {
+		protectedIds.add(identityKey(await fs.lstat(ancestor, { bigint: true })));
+		if (ancestor === path.dirname(ancestor)) break;
+	}
+	const visited = new Set();
+	async function protect(absolute) {
+		if (absolute === directory) return;
+		const stat = await fs.lstat(absolute, { bigint: true });
+		// A protected symlink could itself reference this temporary tree.
+		if (stat.isSymbolicLink()) throw fail();
+		if (!stat.isDirectory()) return;
+		const key = identityKey(stat);
+		protectedIds.add(key);
+		if (visited.has(key)) return;
+		visited.add(key);
+		for (const name of await fs.readdir(absolute)) {
+			component(name);
+			await protect(path.join(absolute, name));
+		}
+	}
+	const cwd = path.dirname(staging);
+	for (const root of [...ROOTS.map((name) => path.join(cwd, name)), staging]) {
+		if (await present(root)) await protect(root);
+	}
+	const device = (await fs.lstat(parent, { bigint: true })).dev;
+	const entries = [];
+	const identities = new Set();
+	async function preflight(absolute) {
+		const stat = await fs.lstat(absolute, { bigint: true });
+		if (stat.isSymbolicLink() || stat.dev !== device) throw fail();
+		if (absolute === directory && !same(directoryIdentity(stat), expected)) throw fail();
+		if (stat.isDirectory()) {
+			const key = identityKey(stat);
+			if (protectedIds.has(key) || identities.has(key)) throw fail();
+			identities.add(key);
+			for (const name of await fs.readdir(absolute)) {
+				component(name);
+				await preflight(path.join(absolute, name));
+			}
+		} else if (!stat.isFile() || stat.nlink !== 1n) throw fail();
+		if (absolute === directory && !stat.isDirectory()) throw fail();
+		entries.push({ absolute, stat });
+	}
+	await preflight(directory);
+	for (const { absolute, stat: before } of entries) {
+		await directories(path.dirname(absolute));
+		const stat = await fs.lstat(absolute, { bigint: true });
+		if (
+			stat.isSymbolicLink() ||
+			identityKey(stat) !== identityKey(before) ||
+			stat.isDirectory() !== before.isDirectory() ||
+			(!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1n))
+		)
+			throw fail();
+		if (stat.isDirectory()) await fs.rmdir(absolute);
+		else await fs.unlink(absolute);
+		await syncDirectory(path.dirname(absolute));
 	}
 }
 
@@ -383,6 +488,17 @@ function validateRequest(stored) {
 		)
 	)
 		throw fail();
+	if (
+		request.cleanup !== undefined &&
+		(!request.cleanup ||
+			!['pending', 'completed'].includes(request.cleanup.state) ||
+			!/^\d+$/.test(request.cleanup.dev) ||
+			!/^\d+$/.test(request.cleanup.ino) ||
+			typeof request.cleanup.dev !== 'string' ||
+			typeof request.cleanup.ino !== 'string' ||
+			(request.cleanup.state === 'completed' && request.state !== 'completed'))
+	)
+		throw fail();
 	validateInventory(request.source);
 	if (
 		!request.source.roots.includes('db') ||
@@ -404,6 +520,7 @@ function validateRequest(stored) {
 	return request;
 }
 
+// Missing legacy cleanup metadata is unknown, not confirmation of removal.
 function publicStatus(request) {
 	return request
 		? {
@@ -414,6 +531,9 @@ function publicStatus(request) {
 				state: request.state,
 				createdAt: request.createdAt,
 				bytes: request.source.bytes,
+				...(request.state === 'completed' && request.cleanup
+					? { cleanupPending: request.cleanup.state === 'pending' }
+					: {}),
 				...(request.attempt
 					? {
 							rollbackDirectory: path.join(
@@ -511,7 +631,8 @@ export async function queueActivationFiles({
 			!(requestedBy === null || (Number.isSafeInteger(requestedBy) && requestedBy >= 0))
 		)
 			throw fail();
-		const { inventory } = await source(ctx, restoreId);
+		const { base, inventory } = await source(ctx, restoreId);
+		const identity = directoryIdentity(await fs.lstat(base, { bigint: true }));
 		if (existing) {
 			const history = path.join(ctx.control, 'history');
 			await directories(history, true);
@@ -530,7 +651,8 @@ export async function queueActivationFiles({
 			requestedBy,
 			state: 'queued',
 			createdAt: new Date().toISOString(),
-			source: inventory
+			source: inventory,
+			cleanup: { state: 'pending', ...identity }
 		};
 		await writeJson(ctx.request, request, true);
 		return publicStatus(request);
@@ -657,11 +779,64 @@ async function rollback(ctx, request, hook) {
 	return publicStatus(request);
 }
 
+async function cleanupCompleted(ctx, request, file) {
+	if (request.state !== 'completed' || request.cleanup?.state === 'completed') return;
+	try {
+		const directory = path.join(ctx.staging, request.restoreId);
+		if (!request.cleanup) {
+			// Legacy journals have no source identity. Persist one before any removal.
+			const stat = await fs.lstat(directory, { bigint: true });
+			const cleanup = { state: 'pending', ...directoryIdentity(stat) };
+			await writeJson(file, { ...request, cleanup });
+			request.cleanup = cleanup;
+		}
+		const { dev, ino } = request.cleanup;
+		await removePrivateTree(directory, { dev, ino }, ctx.control);
+		const cleanup = { ...request.cleanup, state: 'completed' };
+		await writeJson(file, { ...request, cleanup });
+		request.cleanup = cleanup;
+	} catch {
+		// Completed activation is authoritative. Leave durable pending work for retry;
+		// cleanup must never veto serving or cause a health-confirmed install to roll back.
+	}
+}
+
+async function retryCleanup(ctx, current) {
+	try {
+		const requests = current ? [{ request: current, file: ctx.request }] : [];
+		const history = path.join(ctx.control, 'history');
+		if (await present(history)) {
+			await directories(history);
+			for (const name of await fs.readdir(history)) {
+				if (!name.endsWith('.json') || !validId(name.slice(0, -5))) throw fail();
+				const file = path.join(history, name);
+				const request = validateRequest(await readJson(file));
+				if (request.id !== name.slice(0, -5) || !TERMINAL.includes(request.state)) throw fail();
+				requests.push({ request, file });
+			}
+		}
+		const retained = new Set(
+			requests
+				.filter(({ request }) => request.state !== 'completed')
+				.map(({ request }) => request.restoreId)
+		);
+		for (const { request, file } of requests) {
+			// Old history without a cleanup marker remains operator-owned. Never remove
+			// a source reused by a newer queued, failed, or restorable activation.
+			if (!retained.has(request.restoreId) && (file === ctx.request || request.cleanup))
+				await cleanupCompleted(ctx, request, file);
+		}
+	} catch {
+		// History/cleanup problems are not activation failures.
+	}
+}
+
 // Only a newly installed copy returns a pending health-confirmation object.
 // Successful crash-recovery rollback returns null; its status remains rolled_back.
 export async function applyPendingActivation({ cwd = process.cwd(), fault = async () => {} } = {}) {
 	return locked(cwd, async (ctx) => {
 		const request = await readRequest(ctx);
+		await retryCleanup(ctx, request);
 		if (!request || TERMINAL.includes(request.state)) return null;
 		if (request.state !== 'queued') {
 			if (request.state === 'backing_up') await backup(ctx, request, fault);
@@ -692,10 +867,10 @@ export async function finalizeActivation({ cwd = process.cwd(), id } = {}) {
 	return locked(cwd, async (ctx) => {
 		const request = await readRequest(ctx);
 		if (!validId(id) || request?.id !== id) throw fail();
-		if (request.state === 'completed') return publicStatus(request);
-		if (request.state !== 'installed') throw fail();
+		if (!['installed', 'completed'].includes(request.state)) throw fail();
 		// The application may already have opened/migrated SQLite. Do not inspect it here.
-		await phase(ctx, request, 'completed', async () => {});
+		if (request.state === 'installed') await phase(ctx, request, 'completed', async () => {});
+		await retryCleanup(ctx, request);
 		return publicStatus(request);
 	});
 }

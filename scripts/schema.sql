@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS storage_restore_requests (
   audio_mode TEXT NOT NULL DEFAULT 'download' CHECK (audio_mode IN ('remote', 'download'))
 );
 
+CREATE TABLE IF NOT EXISTS storage_restore_activations (
+  job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE,
+  requested_by INTEGER NOT NULL CHECK (requested_by > 0),
+  integration_fields TEXT NOT NULL DEFAULT '[]',
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'activating', 'queued', 'blocked', 'cancelled', 'completed')),
+  error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS storage_job_log_hidden (
   job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE
 );

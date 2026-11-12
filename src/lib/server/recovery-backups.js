@@ -222,6 +222,7 @@ function pauseRestoredStorage(db) {
 		'storage_file_catalog',
 		'storage_file_objects',
 		'storage_job_cancellations',
+		'storage_restore_activations',
 		'storage_restore_requests',
 		'storage_reset_requests',
 		'storage_maintenance_requests',

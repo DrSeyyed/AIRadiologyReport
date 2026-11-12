@@ -9,7 +9,8 @@ import { stageIntegrationRestore } from './integration-backup.js';
 import { validateIntegrationRestoreSelection } from './integration-restore-admin.js';
 
 export async function activatePreparedRestore(db, { jobId, userId, integrationFields = [] }, {
-	cwd = process.cwd(), activate = (options) => restoreActivation.activate(options), stage = stageIntegrationRestore
+	cwd = process.cwd(), activate = (options) => restoreActivation.activate(options), stage = stageIntegrationRestore,
+	requestAllowance = 1
 } = {}) {
 	const fields = validateIntegrationRestoreSelection(integrationFields);
 	if (!Number.isSafeInteger(jobId) || jobId < 1 || !Number.isSafeInteger(userId) || userId < 1)
@@ -25,9 +26,10 @@ export async function activatePreparedRestore(db, { jobId, userId, integrationFi
 		restoreId: saved.restoreId,
 		backupId: saved.id,
 		requestedBy: userId,
+		requestAllowance,
 		validate: () => {
 			if (db.prepare("SELECT 1 FROM storage_jobs WHERE status='running' LIMIT 1").get())
-				throw new Error('Wait for running storage jobs to finish.');
+				throw Object.assign(new Error('Wait for running storage jobs to finish.'), { code: 'RESTORE_STORAGE_BUSY' });
 			const preparedDatabase = path.join(cwd, 'restore-staging', saved.restoreId, 'db', 'pacs.db');
 			for (const suffix of ['-wal', '-shm', '-journal']) {
 				try { lstatSync(`${preparedDatabase}${suffix}`); }

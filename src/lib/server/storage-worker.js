@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { runBackgroundTask } from './restore-activation-runtime.js';
 import { isSiteMaintenanceEnabled } from './site-maintenance.js';
+import { automaticRestoreApproval, processAutomaticRestore } from './automatic-restore.js';
+export { retryAutomaticRestore } from './automatic-restore.js';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -41,9 +43,14 @@ export function queueStorageJob(
 		scheduleKey = null,
 		retryNow = false,
 		backupId = null,
-		audioMode = 'download'
+		audioMode = 'download',
+		activate = false,
+		requestedBy = null,
+		integrationFields = []
 	} = {}
 ) {
+	const approval = automaticRestoreApproval({ activate, requestedBy, integrationFields });
+	if (approval && kind !== 'restore') throw new Error('Live replacement requires a restore job.');
 	if (!['test', 'archive', 'full', 'restore'].includes(kind))
 		throw new Error('Invalid storage job.');
 	if (kind === 'restore' && (typeof backupId !== 'string' || !backupIdPattern.test(backupId)))
@@ -65,7 +72,7 @@ export function queueStorageJob(
 			throw new Error('Enable the selected storage service before requesting a job.');
 		const existing = db
 			.prepare(
-				"SELECT id FROM storage_jobs WHERE kind = ? AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8)) ORDER BY id DESC LIMIT 1"
+				"SELECT id FROM storage_jobs WHERE kind = ? AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AND (status IN ('pending','running') OR (status = 'failed' AND attempts < 8) OR EXISTS(SELECT 1 FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id AND a.state IN ('pending','activating','blocked'))) ORDER BY id DESC LIMIT 1"
 			)
 			.get(kind);
 		if (existing) {
@@ -76,7 +83,11 @@ export function queueStorageJob(
 					.prepare('SELECT backup_id,audio_mode FROM storage_restore_requests WHERE job_id = ?')
 					.get(existing.id);
 				if (request?.backup_id !== backupId || request.audio_mode !== audioMode)
-					throw new Error('Wait for the existing restore preparation to finish.');
+					throw new Error('Wait for the existing restore to finish or cancel it first.');
+				const savedApproval = db.prepare('SELECT requested_by,integration_fields FROM storage_restore_activations WHERE job_id=?').get(existing.id);
+				if (Boolean(savedApproval) !== Boolean(approval) || (approval &&
+					(savedApproval.requested_by !== approval.requestedBy || savedApproval.integration_fields !== approval.fields)))
+					throw new Error('Cancel the existing restore before changing its approval or credentials.');
 			}
 			if (retryNow)
 				db.prepare("UPDATE storage_jobs SET retry_at = ? WHERE id = ? AND status = 'failed'").run(
@@ -94,6 +105,9 @@ export function queueStorageJob(
 			db.prepare(
 				'INSERT INTO storage_restore_requests(job_id,backup_id,audio_mode) VALUES(?,?,?)'
 			).run(id, backupId, audioMode);
+		if (approval)
+			db.prepare('INSERT INTO storage_restore_activations(job_id,requested_by,integration_fields) VALUES(?,?,?)')
+				.run(id, approval.requestedBy, approval.fields);
 		return id;
 	})();
 }
@@ -125,7 +139,8 @@ export function queueStorageMaintenance(
 				.prepare(
 					`SELECT 1 FROM storage_restore_requests r
 			JOIN storage_jobs j ON j.id=r.job_id WHERE j.status IN ('pending','running') OR
-			(j.status='failed' AND j.attempts<8) LIMIT 1`
+			(j.status='failed' AND j.attempts<8) OR EXISTS(SELECT 1 FROM storage_restore_activations a
+			WHERE a.job_id=j.id AND a.state IN ('pending','activating','blocked')) LIMIT 1`
 				)
 				.get()
 		)
@@ -172,7 +187,8 @@ export function clearStorageJobLog(db) {
 	return db
 		.prepare(
 			`INSERT OR IGNORE INTO storage_job_log_hidden(job_id)
-		SELECT id FROM storage_jobs WHERE status='succeeded' OR (status='failed' AND attempts>=8)`
+		SELECT id FROM storage_jobs WHERE (status='succeeded' OR (status='failed' AND attempts>=8))
+		AND NOT EXISTS(SELECT 1 FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id AND a.state IN ('pending','activating','blocked'))`
 		)
 		.run().changes;
 }
@@ -206,8 +222,9 @@ export function cancelStorageJob(db, id, { now = Math.floor(Date.now() / 1000) }
 	if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid storage job.');
 	return db.transaction(() => {
 		const job = db.prepare('SELECT status,attempts FROM storage_jobs WHERE id=?').get(id);
+		const cancelledApproval = db.prepare("UPDATE storage_restore_activations SET state='cancelled',error=NULL WHERE job_id=? AND state IN ('pending','blocked')").run(id).changes;
 		if (!job || job.status === 'succeeded' || (job.status === 'failed' && job.attempts >= 8))
-			return false;
+			return Boolean(cancelledApproval);
 		db.prepare(
 			'INSERT OR IGNORE INTO storage_job_cancellations(job_id,requested_at) VALUES(?,?)'
 		).run(id, now);
@@ -223,7 +240,7 @@ export function pauseAndCancelStorageJobs(db, { now = Math.floor(Date.now() / 10
 		).run(JSON.stringify({ ...getStorageSettings(db), enabled: false }));
 		const jobs = db
 			.prepare(
-				"SELECT id FROM storage_jobs WHERE status IN ('pending','running') OR (status='failed' AND attempts < 8)"
+				"SELECT id FROM storage_jobs WHERE status IN ('pending','running') OR (status='failed' AND attempts < 8) OR EXISTS(SELECT 1 FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id AND a.state IN ('pending','blocked'))"
 			)
 			.all();
 		for (const job of jobs) cancelStorageJob(db, job.id, { now });
@@ -673,6 +690,16 @@ export async function processStorageJob(
 	}
 }
 
+export async function runStorageWorkerTick(getDb, {
+	background = runBackgroundTask,
+	process = processStorageJob,
+	activate = processAutomaticRestore
+} = {}) {
+	if (await activate(getDb())) return;
+	await background(() => process(getDb()), { allowDuringMaintenance: true });
+	await activate(getDb());
+}
+
 let worker;
 export function startStorageWorker(getDb) {
 	if (worker) return;
@@ -681,7 +708,7 @@ export function startStorageWorker(getDb) {
 		if (busy) return;
 		busy = true;
 		try {
-			await runBackgroundTask(() => processStorageJob(getDb()), { allowDuringMaintenance: true });
+			await runStorageWorkerTick(getDb);
 		} catch {
 			console.warn('Storage jobs unavailable; retrying later.');
 		} finally {
@@ -703,6 +730,8 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 			`SELECT id,kind,status,created_at,started_at,finished_at,retry_at,attempts,error,result,
 			EXISTS(SELECT 1 FROM storage_job_cancellations c WHERE c.job_id=storage_jobs.id) AS cancelRequested,
 			(SELECT operation FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AS maintenance,
+			(SELECT state FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id) AS activationState,
+			(SELECT error FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id) AS activationError,
 			EXISTS(SELECT 1 FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS isReset,
 			COALESCE((SELECT audio_mode FROM storage_restore_requests r WHERE r.job_id=storage_jobs.id),'download') AS restoreAudioMode,
 			(SELECT phase||': audio '||restored||'/'||total||', remote files removed '||deleted FROM storage_reset_requests r WHERE r.job_id=storage_jobs.id) AS progress
@@ -763,6 +792,7 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 					!maintenance &&
 					displayedKind === 'restore' &&
 					job.status === 'succeeded' &&
+					!job.activationState &&
 					typeof parsed?.restoreId === 'string' &&
 					restoreIdPattern.test(parsed.restoreId)
 				)
@@ -778,18 +808,22 @@ export function storageStatus(db, now = Math.floor(Date.now() / 1000)) {
 					? job.status === 'running'
 						? 'cancelling'
 						: 'cancelled'
-					: job.status,
+					: job.activationState === 'cancelled' ? 'cancelled'
+						: job.status === 'succeeded' && job.activationState
+							? ({ pending: 'waiting', activating: 'activating', queued: 'activating', blocked: 'blocked', completed: 'succeeded' }[job.activationState] || job.status)
+							: job.status,
 				canCancel:
 					!cancelRequested &&
 					(['pending', 'running'].includes(job.status) ||
-						(job.status === 'failed' && job.attempts < 8)),
+						(job.status === 'failed' && job.attempts < 8) ||
+						['pending', 'blocked'].includes(job.activationState)),
 				backupId,
 				restoreDirectory
 			};
 		});
 	const preparedRestores = db
 		.prepare(
-			"SELECT id,finished_at,result,COALESCE((SELECT audio_mode FROM storage_restore_requests r WHERE r.job_id=storage_jobs.id),'download') AS audioMode FROM storage_jobs WHERE kind='restore' AND status='succeeded' AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 10"
+			"SELECT id,finished_at,result,COALESCE((SELECT audio_mode FROM storage_restore_requests r WHERE r.job_id=storage_jobs.id),'download') AS audioMode FROM storage_jobs WHERE kind='restore' AND status='succeeded' AND NOT EXISTS(SELECT 1 FROM storage_maintenance_requests m WHERE m.job_id=storage_jobs.id) AND NOT EXISTS(SELECT 1 FROM storage_restore_activations a WHERE a.job_id=storage_jobs.id) ORDER BY id DESC LIMIT 10"
 		)
 		.all()
 		.flatMap(({ result, ...job }) => {

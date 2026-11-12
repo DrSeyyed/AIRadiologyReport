@@ -13,16 +13,12 @@
 		TELEGRAM_WEBHOOK_SECRET: 'Telegram webhook secret',
 		TELEGRAM_WEBHOOK_BASE_URL: 'Telegram website URL'
 	};
-	let selectedIntegrationFields = $state({});
+	let selectedIntegrationFields = $state([]);
 	let pendingIntegrationLabels = $derived((data.integrationRestore?.fields ?? []).filter((key) => Object.hasOwn(integrationLabels, key)).map((key) => integrationLabels[key]));
-	function selectIntegrationField(restoreId, key, checked) {
-		const selected = selectedIntegrationFields[restoreId] ?? [];
-		selectedIntegrationFields[restoreId] = checked ? [...selected, key] : selected.filter((field) => field !== key);
-	}
-	function activationEnhance(restoreId) {
-		return () => async ({ result, update }) => {
+	function restoreEnhance() {
+		return async ({ result, update }) => {
 			await update();
-			if (result.type === 'success') selectedIntegrationFields[restoreId] = [];
+			if (result.type === 'success') selectedIntegrationFields = [];
 		};
 	}
 	const tabs = [
@@ -124,7 +120,7 @@
 		</div></div>
 	{/if}
 	{#if data.activation?.state && data.activation.state !== 'idle'}
-		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.rollbackDirectory}<p>Private rollback copy: <code class="break-all">{data.activation.rollbackDirectory}</code>. Keep it until the restored site has been tested.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
+		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.state === 'completed'}<p>Restore completed.{#if data.activation.cleanupPending === false} Temporary restore files removed.{:else if data.activation.cleanupPending === true} Temporary-file cleanup will retry on the next restart.{/if} Maintenance remains on for review; storage schedules stay paused.</p>{/if}{#if data.activation.rollbackDirectory}<p>Private rollback copy: <code class="break-all">{data.activation.rollbackDirectory}</code>. Keep it until the restored site has been tested.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
 	{/if}
 	{#if form?.fingerprint}<p class="break-all font-mono">Observed (not yet trusted): {form.fingerprint}</p>{/if}
 	{#if !data.keyConfigured}
@@ -166,7 +162,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<p class="mt-2 text-base-content/70">Uploads and download reads use inactivity limits. Storage-side hash/link commands use the verification timeout as a hard deadline, not an inactivity limit. New settings apply to subsequent jobs; changing an in-use destination requires migration.</p>
 		</details>
 		<h3 class="text-lg font-semibold">Services, schedule and retention</h3>
-		<p class="text-sm text-base-content/70">Automatic file sync and eligible audio eviction checks: every 1–1440 minutes (default 1), in aligned time windows. Pending batches continue on the short worker cycle (normally 15 seconds); manual jobs do not wait for this interval. Full backup UTC hours are independent.</p>
+		<details class="text-sm"><summary class="cursor-pointer font-medium">Schedule help</summary><p class="text-base-content/70">Automatic file sync and eligible audio eviction checks: every 1–1440 minutes (default 1), in aligned time windows. Pending batches continue on the short worker cycle (normally 15 seconds); manual jobs do not wait for this interval. Full backup UTC hours are independent.</p></details>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="enabled" bind:checked={settings.enabled} /> Enable background storage jobs</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Allow eviction of eligible local audio after verified synchronization and backup</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="backupsEnabled" bind:checked={settings.backupsEnabled} /> Scheduled full recovery backups and background file synchronization</label>
@@ -199,12 +195,12 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		</form>
 		<form method="POST" action="?/audit&tab=overview" use:enhance class="space-y-2">
 			<button class="btn btn-outline" name="confirmation" value="audit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Run full checksum audit</button>
-			<p class="text-sm text-base-content/70">Hash all tracked encrypted files, protected backup copies and legacy audio on storage, even if recently checked. No downloads. Shows progress, checksum MiB and elapsed time; cancellable in the job log. Works while schedules are paused.</p>
+			<details class="text-sm"><summary class="cursor-pointer font-medium">Checksum audit help</summary><p class="text-base-content/70">Hash all tracked encrypted files, protected backup copies and legacy audio on storage, even if recently checked. No downloads. Shows progress, checksum MiB and elapsed time; cancellable in the job log. Works while schedules are paused.</p></details>
 		</form>
 		<form method="POST" action="?/pause&tab=overview" use:enhance={pauseEnhance}>
 			<button class="btn btn-warning" name="confirmation" value="pause">Pause &amp; cancel all</button>
 		</form>
-		<p class="text-sm text-base-content/70">Pause disables schedules and requests cancellation. Existing audio, backups and prepared copies are kept.</p>
+		<details class="text-sm"><summary class="cursor-pointer font-medium">Pause help</summary><p>Pause disables schedules and requests cancellation. Existing audio, backups and prepared copies are kept.</p></details>
 		<p>Audio awaiting synchronization: {data.status.backlog}. Archived: {data.status.archived.count} audio files ({(data.status.archived.bytes / 1048576).toFixed(1)} MB); evicted from SSD: {data.status.archived.evicted}.</p>
 		{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
 		{#each data.status.last as item (item.kind)}<p>Last successful {item.kind}: {time(item.at)}</p>{/each}
@@ -213,17 +209,18 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 	</div>
 	<div id="storage-panel-restore" role="tabpanel" aria-labelledby="storage-tab-restore" tabindex="0" hidden={activeTab !== 'restore'} class="card space-y-4 bg-base-100 p-6 shadow">
 		<h3 class="text-lg font-semibold">Restore a recovery backup</h3>
-		<p class="text-sm">Prepare a verified copy in a separate server folder. <strong>Preparation does not replace the live site.</strong> Then explicitly activate a verified copy below to preserve rollback data, replace the site and restart automatically.</p>
+		<div class="alert alert-warning"><p><strong>Restore replaces the live database and local files with this backup, losing newer changes, and restarts the site.</strong> Current data is retained in a private rollback copy. Allow disk space for rollback and replacement. Temporary-file cleanup follows health confirmation; rollback is retained. Maintenance stays enabled for admin review; storage schedules stay paused.</p></div>
+		{#if !data.activation?.supported}<p class="text-sm text-warning">Automatic restore requires the supervised Docker deployment with persistent restore-staging and voice mounts. Use the README offline recovery procedure on unsupported deployments.</p>{/if}
 		<details class="text-sm">
-			<summary class="cursor-pointer font-medium">Restore requirements and activation</summary>
-			<p class="mt-2 text-base-content/70">Allow disk space for locally restored files and temporary downloads; downloading all audio requires space for the full dataset. Keeping archived audio on storage is not a self-contained copy: after activation, playback requires the saved matching storage destination and original encryption key. Only audio whose hash and size match authenticated snapshot archive metadata can remain remote; other files restore locally. Retained audio is checksum-verified at the original archive paths, not just in backup objects. Missing or mismatching archives fail preparation; choose download mode instead. Legacy mixed bundles may still transfer archived audio bytes when needed for the database or other local files; audio-only bundles are skipped. Storage services start paused in either mode. Original storage objects are kept. Protect prepared copies like patient data and remove them manually when no longer needed. Preparation works while schedules are paused. Independent downloads, decryption and verification use the saved parallel connection limit. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
+			<summary class="cursor-pointer font-medium">Audio, disk space and recovery requirements</summary>
+			<p class="mt-2 text-base-content/70">Allow disk space for locally restored files and temporary downloads; downloading all audio requires space for the full dataset. Keeping archived audio on storage is not a self-contained copy: after activation, playback requires the saved matching storage destination and original encryption key. Only audio whose hash and size match authenticated snapshot archive metadata can remain remote; other files restore locally. Retained audio is checksum-verified at the original archive paths, not just in backup objects. Missing or mismatching archives fail preparation; choose download mode instead. Legacy mixed bundles may still transfer archived audio bytes when needed for the database or other local files; audio-only bundles are skipped. Storage services start paused in either mode. Original storage objects are kept. Retain the private rollback until review is complete; it is not automatically deleted. Preparation works while schedules are paused. Independent downloads, decryption and verification use the saved parallel connection limit. Follow the README recovery procedure; never merge restored DB/WAL files with the live database.</p>
 		</details>
 		<form method="POST" action="?/recoveryPoints&tab=restore" use:enhance={recoveryEnhance}>
 			<button class="btn btn-outline" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Load recovery points from storage</button>
 		</form>
 		{#if recoveryPoints.length}
-			<form method="POST" action="?/restore&tab=restore" use:enhance class="space-y-3">
-				<fieldset disabled={data.status.resetActive} class="contents">
+			<form method="POST" action="?/restoreLive&tab=restore" use:enhance={restoreEnhance} class="space-y-3">
+							<fieldset disabled={data.status.resetActive || !data.activation?.supported} class="contents">
 				<label class="form-control">Completed recovery point
 					<select class="select select-bordered font-mono" name="backupId" required>
 						<option value="">Select a backup</option>
@@ -239,54 +236,22 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 					</select>
 				</label>
 				<p id="restore-audio-help" class="text-sm text-base-content/70">Keeping archived audio remote is not self-contained: playback after activation needs the saved matching storage destination, original archive paths and original encryption key. Other files restore locally. Downloading all audio needs full disk space and is the offline restore default.</p>
-				<label class="flex items-center gap-3"><input class="checkbox" type="checkbox" name="confirmation" value="prepare" required /> I understand this creates a separate recovery copy, not an automatic live restore.</label>
-				<button class="btn btn-warning" type="submit" disabled={data.status.resetActive}>Prepare restore</button>
+				<details class="space-y-3 rounded border border-base-300 p-3">
+					<summary class="cursor-pointer font-medium">Restore integration settings (optional)</summary>
+					<p class="text-sm">All options are off: keep current values. Selection happens before downloading; availability in this backup is not yet known. Missing selected snapshots block activation safely. Selecting an empty backed-up value explicitly clears the current setting, including environment fallback.</p>
+					{#each Object.entries(integrationLabels) as [key, label] (key)}
+						<label class="flex items-start gap-3"><input class="checkbox shrink-0" type="checkbox" name="integrationField" value={key} bind:group={selectedIntegrationFields} /> {label}</label>
+					{/each}
+					<label class="form-control">Type RESTORE CREDENTIALS if selecting settings<input class="input input-bordered" name="integrationConfirmation" autocomplete="off" spellcheck="false" required={selectedIntegrationFields.length > 0} pattern="RESTORE CREDENTIALS" /></label>
+					<p class="text-sm">Selected values apply only when reopening Admin → Maintenance, after restoring original Telegram permissions. Failures keep maintenance on and credentials pending. The original storage encryption key is never restored; retain it separately.</p>
+				</details>
+				<label class="form-control">Type RESTORE to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" spellcheck="false" pattern="RESTORE" required /></label>
+				<label class="flex items-start gap-3"><input class="checkbox shrink-0" type="checkbox" name="acknowledgement" required /> I approve live replacement and automatic restart, and have enough disk space for rollback.</label>
+				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.activation?.supported}>Restore live site</button>
 				</fieldset>
 			</form>
 		{/if}
 		{@render backupDeletion()}
-		{#if data.status.preparedRestores.length}
-			<h4 class="font-semibold">Recent verified copies</h4>
-			{#if !data.activation?.supported}
-				<p class="text-sm text-warning">Automatic activation requires the updated Docker startup supervisor and persistent restore-staging and voice mounts. External VOICE_SAVE_DIR locations require manual activation. Preparing a copy alone never changes the live site.</p>
-			{/if}
-			{#each data.status.preparedRestores as restore (restore.id)}
-				<div class="space-y-3 border-t border-base-300 pt-3">
-				<p>Job {restore.id} — {time(restore.finished_at)}: <code class="break-all">{restore.directory}</code> — {restoreAudioLabel(restore.audioMode)}{#if restore.remoteAudioFiles !== undefined}; audio files kept remote: {restore.remoteAudioFiles}{/if}{#if restore.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>
-				<details class="space-y-3">
-					<summary class="cursor-pointer font-semibold text-error">Activate this restore and restart</summary>
-					<p class="text-sm">This replaces the live database and local files, discarding changes made after this backup. The site will be briefly unavailable. Current data is preserved as a private rollback copy before replacement. Keep enough disk space for that copy and the replacement. If installation or startup validation fails, the previous data is restored. Keep the original storage encryption key; remote audio still needs the matching storage. Activation enables site maintenance and locks configured Telegram group posting (the bot needs administrator restriction permissions). Maintenance stays enabled after restart or rollback. You may need to sign in using an administrator account from the backup; test the restored site, then explicitly reopen it in Admin → Maintenance. Storage schedules remain paused separately.</p>
-					<form method="POST" action="?/activateRestore&tab=restore" use:enhance={activationEnhance(restore.id)} class="space-y-3">
-						<fieldset disabled={!data.activation?.supported || form?.activationQueued || data.activation?.maintenance || data.status.resetActive} class="space-y-3">
-							<input type="hidden" name="jobId" value={restore.id} />
-							<fieldset disabled={restore.integrationUnavailable} class="space-y-3 rounded border border-base-300 p-3">
-								<legend class="font-semibold">Integration settings from this backup (optional)</legend>
-								<p class="text-sm">All checkboxes start unchecked: keep current settings. Select only settings to restore. Selecting an empty backup field explicitly disables that current setting; unchecked fields never change.</p>
-								{#if restore.integrationUnavailable}
-									<p class="text-sm text-warning" role="alert">The encrypted integration snapshot could not be read. Credential selection is unavailable; clinical data can still be restored while keeping current credentials.</p>
-								{:else if !restore.integrationFields?.length}
-									<p class="text-sm">This older backup has no integration snapshot. Clinical data can still be restored; current credentials are retained.</p>
-								{:else}
-									{#each restore.integrationFields.filter((field) => Object.hasOwn(integrationLabels, field.key)) as descriptor (descriptor.key)}
-										<label class="flex items-start gap-3">
-											<input class="checkbox shrink-0" type="checkbox" name="integrationField" value={descriptor.key} checked={(selectedIntegrationFields[restore.id] ?? []).includes(descriptor.key)} onchange={(event) => selectIntegrationField(restore.id, descriptor.key, event.currentTarget.checked)} />
-											<span>{descriptor.label} — {descriptor.configured ? 'Configured in backup' : 'Empty in backup (disables current setting if selected)'}</span>
-										</label>
-									{/each}
-									<label class="form-control">Type RESTORE CREDENTIALS only if selecting settings<input class="input input-bordered" name="integrationConfirmation" autocomplete="off" spellcheck="false" required={!restore.integrationUnavailable && !!selectedIntegrationFields[restore.id]?.length} pattern="RESTORE CREDENTIALS" /></label>
-								{/if}
-							</fieldset>
-							<p class="text-sm">Selected settings do not apply during restore or activation. They apply only when an administrator explicitly reopens the website in Admin → Maintenance, after the original Telegram group permissions are restored. Complete Telegram settings automatically register the webhook. Application or registration failures leave maintenance enabled and the restore pending; correct the problem and retry reopening.</p>
-							<p class="text-sm">Restoring a different bot while keeping the current webhook secret may require removing the old bot's webhook separately. Unchecked fields are never changed automatically. The original master encryption key stays server-side and must match the backup; it cannot be selected or restored here.</p>
-							<label class="form-control">Type ACTIVATE RESTORE to confirm<input class="input input-bordered" name="confirmation" autocomplete="off" required /></label>
-							<label class="flex items-start gap-3"><input class="checkbox shrink-0" type="checkbox" name="acknowledgement" required /> I approve replacing the live site with this backup and automatically restarting, and have enough free disk for rollback.</label>
-							<button class="btn btn-error" type="submit">Activate restore &amp; restart</button>
-						</fieldset>
-					</form>
-				</details>
-				</div>
-			{/each}
-		{/if}
 		{@render jobLog('restore', ['restore', 'delete'])}
 	</div>
 	<div id="storage-panel-maintenance" role="tabpanel" aria-labelledby="storage-tab-maintenance" tabindex="0" hidden={activeTab !== 'maintenance'} class="card space-y-4 bg-base-100 p-6 shadow">
@@ -294,7 +259,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<p class="text-sm text-base-content/70">Backup deletion is beside the recovery-point list in Backups &amp; restore.</p>
 		<a class="btn btn-outline w-fit" href={resolve('/admin/storage?tab=restore')} onclick={(event) => tabClick(event, 'restore')}>Delete backups</a>
 		<form method="POST" action="?/clearLog&tab=maintenance" use:enhance class="space-y-3">
-			<p class="text-sm text-base-content/70">Hide finished jobs only. Active jobs, safety metadata, audio and backups are kept.</p>
+			<p class="text-sm text-base-content/70">Hide finished jobs only. Active jobs and pending approved restores remain visible; safety metadata, audio and backups are kept.</p>
 			<button class="btn btn-outline" name="confirmation" value="clear">Clear finished log</button>
 		</form>
 		<div class="alert alert-warning">
@@ -349,13 +314,14 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<summary class="cursor-pointer font-medium">Progress and cancellation help</summary>
 			<div class="mt-2 space-y-2 text-base-content/70">
 				<p>File totals can grow during collection. Checksum MiB are hashed on storage, not downloaded or read back. Recent activity alone does not prove a job has completed.</p>
+				<p>Blocked activation, including a rolled-back restore, can be retried with its original approved choices after resolving the error. Completed restores need admin review, not another activation.</p>
 				<p>Cancel stops one job; future schedules stay enabled. Pause &amp; cancel all also disables schedules. Reset cancellation aborts active SSH requests; other work stops at safety checks or its timeout. Wait for cancellation before changing credentials.</p>
 			</div>
 		</details>
 		<div class="overflow-x-auto">
 			<table class="table"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Started (UTC)</th><th>Details</th><th>Actions</th></tr></thead><tbody>
 			{#each data.status.jobs.filter((job) => !kinds || kinds.includes(job.kind)) as job (job.id)}
-				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.status !== 'cancelled'} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'restore'}<p>{restoreAudioLabel(job.audioMode)}{#if job.remoteAudioFiles !== undefined}; audio files kept remote: {job.remoteAudioFiles}{/if}{#if job.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>{/if}{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.restoreDirectory}<p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p><p>Preparation left the live site unchanged. Activate this copy from Recent verified copies when ready.</p>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
+				<tr><td>{job.id}</td><td>{job.kind}</td><td>{job.status}{#if job.activationState} — activation: {job.activationState}{/if}{#if job.status !== 'cancelled' && !job.activationState} ({job.attempts}/8){/if}</td><td>{time(job.started_at || job.created_at)}</td><td>{#if job.kind === 'restore'}<p>{restoreAudioLabel(job.audioMode)}{#if job.remoteAudioFiles !== undefined}; audio files kept remote: {job.remoteAudioFiles}{/if}{#if job.audioMode === 'remote'} (not self-contained; matching storage and original key required){/if}</p>{/if}{#if job.progress}<p class="break-all">{job.progress}</p>{/if}{job.error || ''}{#if job.activationError}<p class="break-all">{job.activationError}</p>{/if}{#if job.backupId}<span class="break-all">Recovery ID: {job.backupId}</span>{/if}{#if job.activationState === 'completed'}<p>Restore completed. Maintenance remains on for review; storage schedules stay paused.</p>{:else if job.restoreDirectory}<details><summary>Verified copy diagnostics</summary><p class="break-all font-mono">Verified copy ready: {job.restoreDirectory}</p></details>{/if}{#if job.status === 'failed' && job.attempts < 8} Retry: {time(job.retry_at)}{/if}{#if job.status === 'cancelling'} Stopping at the next safety check…{/if}</td><td class="whitespace-nowrap">{#if job.kind === 'restore' && job.activationState === 'blocked'}<form method="POST" action={`?/retryRestore&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-warning" name="jobId" value={job.id} disabled={!data.activation?.supported || data.status.resetActive}>Retry restore</button></form>{/if}{#if job.canCancel}<form method="POST" action={`?/cancel&tab=${tab}`} use:enhance class="inline-flex"><button class="btn btn-sm btn-outline min-w-max whitespace-nowrap" name="jobId" value={job.id}>Cancel</button></form>{/if}</td></tr>
 			{:else}
 				<tr><td colspan="6">No {tab === 'restore' ? 'restore or backup deletion ' : ''}jobs in the recent log.</td></tr>
 			{/each}

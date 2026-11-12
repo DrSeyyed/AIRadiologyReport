@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
 import { createIntegrationAdmin } from '../src/lib/server/integration-admin.js';
 import { withIntegrationConfigurationLock } from '../src/lib/server/integration-coordination.js';
 
@@ -32,6 +35,35 @@ function fixture(overrides = {}) {
 	}
 	return { env, saved, state, calls, route, action };
 }
+
+test('integration UI compiles with collapsed advanced controls and preserves private fields and actions', async () => {
+	const source = readFileSync(new URL('../src/routes/admin/integrations/+page.svelte', import.meta.url), 'utf8');
+	for (const generate of ['client', 'server']) {
+		assert.deepEqual(compile(source, { generate }).warnings, []);
+	}
+	const moduleUrl = (code) => `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
+	const compiled = compile(source, { generate: 'server' }).js.code.replace(
+		/from (['"])([^'"]+)\1/g,
+		(_statement, _quote, specifier) => `from ${JSON.stringify(specifier === '$app/forms' ? moduleUrl('export function enhance(){}') : import.meta.resolve(specifier))}`
+	);
+	const Page = (await import(moduleUrl(compiled))).default;
+	const f = fixture({ pendingRestore: () => ({ pending: true, fields: ['OPENAI_API_KEY'] }) });
+	const data = f.route.load({ locals: admin });
+	const body = render(Page, { props: { data } }).body;
+	for (const action of ['saveProviders', 'saveTelegram', 'importEnvironment', 'registerWebhook', 'removeWebhook'])
+		assert.ok(body.includes(`action="?/${action}"`), action);
+	for (const key of keys) assert.ok(body.includes(`name="${key}"`), key);
+	for (const key of keys.filter((key) => !['TELEGRAM_CHAT_ID', 'TELEGRAM_WEBHOOK_BASE_URL'].includes(key)))
+		assert.match(body, new RegExp(`type="password" name="${key}"(?![^>]*value=)`));
+	assert.doesNotMatch(body, /legacy-openai/);
+	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);
+	for (const text of ['Private settings and restore behavior', 'Emergency bot replacement', 'REMOVE WEBHOOK', 'IMPORT SETTINGS', 'Credential restore pending', 'Waiting settings: OpenAI API key', 'pending restore will replace selected fields', 'Clear OpenAI API key'])
+		assert.ok(body.includes(text), text);
+	const pendingError = render(Page, { props: { data: { ...data, pendingRestore: { pending: true, error: true }, maintenanceEnabled: true } } }).body;
+	assert.match(pendingError, /Pending restore details are unavailable/);
+	assert.match(pendingError, /Provider keys remain editable/);
+	assert.equal((pendingError.match(/<fieldset disabled/g) ?? []).length, 3);
+});
 
 test('all integration data and actions require administrator before reading database, settings or forms', async () => {
 	const f = fixture();

@@ -17,12 +17,13 @@ import {
 	pauseAndCancelStorageJobs,
 	clearStorageJobLog,
 	queueStorageReset,
-	queueStorageMaintenance
+	queueStorageMaintenance,
+	retryAutomaticRestore
 } from '$lib/server/storage-worker.js';
 import { listRecovery } from '$lib/server/recovery-backups.js';
 import { activatePreparedRestore } from '$lib/server/restore-activation.js';
 import { restoreActivationStatus } from '$lib/server/restore-activation-runtime.js';
-import { integrationRestoreSelection, pendingRestoreMetadata, withRestoreIntegrationMetadata } from '$lib/server/integration-restore-admin.js';
+import { integrationRestoreSelection, validateIntegrationRestoreSelection, pendingRestoreMetadata } from '$lib/server/integration-restore-admin.js';
 
 function requireAdmin(locals) {
 	if (!locals.user) throw redirect(302, '/login');
@@ -81,13 +82,52 @@ export function load({ locals, url }) {
 		settings: getStorageSettings(db),
 		passwordConfigured: storagePasswordConfigured(db),
 		keyConfigured,
-		status: tab === 'restore' ? withRestoreIntegrationMetadata(db, storageStatus(db)) : storageStatus(db),
+		status: storageStatus(db),
 		activation: restoreActivationStatus(),
 		integrationRestore: pendingRestoreMetadata()
 	};
 }
 
 export const actions = {
+	restoreLive: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			const allowed = ['backupId', 'audioMode', 'confirmation', 'acknowledgement', 'integrationField', 'integrationConfirmation'];
+			if ([...form.keys()].some((key) => !allowed.includes(key)) ||
+				field(form, 'confirmation') !== 'RESTORE' || field(form, 'acknowledgement') !== 'on' ||
+				!restoreActivationStatus().supported) throw new Error();
+			const backupId = field(form, 'backupId');
+			const audioMode = field(form, 'audioMode');
+			if (!/^\d{1,16}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(backupId) ||
+				!['remote', 'download'].includes(audioMode)) throw new Error();
+			const integrationFields = validateIntegrationRestoreSelection(form.getAll('integrationField'));
+			const confirmations = form.getAll('integrationConfirmation');
+			if (confirmations.length > 1 || confirmations.some((value) => typeof value !== 'string' || !['', 'RESTORE CREDENTIALS'].includes(value)) ||
+				(integrationFields.length && confirmations[0] !== 'RESTORE CREDENTIALS')) throw new Error();
+			const db = getDb();
+			const connection = getStorageConnection(db);
+			normalizeStorageSettings({ ...getStorageSettings(db), enabled: true });
+			if (!connection.password) throw new Error();
+			queueStorageJob(db, 'restore', { backupId, audioMode, retryNow: true, activate: true, requestedBy: locals.user.id, integrationFields });
+			return { message: 'Restore queued. Backup will be verified, live site replaced and restarted automatically. Maintenance remains on for review.' };
+		} catch {
+			return fail(400, { error: 'Unable to queue restore. Select a valid backup and audio mode, type RESTORE exactly and acknowledge replacement once. Select each integration setting once and type RESTORE CREDENTIALS if selected. Check the saved connection, original encryption key and supported Docker deployment; wait for conflicting jobs to finish.' });
+		}
+	},
+	retryRestore: async ({ locals, request }) => {
+		requireAdmin(locals);
+		try {
+			const form = await request.formData();
+			const jobId = field(form, 'jobId');
+			if ([...form.keys()].some((key) => key !== 'jobId') || !/^[1-9]\d{0,15}$/.test(jobId) || !Number.isSafeInteger(Number(jobId)) ||
+				!restoreActivationStatus().supported) throw new Error();
+			await retryAutomaticRestore(getDb(), Number(jobId));
+			return { message: 'Restore retry queued with the original approved choices.' };
+		} catch {
+			return fail(400, { error: 'Unable to retry this restore. Use a blocked approved job and resolve its activation error first; approved choices cannot be changed.' });
+		}
+	},
 	activateRestore: async ({ locals, request }) => {
 		requireAdmin(locals);
 		try {
@@ -201,7 +241,7 @@ export const actions = {
 			if (field(form, 'confirmation') !== 'clear') throw new Error();
 			const count = clearStorageJobLog(getDb());
 			return {
-				message: `Cleared ${count} finished jobs from the log. Active and retrying jobs remain visible; safety metadata, audio and backups are preserved.`
+				message: `Cleared ${count} finished jobs from the log. Active, retrying and pending approved restore jobs remain visible; safety metadata, audio and backups are preserved.`
 			};
 		} catch {
 			return fail(400, { error: 'Unable to clear the log. Confirm clearing finished jobs once.' });

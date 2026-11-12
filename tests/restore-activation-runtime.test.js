@@ -51,6 +51,30 @@ test('activation queues durably before delayed supervisor notification and block
 	assert.deepEqual(f.messages, [{ type: 'restore-activation-requested', id: 'activation' }]);
 });
 
+test('background-triggered activation drains even one unrelated request before validation', async () => {
+	let finishRequest;
+	let waits = 0;
+	const f = fixture({ wait: async () => { waits++; finishRequest(); } });
+	const active = f.runtime.request(() => new Promise((resolve) => { finishRequest = resolve; }));
+	await f.runtime.activate({ requestAllowance: 0 });
+	await active;
+	assert.equal(waits, 1);
+	assert.equal(f.queued.length, 1);
+	assert.ok(!('requestAllowance' in f.queued[0]));
+});
+
+test('background-triggered activation never queues while an unrelated request remains active', async () => {
+	let finishRequest;
+	const f = fixture({ wait: async () => {} });
+	const active = f.runtime.request(() => new Promise((resolve) => { finishRequest = resolve; }));
+	await assert.rejects(f.runtime.activate({ requestAllowance: 0 }), { code: 'RESTORE_ACTIVATION_BUSY' });
+	assert.equal(f.queued.length, 0);
+	assert.equal(f.runtime.maintenance(), false);
+	finishRequest();
+	await active;
+	await assert.rejects(f.runtime.activate({ requestAllowance: 2 }), /allowance/);
+});
+
 test('restore enables persistent maintenance before queueing and leaves it enabled after queue failure', async () => {
 	let manual = false;
 	const order = [];

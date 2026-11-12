@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -87,6 +87,22 @@ async function queue(f) {
 	});
 }
 
+async function restage(f) {
+	for (const root of ROOTS)
+		await fs.cp(path.join(f.cwd, root), path.join(f.staged, root), { recursive: true });
+}
+
+async function journal(f, update) {
+	const { journalSeal: ignored, ...request } = JSON.parse(await fs.readFile(f.requestFile, 'utf8'));
+	void ignored;
+	if (update) {
+		update(request);
+		const journalSeal = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+		await fs.writeFile(f.requestFile, JSON.stringify({ ...request, journalSeal }));
+	}
+	return request;
+}
+
 function crashAt(point, occurrence = 1) {
 	let count = 0;
 	return async (name) => {
@@ -131,17 +147,33 @@ test('sealed inventory, synchronous sanitized status, exact offline install, fin
 	assert.equal(typeof status.then, 'undefined');
 	assert.deepEqual(status, request);
 	assert.equal(request.requestedBy, 7);
+	assert.equal(Object.hasOwn(status, 'cleanupPending'), false);
 	assert.ok(!JSON.stringify(status).includes(f.cwd));
 	assert.ok(!JSON.stringify(status).includes('keep-me'));
 	const installed = await applyPendingActivation({ cwd: f.cwd });
 	assert.equal(installed.id, request.id);
 	assert.equal(installed.state, 'installed');
+	assert.equal(Object.hasOwn(installed, 'cleanupPending'), false);
+	assert.equal(Object.hasOwn(activationStatus({ cwd: f.cwd }), 'cleanupPending'), false);
 	assert.equal(value(f.cwd), 'restored');
 	assert.deepEqual(await tree(f.cwd), await tree(f.staged));
 	assert.deepEqual(await tree(await backupDirectory(f)), f.original);
 	assert.equal(await fs.readFile(path.join(f.cwd, '.env'), 'utf8'), 'LIVE_SECRET=keep-me');
 	assert.equal(await fs.readFile(path.join(f.cwd, 'environment.json'), 'utf8'), '{"key":"live"}');
-	assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+	assert.ok((await fs.stat(f.staged)).isDirectory());
+	const sibling = path.join(f.cwd, 'restore-staging', randomUUID());
+	await fs.mkdir(sibling);
+	await fs.writeFile(path.join(sibling, 'sentinel'), 'other prepared restore');
+	await fs.mkdir(path.join(f.staged, 'metadata', 'nested'), { recursive: true });
+	await fs.writeFile(path.join(f.staged, 'metadata', 'nested', 'extra'), 'temporary preparation');
+	const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+	assert.equal(finalized.state, 'completed');
+	assert.equal(finalized.cleanupPending, false);
+	assert.equal(Object.hasOwn(finalized, 'cleanup'), false);
+	assert.deepEqual(activationStatus({ cwd: f.cwd }), finalized);
+	await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+	assert.equal((await journal(f)).cleanup.state, 'completed');
+	assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'other prepared restore');
 	assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
 	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 	assert.equal(value(f.cwd), 'restored');
@@ -171,6 +203,10 @@ test('distinct 64-bit directory identities must not collide through Number round
 			identities.get(path.join(f.staged, 'uploads', 'empty'))
 		);
 		await assert.rejects(inspectActivationSource(f), SAFE_ERROR);
+		identities.set(path.join(f.staged, 'uploads', 'nested'), (1n << 63n) + 2n);
+		await finalizeActivation({ cwd: f.cwd, id: request.id });
+		assert.equal((await journal(f)).cleanup.state, 'completed');
+		await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
 	} finally {
 		mocked.mock.restore();
 	}
@@ -195,9 +231,12 @@ test('unconfirmed installation rolls back on the next boot, not repeated serving
 	assert.equal(recovered, null);
 	assert.equal(activationStatus({ cwd: f.cwd }).id, request.id);
 	assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');
+	assert.equal(Object.hasOwn(activationStatus({ cwd: f.cwd }), 'cleanupPending'), false);
 	assert.deepEqual(await tree(f.cwd), f.original);
 	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 	assert.equal((await rollbackActivation({ cwd: f.cwd, id: request.id })).state, 'rolled_back');
+	assert.ok((await fs.stat(f.staged)).isDirectory());
+	assert.equal((await journal(f)).cleanup.state, 'pending');
 });
 
 test('explicit startup failure rollback restores exact files and leaves roots mounted', async (t) => {
@@ -230,6 +269,8 @@ test('ordinary partial-install failure automatically restores before throwing', 
 	);
 	assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');
 	assert.deepEqual(await tree(f.cwd), f.original);
+	assert.ok((await fs.stat(f.staged)).isDirectory());
+	assert.equal((await journal(f)).cleanup.state, 'pending');
 });
 
 for (const point of [
@@ -249,6 +290,8 @@ for (const point of [
 		assert.equal(recovered, null);
 		assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');
 		assert.deepEqual(await tree(f.cwd), f.original);
+		assert.ok((await fs.stat(f.staged)).isDirectory());
+		assert.equal((await journal(f)).cleanup.state, 'pending');
 	});
 }
 
@@ -404,6 +447,7 @@ test('new request after completion retains history and previous rollback', async
 	await applyPendingActivation({ cwd: f.cwd });
 	const rollback = await backupDirectory(f);
 	await finalizeActivation({ cwd: f.cwd, id: first.id });
+	await restage(f);
 	const second = await queue(f);
 	assert.notEqual(first.id, second.id);
 	assert.deepEqual(await tree(rollback), f.original);
@@ -475,11 +519,13 @@ test('status exposes only a generated relative rollback path and recovers retain
 	assert.equal(path.join(f.cwd, status.rollbackDirectory), await backupDirectory(f));
 	assert.ok(!JSON.stringify(status).includes(f.cwd));
 	await finalizeActivation({ cwd: f.cwd, id: first.id });
+	await restage(f);
 	await queue(f);
 	await fs.unlink(f.requestFile);
 	const historical = activationStatus({ cwd: f.cwd });
 	assert.equal(historical.id, first.id);
 	assert.equal(historical.state, 'completed');
+	assert.equal(historical.cleanupPending, false);
 });
 
 test('prepared copies need no activation metadata, and live environment is untouched', async (t) => {
@@ -629,4 +675,397 @@ test('traversal IDs, unsafe filenames, and hard-linked source files are rejected
 	}
 	await fs.link(path.join(f.staged, 'uploads', 'zero'), path.join(f.staged, 'uploads', 'hardlink'));
 	await assert.rejects(queue(f), SAFE_ERROR);
+});
+
+for (const retry of ['apply', 'finalize']) {
+	test(`partial cleanup failure preserves completed activation and retries on ${retry}`, async (t) => {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollback = await backupDirectory(f);
+		const originalUnlink = fs.unlink;
+		let deleted = 0;
+		const mocked = t.mock.method(fs, 'unlink', async (file) => {
+			if (file.startsWith(f.staged + path.sep)) {
+				assert.equal((await journal(f)).state, 'completed');
+				if (++deleted === 2) throw Object.assign(new Error('cleanup denied'), { code: 'EACCES' });
+			}
+			return originalUnlink(file);
+		});
+		try {
+			const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+			assert.equal(finalized.state, 'completed');
+			assert.equal(finalized.cleanupPending, true);
+			assert.equal(Object.hasOwn(finalized, 'cleanup'), false);
+			assert.equal(Object.hasOwn(finalized, 'error'), false);
+			assert.equal(Object.hasOwn(finalized, 'warning'), false);
+			assert.ok(!JSON.stringify(finalized).includes('cleanup denied'));
+			assert.deepEqual(activationStatus({ cwd: f.cwd }), finalized);
+			assert.equal(deleted, 2);
+			assert.equal((await journal(f)).cleanup.state, 'pending');
+			assert.ok((await fs.stat(f.staged)).isDirectory());
+		} finally {
+			mocked.mock.restore();
+		}
+		if (retry === 'apply') assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+		else
+			assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+		await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+		assert.equal((await journal(f)).cleanup.state, 'completed');
+		assert.equal(activationStatus({ cwd: f.cwd }).cleanupPending, false);
+		assert.deepEqual(await tree(rollback), f.original);
+		assert.equal(value(f.cwd), 'restored');
+		await assert.rejects(rollbackActivation({ cwd: f.cwd, id: request.id }), SAFE_ERROR);
+	});
+}
+
+test('process exit during cleanup resumes from the durable completed boundary', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const rollback = await backupDirectory(f);
+	const moduleUrl = new URL('../src/lib/server/restore-activation-files.js', import.meta.url).href;
+	const script = `import fs from 'node:fs/promises';
+		import {finalizeActivation} from ${JSON.stringify(moduleUrl)};
+		const unlink=fs.unlink; fs.unlink=async file=>{await unlink(file);
+		if(file.startsWith(${JSON.stringify(f.staged + path.sep)}))process.exit(77)};
+		await finalizeActivation({cwd:${JSON.stringify(f.cwd)},id:${JSON.stringify(request.id)}});`;
+	const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+		encoding: 'utf8'
+	});
+	assert.equal(child.status, 77, child.stderr);
+	assert.equal((await journal(f)).state, 'completed');
+	assert.equal((await journal(f)).cleanup.state, 'pending');
+	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+	assert.equal((await journal(f)).cleanup.state, 'completed');
+	await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+	assert.deepEqual(await tree(rollback), f.original);
+	assert.equal(value(f.cwd), 'restored');
+});
+
+test('missing source after cleanup journal failure is idempotently completed on retry', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const originalRename = fs.rename;
+	const mocked = t.mock.method(fs, 'rename', async (from, to) => {
+		if (
+			to === f.requestFile &&
+			JSON.parse(await fs.readFile(from, 'utf8')).cleanup?.state === 'completed'
+		)
+			throw new Error('interrupted cleanup marker');
+		return originalRename(from, to);
+	});
+	try {
+		const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+		assert.equal(finalized.state, 'completed');
+		assert.equal(finalized.cleanupPending, true);
+		assert.deepEqual(activationStatus({ cwd: f.cwd }), finalized);
+		await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+		assert.equal((await journal(f)).state, 'completed');
+		assert.equal((await journal(f)).cleanup.state, 'pending');
+	} finally {
+		mocked.mock.restore();
+	}
+	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+	assert.equal((await journal(f)).cleanup.state, 'completed');
+});
+
+test('finalize does not open or hash active SQLite and preserves post-readiness writes', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const dbFile = path.join(f.cwd, 'db', 'pacs.db');
+	const db = new Database(dbFile);
+	db.pragma('journal_mode = WAL');
+	db.prepare('UPDATE sample SET value=?').run('health-confirmed application write');
+	const originalOpen = fs.open;
+	const mocked = t.mock.method(fs, 'open', async (file, ...args) => {
+		assert.ok(!String(file).startsWith(dbFile), 'must not open active SQLite or sidecars');
+		return originalOpen(file, ...args);
+	});
+	try {
+		assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+		assert.equal(
+			db.prepare('SELECT value FROM sample').pluck().get(),
+			'health-confirmed application write'
+		);
+		assert.equal((await journal(f)).cleanup.state, 'completed');
+	} finally {
+		mocked.mock.restore();
+		db.close();
+	}
+});
+
+for (const kind of ['source-junction', 'nested-junction', 'hardlink', 'replacement']) {
+	test(`cleanup rejects ${kind} before deletion without invalidating success`, async (t) => {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollback = await backupDirectory(f);
+		const sibling = path.join(f.cwd, 'restore-staging', randomUUID());
+		await fs.mkdir(sibling);
+		await fs.writeFile(path.join(sibling, 'sentinel'), 'keep other restore');
+		let saved;
+		if (kind === 'source-junction' || kind === 'replacement') {
+			saved = path.join(sibling, 'saved-source');
+			await fs.rename(f.staged, saved);
+			if (kind === 'source-junction')
+				await fs.symlink(path.join(f.cwd, 'uploads'), f.staged, 'junction');
+			else {
+				await fs.mkdir(f.staged);
+				await fs.writeFile(path.join(f.staged, 'replacement'), 'keep replacement');
+			}
+		} else if (kind === 'nested-junction') {
+			await fs.symlink(rollback, path.join(f.staged, 'metadata-link'), 'junction');
+		} else {
+			await fs.link(
+				path.join(rollback, 'uploads', 'old.txt'),
+				path.join(f.staged, 'metadata-hardlink')
+			);
+		}
+		const originalUnlink = fs.unlink;
+		let removed = 0;
+		const mocked = t.mock.method(fs, 'unlink', async (file) => {
+			if (file.startsWith(f.staged + path.sep)) removed++;
+			return originalUnlink(file);
+		});
+		try {
+			assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+			assert.equal(removed, 0);
+			assert.equal((await journal(f)).cleanup.state, 'pending');
+			assert.deepEqual(await tree(rollback), f.original);
+			assert.equal(value(f.cwd), 'restored');
+			assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'keep other restore');
+			assert.ok((await fs.stat(path.join(saved || f.staged, 'db', 'pacs.db'))).isFile());
+		} finally {
+			mocked.mock.restore();
+		}
+	});
+}
+
+for (const kind of [
+	'root-device',
+	'nested-device',
+	'live-alias',
+	'rollback-alias',
+	'sibling-alias',
+	'duplicate-directory'
+]) {
+	test(`cleanup preflight rejects ${kind} using full-width filesystem identities`, async (t) => {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollback = await backupDirectory(f);
+		const sibling = path.join(f.cwd, 'restore-staging', randomUUID());
+		await fs.mkdir(sibling);
+		await fs.writeFile(path.join(sibling, 'sentinel'), 'keep');
+		const target = kind === 'root-device' ? f.staged : path.join(f.staged, 'uploads', 'nested');
+		const alias = {
+			'live-alias': path.join(f.cwd, 'voice'),
+			'rollback-alias': path.join(rollback, 'uploads'),
+			'sibling-alias': sibling,
+			'duplicate-directory': path.join(f.staged, 'uploads', 'empty')
+		}[kind];
+		const identity = alias ? await fs.lstat(alias, { bigint: true }) : null;
+		const originalLstat = fs.lstat;
+		const mocked = t.mock.method(fs, 'lstat', async (file, options) => {
+			const stat = await originalLstat(file, options);
+			if (file === target && options?.bigint) {
+				if (identity) {
+					stat.dev = identity.dev;
+					stat.ino = identity.ino;
+				} else stat.dev += 1n;
+			}
+			return stat;
+		});
+		try {
+			assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+			assert.equal((await journal(f)).cleanup.state, 'pending');
+			assert.equal(
+				await fs.readFile(path.join(f.staged, '.env'), 'utf8'),
+				'LIVE_SECRET=replace-me'
+			);
+			assert.deepEqual(await tree(rollback), f.original);
+			assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'keep');
+		} finally {
+			mocked.mock.restore();
+		}
+		assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+		assert.equal((await journal(f)).cleanup.state, 'completed');
+	});
+}
+
+test('a protected live junction referencing the temporary source prevents cleanup', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const link = path.join(f.cwd, 'uploads', 'temporary-reference');
+	await fs.symlink(f.staged, link, 'junction');
+	assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+	assert.equal((await journal(f)).cleanup.state, 'pending');
+	assert.ok((await fs.stat(path.join(f.staged, 'db', 'pacs.db'))).isFile());
+	await fs.rm(link, { recursive: true });
+	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+	assert.equal((await journal(f)).cleanup.state, 'completed');
+});
+
+for (const nested of [false, true]) {
+	test(
+		`same-device Linux ${nested ? 'nested' : 'source-root'} bind mount is never cleared`,
+		{ skip: process.platform !== 'linux' },
+		async (t) => {
+			const f = await fixture(t);
+			const request = await queue(f);
+			await applyPendingActivation({ cwd: f.cwd });
+			const mounted = nested ? path.join(f.staged, 'uploads', 'nested') : f.staged;
+			const originalReadFile = fs.readFile;
+			const mocked = t.mock.method(fs, 'readFile', async (file, ...args) => {
+				if (file === path.join(path.parse(f.cwd).root, 'proc', 'self', 'mountinfo'))
+					return `1 0 0:1 / ${mounted.replace(/ /g, '\\040')} rw - ext4 /dev/mock rw\n`;
+				return originalReadFile(file, ...args);
+			});
+			try {
+				assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+				assert.equal((await journal(f)).cleanup.state, 'pending');
+				assert.equal(
+					await fs.readFile(path.join(f.staged, '.env'), 'utf8'),
+					'LIVE_SECRET=replace-me'
+				);
+			} finally {
+				mocked.mock.restore();
+			}
+			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+			assert.equal((await journal(f)).cleanup.state, 'completed');
+		}
+	);
+}
+
+for (const reused of [false, true]) {
+	test(`pending historical cleanup ${reused ? 'retains reused restorable source' : 'retries independently of the next restore'}`, async (t) => {
+		const f = await fixture(t);
+		const first = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollback = await backupDirectory(f);
+		const originalUnlink = fs.unlink;
+		const mocked = t.mock.method(fs, 'unlink', async (file) => {
+			if (file.startsWith(f.staged + path.sep)) throw new Error('cleanup denied');
+			return originalUnlink(file);
+		});
+		try {
+			assert.equal((await finalizeActivation({ cwd: f.cwd, id: first.id })).state, 'completed');
+			assert.equal((await journal(f)).cleanup.state, 'pending');
+		} finally {
+			mocked.mock.restore();
+		}
+		const next = { ...f };
+		if (!reused) {
+			next.restoreId = randomUUID();
+			next.staged = path.join(f.cwd, 'restore-staging', next.restoreId);
+			await fs.cp(f.staged, next.staged, { recursive: true });
+		}
+		await queue(next);
+		const history = path.join(path.dirname(f.requestFile), 'history', `${first.id}.json`);
+		assert.equal((await applyPendingActivation({ cwd: f.cwd })).state, 'installed');
+		const historical = JSON.parse(await fs.readFile(history, 'utf8'));
+		assert.equal(historical.state, 'completed');
+		assert.equal(historical.cleanup.state, reused ? 'pending' : 'completed');
+		assert.ok((await fs.stat(next.staged)).isDirectory());
+		assert.deepEqual(await tree(rollback), f.original);
+		if (reused) {
+			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+			assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');
+			assert.ok((await fs.stat(f.staged)).isDirectory());
+			assert.equal(JSON.parse(await fs.readFile(history, 'utf8')).cleanup.state, 'pending');
+		} else await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+	});
+}
+
+test('legacy completed status omits cleanupPending until cleanup metadata is persisted', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	await journal(f, (stored) => {
+		stored.state = 'completed';
+		delete stored.cleanup;
+	});
+	assert.equal(Object.hasOwn(activationStatus({ cwd: f.cwd }), 'cleanupPending'), false);
+	const originalRename = fs.rename;
+	const mocked = t.mock.method(fs, 'rename', async (from, to) => {
+		if (to === f.requestFile) throw new Error('private cleanup metadata write failed');
+		return originalRename(from, to);
+	});
+	try {
+		const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+		assert.equal(finalized.state, 'completed');
+		assert.equal(Object.hasOwn(finalized, 'cleanupPending'), false);
+		assert.deepEqual(activationStatus({ cwd: f.cwd }), finalized);
+		assert.ok((await fs.stat(f.staged)).isDirectory());
+	} finally {
+		mocked.mock.restore();
+	}
+	assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).cleanupPending, false);
+	await journal(f, (stored) => {
+		delete stored.cleanup;
+	});
+	const legacy = await finalizeActivation({ cwd: f.cwd, id: request.id });
+	assert.equal(Object.hasOwn(legacy, 'cleanupPending'), false);
+	assert.deepEqual(activationStatus({ cwd: f.cwd }), legacy);
+	const history = path.join(path.dirname(f.requestFile), 'history');
+	await fs.mkdir(history);
+	await fs.rename(f.requestFile, path.join(history, `${request.id}.json`));
+	assert.deepEqual(activationStatus({ cwd: f.cwd }), legacy);
+});
+
+test('legacy journals without cleanup metadata remain readable through install, success and rollback', async (t) => {
+	for (const success of [true, false]) {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await journal(f, (stored) => {
+			delete stored.cleanup;
+		});
+		assert.equal(activationStatus({ cwd: f.cwd }).state, 'queued');
+		await applyPendingActivation({ cwd: f.cwd });
+		if (success) {
+			assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
+			assert.equal((await journal(f)).cleanup.state, 'completed');
+			await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
+		} else {
+			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+			assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');
+			assert.ok((await fs.stat(f.staged)).isDirectory());
+			assert.deepEqual(await tree(f.cwd), f.original);
+		}
+	}
+});
+
+test('successful private SQLite checks remove only their newly created verification scratch', async (t) => {
+	const f = await fixture(t);
+	const verification = path.join(path.dirname(f.requestFile), 'verification');
+	const evidence = randomUUID();
+	await fs.mkdir(path.join(verification, evidence), { recursive: true });
+	await fs.writeFile(
+		path.join(verification, evidence, 'evidence'),
+		'retain earlier failed validation'
+	);
+	await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	assert.deepEqual(await fs.readdir(verification), [evidence]);
+	await applyPendingActivation({ cwd: f.cwd });
+	assert.deepEqual(await fs.readdir(verification), [evidence]);
+	assert.equal(
+		await fs.readFile(path.join(verification, evidence, 'evidence'), 'utf8'),
+		'retain earlier failed validation'
+	);
+	const bad = await fixture(t);
+	await fs.writeFile(path.join(bad.staged, 'db', 'pacs.db'), 'invalid SQLite');
+	await assert.rejects(queue(bad), SAFE_ERROR);
+	const failedVerification = path.join(path.dirname(bad.requestFile), 'verification');
+	const failed = await fs.readdir(failedVerification);
+	assert.equal(failed.length, 1);
+	assert.equal(
+		await fs.readFile(path.join(failedVerification, failed[0], 'db', 'pacs.db'), 'utf8'),
+		'invalid SQLite'
+	);
 });

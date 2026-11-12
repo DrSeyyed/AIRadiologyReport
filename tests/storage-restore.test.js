@@ -42,11 +42,13 @@ async function fixture(t, { archived = false, bundleBytes } = {}) {
 		CREATE TABLE application_settings(key TEXT PRIMARY KEY, value TEXT);
 		CREATE TABLE storage_jobs(id INTEGER PRIMARY KEY, kind TEXT);
 		CREATE TABLE storage_restore_requests(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE, backup_id TEXT NOT NULL);
+		CREATE TABLE storage_restore_activations(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE, requested_by INTEGER, integration_fields TEXT, state TEXT);
 		CREATE TABLE storage_worker_lock(id INTEGER PRIMARY KEY);
 		CREATE TABLE storage_reset_requests(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE, phase TEXT, restored INTEGER, total INTEGER, deleted INTEGER);
 		CREATE TABLE storage_job_log_hidden(job_id INTEGER PRIMARY KEY REFERENCES storage_jobs(id) ON DELETE CASCADE);
 		INSERT INTO storage_jobs VALUES(1,'restore');
 		INSERT INTO storage_restore_requests VALUES(1,'old');
+		INSERT INTO storage_restore_activations VALUES(1,1,'[]','pending');
 		INSERT INTO storage_reset_requests VALUES(1,'restoring',1,2,0);
 		INSERT INTO storage_job_log_hidden VALUES(1);
 		INSERT INTO storage_worker_lock VALUES(1);
@@ -281,6 +283,7 @@ test('completed encrypted recovery is staged independently, with rewritten paths
 			'storage_file_objects',
 			'storage_jobs',
 			'storage_restore_requests',
+			'storage_restore_activations',
 			'storage_reset_requests',
 			'storage_job_log_hidden',
 			'storage_worker_lock'

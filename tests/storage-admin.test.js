@@ -46,12 +46,16 @@ async function fixture(t) {
 				target = `data:text/javascript,${encodeURIComponent(`export async function probeStorageHost(config){if ('password' in config) throw new Error('Probe must not receive credentials');globalThis[${JSON.stringify(key)}].probes++;return 'SHA256:'+'b'.repeat(43);}`)}`;
 			else if (specifier === '$lib/server/recovery-backups.js')
 				target = `data:text/javascript,${encodeURIComponent(`export async function listRecovery(){const state=globalThis[${JSON.stringify(key)}];state.lists++;if(state.listError)throw new Error(state.listError);return state.recoveryPoints;}`)}`;
+			else if (specifier === '$lib/server/storage-worker.js') {
+				const worker = JSON.stringify(new URL('../src/lib/server/storage-worker.js', import.meta.url).href);
+				target = `data:text/javascript,${encodeURIComponent(`export * from ${worker};import {queueStorageJob as queue} from ${worker};export function queueStorageJob(db,kind,options){const state=globalThis[${JSON.stringify(key)}];if(options?.activate){state.liveQueues=(state.liveQueues||0)+1;state.liveOptions=options;state.liveKind=kind;if(state.queueError)throw new Error(state.queueError);return 42;}return queue(db,kind,options);}export function retryAutomaticRestore(db,jobId){const state=globalThis[${JSON.stringify(key)}];state.retries=(state.retries||0)+1;state.retryJobId=jobId;if(state.retryError)throw new Error(state.retryError);}`)}`;
+			}
 			else if (specifier === '$lib/server/restore-activation.js')
 				target = `data:text/javascript,${encodeURIComponent(`export async function activatePreparedRestore(db,options){const state=globalThis[${JSON.stringify(key)}];state.activations++;state.activationOptions=options;if(state.activationError)throw Object.assign(new Error(state.activationError),{code:state.activationErrorCode});return {id:'synthetic-activation'};}`)}`;
 			else if (specifier === '$lib/server/restore-activation-runtime.js')
-				target = `data:text/javascript,${encodeURIComponent(`export function restoreActivationStatus(){return {supported:true,state:'idle'};}`)}`;
+				target = `data:text/javascript,${encodeURIComponent(`export function restoreActivationStatus(){const state=globalThis[${JSON.stringify(key)}];return {supported:state.activationSupported??true,state:'idle'};}`)}`;
 			else if (specifier === '$lib/server/integration-restore-admin.js')
-				target = `data:text/javascript,${encodeURIComponent(`export {integrationRestoreSelection,withRestoreIntegrationMetadata} from ${JSON.stringify(new URL('../src/lib/server/integration-restore-admin.js', import.meta.url).href)};export function pendingRestoreMetadata(){const state=globalThis[${JSON.stringify(key)}];state.pendingReads=(state.pendingReads||0)+1;return state.pendingRestore??{pending:false,fields:[]};}`)}`;
+				target = `data:text/javascript,${encodeURIComponent(`export {integrationRestoreSelection,validateIntegrationRestoreSelection,withRestoreIntegrationMetadata} from ${JSON.stringify(new URL('../src/lib/server/integration-restore-admin.js', import.meta.url).href)};export function pendingRestoreMetadata(){const state=globalThis[${JSON.stringify(key)}];state.pendingReads=(state.pendingReads||0)+1;return state.pendingRestore??{pending:false,fields:[]};}`)}`;
 			else if (specifier.startsWith('$lib/'))
 				target = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 			else target = import.meta.resolve(specifier);
@@ -452,6 +456,7 @@ test('clearing finished log requires one exact confirmation without a key or net
 	form.set('confirmation', 'clear');
 	const result = await submit('clearLog', form);
 	assert.match(result.message, /Cleared 3 finished jobs/);
+	assert.match(result.message, /pending approved restore jobs remain visible/);
 	assert.deepEqual(
 		page
 			.load({ locals: admin })
@@ -657,7 +662,7 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		'Run full checksum audit',
 		'Delete selected backups',
 		'Load recovery points from storage',
-		'Prepare restore',
+		'Restore live site',
 		'Reset storage',
 		'Save settings'
 	])
@@ -693,8 +698,9 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	data.status.jobs.push(
 		{ id: 1000, kind: 'restore', status: 'running', attempts: 1, created_at: 1,
 			canCancel: true, progress: 'Preparing restore: downloading files 2 of 4' },
-		{ id: 1001, kind: 'restore', status: 'succeeded', attempts: 1, created_at: 1,
-			restoreDirectory: '/recovery/verified-copy', audioMode: 'remote', remoteAudioFiles: 12 },
+		{ id: 1001, kind: 'restore', status: 'blocked', attempts: 1, created_at: 1,
+			restoreDirectory: '/recovery/verified-copy', audioMode: 'remote', remoteAudioFiles: 12,
+			activationState: 'blocked', activationError: 'Activation needs attention.', canCancel: true },
 		{ id: 1002, kind: 'delete', status: 'failed', attempts: 2, created_at: 1,
 			error: 'Selected backup deletion failed.', retry_at: 2, canCancel: true }
 	);
@@ -705,13 +711,25 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	const { body: restoreBody } = render(component.default, {
 		props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } }
 	});
-	data.status.preparedRestores[0].integrationFields = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_WEBHOOK_BASE_URL'].map(key => ({ key, label: key, configured: key !== 'OPENAI_API_KEY' }));
-	const { body: credentialsBody } = render(component.default, { props: { data } });
+	data.status.preparedRestores = [];
+	const integrationKeys = ['OPENAI_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_WEBHOOK_BASE_URL'];
+	const { body: credentialsBody } = render(component.default, { props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } } });
 	const credentialInputs = credentialsBody.match(/<input\b[^>]*name="integrationField"[^>]*>/g) || [];
 	assert.equal(credentialInputs.length, 7);
 	for (const input of credentialInputs) assert.doesNotMatch(input, /\bchecked\b|STORAGE_ENCRYPTION_KEY/);
-	for (const { key } of data.status.preparedRestores[0].integrationFields)
+	for (const key of integrationKeys)
 		assert.ok(credentialInputs.some(input => input.includes(`value="${key}"`)));
+	assert.match(credentialsBody, /availability in this backup is not yet known/);
+	assert.match(credentialsBody, /Missing selected snapshots block activation safely/);
+	assert.match(credentialsBody, /empty backed-up value explicitly clears/);
+	assert.match(credentialsBody, /original storage encryption key is never restored/);
+	data.activation.supported = false;
+	const { body: unsupportedBody } = render(component.default, {
+		props: { data, form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] } }
+	});
+	assert.match(unsupportedBody, /<button[^>]*disabled[^>]*>Restore live site<\/button>/);
+	assert.match(unsupportedBody, /Use the README offline recovery procedure/);
+	data.activation.supported = true;
 	const restorePanel = restoreBody.split('id="storage-panel-restore"')[1]
 		.split('id="storage-panel-maintenance"')[0];
 	assert.match(restorePanel, /action="\?\/deleteBackups&(?:amp;)?tab=restore"/);
@@ -719,10 +737,11 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(restorePanel, /Restore &amp; backup deletion job log/);
 	assert.match(restorePanel, /Preparing restore: downloading files 2 of 4/);
 	assert.match(restorePanel, /Verified copy ready: \/recovery\/verified-copy/);
-	assert.match(restorePanel, /Activate restore &amp; restart/);
+	assert.match(restorePanel, /Restore live site/);
+	assert.doesNotMatch(restorePanel, /Activate this restore|Recent verified copies|Configured in backup/);
 	assert.match(restorePanel, /name="confirmation"/);
 	assert.match(restorePanel, /name="acknowledgement"[^>]*required/);
-	assert.match(restorePanel, /name="jobId" value="1001"/);
+	assert.match(restorePanel, /action="\?\/restoreLive&(?:amp;)?tab=restore"/);
 	assert.match(restorePanel, /<select[^>]*name="audioMode"[^>]*required[^>]*>/);
 	assert.match(restorePanel, /<option value="remote" selected(?:="")?>Keep archived audio on storage \(less local disk\)<\/option>/);
 	assert.match(restorePanel, /<option value="download">Download all audio \(independent copy\)<\/option>/);
@@ -733,13 +752,56 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	assert.match(restorePanel, /Legacy mixed bundles may still transfer archived audio bytes/);
 	assert.match(restorePanel, /Storage services start paused in either mode/);
 	assert.match(restorePanel, /audio files kept remote: 12/);
-	assert.match(restorePanel, /audio files kept remote: 0/);
 	assert.match(restorePanel, /not self-contained; matching storage and original key required/);
 	assert.match(restorePanel, /Download all audio/);
+	assert.match(restorePanel, /activation: blocked/);
+	assert.match(restorePanel, /Activation needs attention/);
+	assert.match(restorePanel, /Retry restore/);
+	assert.match(restorePanel, /action="\?\/retryRestore&(?:amp;)?tab=restore"/);
 	assert.match(restorePanel, /Selected backup deletion failed/);
 	assert.match(restorePanel, /Retry:/);
 	assert.match(restorePanel, /action="\?\/cancel&(?:amp;)?tab=restore"/);
 	assert.doesNotMatch(restorePanel, /Copied: 97/);
+	assert.match(restoreBody, /pending approved restores remain visible/);
+	const originalJobs = data.status.jobs;
+	for (const [activationState, status, canCancel] of [
+		['pending', 'waiting', true], ['activating', 'activating', false],
+		['queued', 'activating', false], ['blocked', 'blocked', true],
+		['completed', 'succeeded', false], ['cancelled', 'cancelled', false]
+	]) {
+		data.status.jobs = [{
+			id: 2000, kind: 'restore', status, activationState, canCancel,
+			attempts: 8, created_at: 1, audioMode: 'remote',
+			restoreDirectory: '/recovery/verified-copy',
+			activationError: activationState === 'blocked' ? 'Restore rolled back. Resolve activation error and retry.' : null
+		}];
+		const { body: stateBody } = render(component.default, { props: { data } });
+		const panel = stateBody.split('id="storage-panel-restore"')[1]
+			.split('id="storage-panel-maintenance"')[0];
+		assert.match(panel, new RegExp(`${status}.*activation: ${activationState}`));
+		assert.equal(panel.includes('>Retry restore</button>'), activationState === 'blocked');
+		assert.equal(panel.includes('>Cancel</button>'), canCancel);
+		assert.doesNotMatch(panel, /\(8\/8\)|Retry:/);
+		if (activationState === 'blocked') assert.match(panel, /Restore rolled back/);
+		if (activationState === 'completed') {
+			assert.match(panel, /Restore completed\. Maintenance remains on for review; storage schedules stay paused\./);
+			assert.doesNotMatch(panel, /Verified copy ready|verified-copy/);
+		}
+	}
+	data.status.jobs = originalJobs;
+	const originalActivation = data.activation;
+	for (const cleanupPending of [false, true, undefined]) {
+		data.activation = { supported: true, state: 'completed', cleanupPending };
+		const { body: completedBody } = render(component.default, { props: { data } });
+		assert.match(completedBody, /Restore completed\./);
+		assert.match(completedBody, /Maintenance remains on for review; storage schedules stay paused\./);
+		assert.equal(completedBody.includes('Temporary restore files removed.'), cleanupPending === false);
+		assert.equal(completedBody.includes('Temporary-file cleanup will retry on the next restart.'), cleanupPending === true);
+	}
+	data.activation = { supported: true, state: 'activating', cleanupPending: false };
+	const { body: activatingBody } = render(component.default, { props: { data } });
+	assert.doesNotMatch(activatingBody, /Temporary restore files removed\./);
+	data.activation = originalActivation;
 	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
 	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);
 	assert.match(archiveBody, /Connection tests probe every configured session/);
@@ -951,7 +1013,7 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /formaction="\?\/probe&tab=settings"/);
 	assert.match(page, /action="\?\/job&tab=overview"/);
 	assert.match(page, /action="\?\/recoveryPoints&tab=restore"/);
-	assert.match(page, /action="\?\/restore&tab=restore"/);
+	assert.match(page, /action="\?\/restoreLive&tab=restore"/);
 	assert.ok(page.includes('action={`?/cancel&tab=${tab}`}'));
 	assert.match(page, /action="\?\/pause&tab=overview" use:enhance=\{pauseEnhance\}/);
 	assert.match(page, /action="\?\/clearLog&tab=maintenance"/);
@@ -963,10 +1025,100 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /\{#if job.progress\}/);
 	assert.match(page, /\$state\(untrack\(/);
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
-	assert.match(page, /name="confirmation" value="prepare" required/);
-	assert.match(page, /Activate restore &amp; restart/);
+	assert.match(page, /name="confirmation"[^>]*pattern="RESTORE" required/);
+	assert.match(page, /Restore live site/);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /data\.user\?\.role === 'admin'[\s\S]*\/admin\/storage/);
+});
+
+test('one-form restore validates approval and queues immutable automatic intent without activating', async (t) => {
+	const { submit, state, settings } = await fixture(t);
+	const valid = {
+		backupId: `1800000000-${randomUUID()}`, audioMode: 'remote',
+		confirmation: 'RESTORE', acknowledgement: 'on'
+	};
+	function body(values = valid) {
+		const form = new FormData();
+		for (const [key, value] of Object.entries(values)) form.set(key, value);
+		return form;
+	}
+	for (const values of [
+		{ ...valid, confirmation: 'restore' }, { ...valid, confirmation: 'RESTORE ' },
+		{ ...valid, acknowledgement: 'yes' }, { ...valid, backupId: '../backup' },
+		{ ...valid, audioMode: 'invalid' }, { ...valid, unexpected: 'value' }
+	]) assert.equal((await submit('restoreLive', body(values))).status, 400);
+	for (const key of Object.keys(valid)) {
+		const missing = body(); missing.delete(key);
+		assert.equal((await submit('restoreLive', missing)).status, 400);
+		const duplicate = body(); duplicate.append(key, valid[key]);
+		assert.equal((await submit('restoreLive', duplicate)).status, 400);
+	}
+	for (const selected of [
+		['OPENAI_API_KEY'], ['unknown'], ['STORAGE_ENCRYPTION_KEY'], ['OPENAI_API_KEY', 'OPENAI_API_KEY']
+	]) {
+		const form = body();
+		for (const key of selected) form.append('integrationField', key);
+		if (selected.length !== 1 || selected[0] !== 'OPENAI_API_KEY') form.set('integrationConfirmation', 'RESTORE CREDENTIALS');
+		assert.equal((await submit('restoreLive', form)).status, 400);
+	}
+	for (const confirmation of ['restore credentials', 'RESTORE CREDENTIALS ']) {
+		const form = body(); form.set('integrationField', 'OPENAI_API_KEY'); form.set('integrationConfirmation', confirmation);
+		assert.equal((await submit('restoreLive', form)).status, 400);
+	}
+	const duplicateConfirmation = body();
+	duplicateConfirmation.append('integrationConfirmation', 'RESTORE CREDENTIALS');
+	duplicateConfirmation.append('integrationConfirmation', 'RESTORE CREDENTIALS');
+	assert.equal((await submit('restoreLive', duplicateConfirmation)).status, 400);
+	state.activationSupported = false;
+	assert.equal((await submit('restoreLive', body())).status, 400);
+	assert.equal(state.liveQueues || 0, 0);
+	state.activationSupported = true;
+	const result = await submit('restoreLive', body());
+	assert.equal(result.message, 'Restore queued. Backup will be verified, live site replaced and restarted automatically. Maintenance remains on for review.');
+	assert.equal(state.liveKind, 'restore');
+	assert.deepEqual(state.liveOptions, {
+		backupId: valid.backupId, audioMode: 'remote', retryNow: true,
+		activate: true, requestedBy: 1, integrationFields: []
+	});
+	const selected = body({ ...valid, audioMode: 'download' });
+	selected.set('integrationConfirmation', 'RESTORE CREDENTIALS');
+	for (const key of ['OPENAI_API_KEY', 'TELEGRAM_CHAT_ID']) selected.append('integrationField', key);
+	assert.ok((await submit('restoreLive', selected)).message);
+	assert.equal(state.liveOptions.audioMode, 'download');
+	assert.deepEqual(state.liveOptions.integrationFields, ['OPENAI_API_KEY', 'TELEGRAM_CHAT_ID']);
+	assert.equal(state.activations, 0);
+	assert.equal(state.lists, 0);
+	state.queueError = 'synthetic-private-error';
+	const failed = await submit('restoreLive', body());
+	assert.equal(failed.status, 400);
+	assert.doesNotMatch(JSON.stringify(failed), /synthetic-private-error/);
+	state.queueError = null;
+	saveStorageSettings(state.db, { ...settings, host: '' });
+	assert.equal((await submit('restoreLive', body())).status, 400);
+});
+
+test('restore retry accepts only a strict job ID and retains approved choices', async (t) => {
+	const { submit, state } = await fixture(t);
+	for (const id of ['0', '-1', '1.2', '../42', '9007199254740992', '42 ']) {
+		const form = new FormData(); form.set('jobId', id);
+		assert.equal((await submit('retryRestore', form)).status, 400);
+	}
+	const form = new FormData(); form.set('jobId', '42');
+	form.append('jobId', '42');
+	assert.equal((await submit('retryRestore', form)).status, 400);
+	form.set('jobId', '42'); form.set('integrationField', 'OPENAI_API_KEY');
+	assert.equal((await submit('retryRestore', form)).status, 400);
+	form.delete('integrationField');
+	state.activationSupported = false;
+	assert.equal((await submit('retryRestore', form)).status, 400);
+	assert.equal(state.retries || 0, 0);
+	state.activationSupported = true;
+	assert.match((await submit('retryRestore', form)).message, /original approved choices/);
+	assert.equal(state.retryJobId, 42);
+	state.retryError = 'synthetic-private-error';
+	const failed = await submit('retryRestore', form);
+	assert.equal(failed.status, 400);
+	assert.doesNotMatch(JSON.stringify(failed), /synthetic-private-error/);
 });
 
 test('admin activation requires exact confirmation and acknowledgement before queueing', async (t) => {

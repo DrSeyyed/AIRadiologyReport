@@ -48,15 +48,22 @@
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
 	<h1 class="text-2xl font-semibold">Integrations</h1>
-	<p class="text-sm">Manage provider keys and Telegram settings. Saved settings are encrypted. Secrets stay masked and are never shown here; blank secret fields keep existing values.</p>
-	<p class="text-sm">Settings are stored separately from restored databases in <code>config/settings.json</code> (the private <code>/app/config</code> volume in Docker). Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve this private configuration volume and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>
+	<p class="text-sm">Manage encrypted provider keys and Telegram settings. Secrets are never displayed; blank secret fields keep existing values.</p>
+	<details class="rounded-box border bg-base-100 p-4 text-sm">
+		<summary class="cursor-pointer font-medium">Private settings and restore behavior</summary>
+		<p class="mt-3">Settings are stored separately from restored databases in <code>config/settings.json</code> (the private <code>/app/config</code> volume in Docker). Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve this private configuration volume and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>
+	</details>
 	{#if data.pendingRestore?.pending}
 		<div class="alert alert-warning" role="status"><div>
-			<p>Selected integration settings are waiting for reopening in Admin → Maintenance, after the original Telegram group permissions are restored. Current settings remain active until then.</p>
+			<p class="font-semibold">Credential restore pending</p>
+			<p>Selected settings apply when you reopen in Admin → Maintenance. Current settings remain active until then.</p>
 			{#if data.pendingRestore.error}<p>Pending restore details are unavailable. Check the server encryption configuration before retrying.</p>
 			{:else if pendingRestoreLabels.length}<p>Waiting settings: {pendingRestoreLabels.join(', ')}.</p>{/if}
 			<p>Provider keys remain editable, but the pending restore will replace selected fields on reopening. Unselected fields remain unchanged.</p>
-			<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+			<details class="mt-2 text-sm">
+				<summary class="cursor-pointer font-medium">Restore order and recovery</summary>
+				<p class="mt-2">Original Telegram group permissions are restored first. Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+			</details>
 		</div></div>
 	{/if}
 	{#if !data.settings.encryptionConfigured}
@@ -68,7 +75,9 @@
 	{#if form?.webhookError}<div class="alert alert-warning" role="alert">{form.webhookError}</div>{/if}
 
 	{#if Object.values(fields).some((field) => field.source === 'environment' && field.configured)}
-		<form method="POST" action="?/importEnvironment" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
+		<details class="rounded-box border bg-base-100 p-4">
+			<summary class="cursor-pointer font-medium">Import legacy environment settings</summary>
+		<form method="POST" action="?/importEnvironment" use:enhance={enhanceSettings} class="mt-4">
 			<fieldset disabled={telegramDisabled} class="min-w-0 space-y-4">
 				<legend class="text-lg font-semibold">Import legacy environment settings</legend>
 				<p class="text-sm">Copy configured legacy environment credentials into encrypted administrator settings without retyping or displaying secrets. After a successful import, legacy API environment variables can be removed.</p>
@@ -80,14 +89,16 @@
 				<button type="submit" class="btn btn-primary">Import environment settings</button>
 			</fieldset>
 		</form>
+		</details>
 	{/if}
 
 	<form method="POST" action="?/saveProviders" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
 		<fieldset disabled={pending || !data.settings.encryptionConfigured} class="min-w-0 space-y-4">
 			<legend class="text-lg font-semibold">AI providers</legend>
-			<p id="provider-help" class="text-sm">Leave a key blank to keep it. Clear explicitly disables that provider, including its legacy environment fallback. Do not enter a replacement key and select Clear together.</p>
+			<p id="provider-help" class="text-sm">Blank keeps the saved key. Clear disables the provider and its legacy fallback; do not also enter a replacement.</p>
+			<div class="grid gap-4">
 			{#each providers as provider (provider.key)}
-				<div class="space-y-2">
+				<div class="rounded-box space-y-2 border border-base-300 p-3">
 					<label class="form-control min-w-0">
 						<span class="label-text">{provider.label}</span>
 						<span id={`${provider.key}-status`} class="mb-1 text-sm opacity-70">{status(provider.key)}</span>
@@ -99,6 +110,7 @@
 					</label>
 				</div>
 			{/each}
+			</div>
 			<button type="submit" class="btn btn-primary">Save provider keys</button>
 		</fieldset>
 	</form>
@@ -109,17 +121,21 @@
 	<form method="POST" action="?/saveTelegram" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
 		<fieldset disabled={telegramDisabled} class="min-w-0 space-y-4">
 			<legend class="text-lg font-semibold">Telegram</legend>
-			<div class="alert alert-warning" role="note">Before changing bots, remove the existing webhook below if the old bot is being retired. Clearing the website URL alone does not remove the remote webhook.</div>
+			<p class="text-sm">Saving a configured bot and website URL automatically registers the webhook.</p>
+			<div class="rounded-box border border-warning p-3 text-sm" role="note">Retiring a bot? Remove its webhook below before changing tokens. Clearing the website URL does not remove the remote webhook.</div>
 			<label class="form-control min-w-0">
 				<span class="label-text">Bot token</span>
 				<span id="bot-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_BOT_TOKEN')}</span>
 				<input type="password" name="TELEGRAM_BOT_TOKEN" class="input input-bordered w-full" autocomplete="new-password" spellcheck="false" aria-describedby="bot-status telegram-secret-help" />
 			</label>
-			<label class="form-control min-w-0">
+			<details class="rounded-box border border-base-300 p-3">
+				<summary class="cursor-pointer font-medium">Emergency bot replacement</summary>
+			<label class="form-control mt-3 min-w-0">
 				<span class="label-text">Emergency bot replacement confirmation (optional)</span>
 				<input name="replaceBotConfirmation" placeholder="REPLACE BOT" class="input input-bordered w-full" autocomplete="off" spellcheck="false" aria-describedby="replace-bot-help" />
 			</label>
-			<p id="replace-bot-help" class="text-sm">Normally remove the old webhook first. Only type REPLACE BOT to replace an invalid or inaccessible old token when its webhook cannot be removed. This does not remove the old bot’s webhook; retire or revoke the old bot separately. Leave blank for initial configuration or same-token updates.</p>
+			<p id="replace-bot-help" class="mt-2 text-sm">Only type REPLACE BOT if the old token is invalid or inaccessible and its webhook cannot be removed. This does not remove the old webhook; retire or revoke that bot separately. Leave blank for initial configuration or same-token updates.</p>
+			</details>
 			<label class="form-control min-w-0">
 				<span class="label-text">Group chat ID</span>
 				<span id="chat-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_CHAT_ID')}</span>
@@ -131,7 +147,10 @@
 				<span id="url-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_WEBHOOK_BASE_URL')}</span>
 				<input type="url" name="TELEGRAM_WEBHOOK_BASE_URL" value={fields.TELEGRAM_WEBHOOK_BASE_URL.value ?? ''} placeholder="https://pacs.example.com" class="input input-bordered w-full" autocomplete="off" spellcheck="false" aria-describedby="url-status webhook-help" />
 			</label>
-			<p id="webhook-help" class="text-sm">The website URL automatically creates <code>/api/telegram/webhook</code>. Saving a configured bot token and URL automatically registers message, edited-message and callback-query updates.</p>
+			<details class="text-sm">
+				<summary class="cursor-pointer font-medium">Webhook URL and update types</summary>
+				<p id="webhook-help" class="mt-2">The website URL creates <code>/api/telegram/webhook</code>. Registration includes message, edited-message and callback-query updates.</p>
+			</details>
 			<label class="form-control min-w-0">
 				<span class="label-text">Webhook secret</span>
 				<span id="secret-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_WEBHOOK_SECRET')}</span>
@@ -156,7 +175,9 @@
 		<form method="POST" action="?/registerWebhook" use:enhance={enhanceSettings}>
 			<button type="submit" class="btn btn-primary" disabled={telegramDisabled}>Register / retry webhook</button>
 		</form>
-		<form method="POST" action="?/removeWebhook" use:enhance={enhanceSettings}>
+		<details class="border-t border-base-300 pt-4">
+			<summary class="cursor-pointer font-medium">Remove current bot webhook</summary>
+		<form method="POST" action="?/removeWebhook" use:enhance={enhanceSettings} class="mt-4">
 			<fieldset disabled={telegramDisabled} class="space-y-4">
 				<legend class="font-semibold">Remove current bot webhook</legend>
 				<p class="text-sm">Removes the remote webhook without dropping pending updates. Registration can be retried above.</p>
@@ -167,6 +188,7 @@
 				<button type="submit" class="btn btn-warning">Remove webhook</button>
 			</fieldset>
 		</form>
+		</details>
 	</div>
 	{#if pending}<p role="status">Updating integration settings…</p>{/if}
 </section>

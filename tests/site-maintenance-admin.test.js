@@ -302,6 +302,9 @@ test('maintenance UI compiles and SSR renders explicit confirmations, acknowledg
 		'startup temporarily blocks everyone'
 	])
 		assert.ok(body.includes(text), text);
+	assert.match(body, /Current status/);
+	assert.match(body, /<summary[^>]*>What maintenance pauses and preserves<\/summary>/);
+	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);
 	assert.match(body, /Closed for maintenance/);
 	assert.match(body, /&lt;script(?:>|&gt;)private input&lt;\/script(?:>|&gt;)/);
 	assert.doesNotMatch(body, /<script>private input/);
@@ -313,6 +316,20 @@ test('maintenance UI compiles and SSR renders explicit confirmations, acknowledg
 	assert.equal((busy.match(/<fieldset disabled/g) ?? []).length, 2);
 	const disabledTelegram = render(Page, { props: { data: { status: off } } }).body;
 	assert.match(disabledTelegram, /Not configured/);
+});
+
+test('maintenance pending restore keeps discard safety and reopening controls visible', async () => {
+	const Page = await component(readFileSync(pageUrl, 'utf8'), '+page.svelte');
+	const data = { status: on, pendingRestore: { pending: true, fields: ['OPENAI_API_KEY'] } };
+	const body = render(Page, { props: { data } }).body;
+	for (const text of ['Credential restore pending', 'Waiting settings: OpenAI API key', 'Restore order and recovery', 'DISCARD CREDENTIAL RESTORE', 'does not undo credentials already applied', 'leaves maintenance enabled'])
+		assert.ok(body.includes(text), text);
+	assert.match(body, /action="\?\/discardIntegrationRestore"/);
+	assert.equal((body.match(/name="confirmation"/g) ?? []).length, 3);
+	assert.equal((body.match(/name="acknowledgement"/g) ?? []).length, 3);
+	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);
+	const unreadable = render(Page, { props: { data: { ...data, pendingRestore: { pending: true, error: true } } } }).body;
+	assert.match(unreadable, /Pending restore details are unavailable/);
 });
 
 test('layout maintenance navigation and enabled banner are admin-only and preserve existing admin entries', async () => {
