@@ -105,7 +105,7 @@ This change applies to new recordings only. Existing files and database paths ar
 
 The SSH password is encrypted in SQLite, never displayed or returned to the browser. Blank password fields preserve it. The destination (including host key) cannot be changed once archives or recovery backups are in use; password and scheduling changes remain possible. Destination/key migration needs a separate planned procedure. Wait for a running job before changing settings. Changing a destination does not move existing data.
 
-The Storage page has four tabs: **Overview & jobs** for status, manual jobs and cancellation; **Settings** for connection, schedules and retention; **Backups & restore** for recovery copies, selected backup deletion and their job log; and **Maintenance** for log cleanup and storage reset (with a shortcut to backup deletion). Detailed help is collapsed. Switching tabs preserves unsaved inputs and loaded recovery points; status continues refreshing in the background.
+The Storage page has four tabs: **Overview & jobs** for status, manual jobs and cancellation; **Settings** for connection, schedules and retention; **Backups & restore** for recovery copies, selected backup deletion and their job log; and **Maintenance** for log cleanup and storage reset (with a shortcut to backup deletion). Detailed help is collapsed. Switching tabs preserves unsaved inputs and loaded recovery points; status continues refreshing in the background. Saving settings keeps the fields visible and clears only the password after a successful save. Temporary server errors keep your edits in place; refresh to check saved settings before retrying, because an interrupted response does not prove the save failed.
 
 ### Archiving, schedules and retention
 

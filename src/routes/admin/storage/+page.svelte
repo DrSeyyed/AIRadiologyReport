@@ -60,6 +60,21 @@
 	}
 	let settings = $state(untrack(() => ({ ...data.settings })));
 	let fullBackupHours = $state(untrack(() => data.settings.fullBackupHours.join(', ')));
+	let settingsRequestError = $state('');
+	function settingsEnhance({ action, formElement }) {
+		settingsRequestError = '';
+		return async ({ result, update }) => {
+			if (result.type === 'error' && (result.status === undefined || result.status >= 500)) {
+				settingsRequestError = 'Server temporarily unavailable. Your edits are kept, but this request was not confirmed. Refresh to check saved settings before retrying.';
+				return;
+			}
+			if (result.type === 'success' && action.searchParams.has('/save')) {
+				const password = formElement.elements.namedItem('password');
+				if (password) password.value = '';
+			}
+			await update({ reset: false });
+		};
+	}
 	onMount(() => {
 		let refreshing = false;
 		const timer = setInterval(async () => {
@@ -130,7 +145,8 @@
 		<div class="alert alert-warning" role="status">Storage reset is active. Connection settings, new jobs and restore preparation are disabled. Refresh status to monitor recovery and cleanup. Cancellation remains available; schedules stay paused.</div>
 	{/if}
 	<div id="storage-panel-settings" role="tabpanel" aria-labelledby="storage-tab-settings" tabindex="0" hidden={activeTab !== 'settings'}>
-	<form method="POST" action="?/save&tab=settings" use:enhance class="card space-y-4 bg-base-100 p-6 shadow">
+	<form method="POST" action="?/save&tab=settings" use:enhance={settingsEnhance} class="card space-y-4 bg-base-100 p-6 shadow">
+		{#if settingsRequestError}<div class="alert alert-error" role="alert">{settingsRequestError}</div>{/if}
 		<fieldset disabled={data.status.resetActive} class="contents">
 		<h3 class="text-lg font-semibold">SSH/SFTP connection</h3>
 		<p class="text-sm text-base-content/70">Use a dedicated SSH/SFTP account and verify its fingerprint independently. Leave the password blank to keep the saved one.</p>

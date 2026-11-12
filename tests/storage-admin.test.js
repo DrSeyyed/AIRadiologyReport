@@ -895,6 +895,55 @@ test('storage tabs support keyboard navigation and preserve unsaved settings', (
 	assert.doesNotMatch(source, /\{#if activeTab/);
 });
 
+test('settings submissions retain fields, clear only saved passwords and handle temporary errors inline', async () => {
+	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
+	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
+	assert.match(source, /action="\?\/save&tab=settings" use:enhance=\{settingsEnhance\}/);
+	assert.match(source, /role="alert">\{settingsRequestError\}/);
+	for (const [action, result, inline, clearPassword] of [
+		['save', { type: 'success' }, false, true],
+		['probe', { type: 'success' }, false, false],
+		['save', { type: 'failure', status: 400 }, false, false],
+		['save', { type: 'error', status: 503 }, true, false],
+		['probe', { type: 'error', status: 503 }, true, false],
+		['save', { type: 'error', status: 500 }, true, false],
+		['save', { type: 'error', error: new SyntaxError('Unexpected HTML') }, true, false],
+		['save', { type: 'error', error: new TypeError('Failed to fetch') }, true, false],
+		['save', { type: 'error', status: 403 }, false, false],
+		['save', { type: 'redirect', location: '/login' }, false, false]
+	]) {
+		const api = new Function('onMount', 'untrack', '$props', '$state',
+			`const $derived = Object.assign(value => value, {by: read => read()});\n${script}\nreturn { settingsEnhance, settings, hours: () => fullBackupHours, error: () => settingsRequestError };`)(
+			() => {}, (read) => read(), () => ({ data: { settings: { host: 'saved.invalid', enabled: false, fullBackupHours: [0, 12] } } }), (value) => value
+		);
+		api.settings.host = 'edited.invalid';
+		api.settings.enabled = true;
+		const password = { value: 'synthetic-secret' };
+		const input = {
+			action: new URL(`http://localhost/admin/storage?/${action}&tab=settings`),
+			formElement: { elements: { namedItem: (name) => { assert.equal(name, 'password'); return password; } } }
+		};
+		const updates = [];
+		await api.settingsEnhance(input)({ result, update: async (options) => {
+			updates.push(options);
+			if (options?.reset !== false) {
+				api.settings.host = '';
+				api.settings.enabled = false;
+			}
+		} });
+		assert.equal(api.settings.host, 'edited.invalid');
+		assert.equal(api.settings.enabled, true);
+		assert.equal(api.hours(), '0, 12');
+		assert.equal(password.value, clearPassword ? '' : 'synthetic-secret');
+		assert.deepEqual(updates, inline ? [] : [{ reset: false }]);
+		if (inline) {
+			assert.match(api.error(), /not confirmed.*Refresh to check saved settings before retrying/);
+			api.settingsEnhance(input);
+		}
+		assert.equal(api.error(), '');
+	}
+});
+
 test('loaded recovery points persist independently of polling and clear only on successful deletion', async () => {
 	const source = readFileSync(new URL('../src/routes/admin/storage/+page.svelte', import.meta.url), 'utf8');
 	const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^\s*import .+;$/gm, '');
