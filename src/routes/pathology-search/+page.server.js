@@ -12,7 +12,7 @@ export async function load({ locals, url, request, setHeaders }) {
 	} catch (caught) {
 		if (caught.status === 400) return {
 			search: null, validationError: caught.message,
-			filters: Object.fromEntries(['q', 'date_range', 'date_from', 'date_to', 'context'].map((key) => [key, url.searchParams.get(key) || '']))
+			filters: Object.fromEntries(['q', 'date_range', 'date_from', 'date_to'].map((key) => [key, url.searchParams.get(key) || '']))
 		};
 		if (caught.status === 401 || caught.status === 403) throw error(caught.status, 'Forbidden');
 		throw caught;

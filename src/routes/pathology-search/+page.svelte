@@ -1,7 +1,6 @@
 <script>
 	import { resolve } from '$app/paths';
 	import { studyDatePresets } from '$lib/study-date-ranges.js';
-	import { pathologyContexts } from '$lib/pathology-search.js';
 	let { data } = $props();
 	function customDates(event) {
 		event.currentTarget.form.elements.namedItem('date_range').value = 'custom';
@@ -32,18 +31,13 @@
 			</label>
 			<label>From (Jalali)<input name="date_from" value={data.filters.date_from || ''} placeholder="1405-01-01" oninput={customDates} /></label>
 			<label>To (Jalali)<input name="date_to" value={data.filters.date_to || ''} placeholder="1405-12-29" oninput={customDates} /></label>
-			<label>Mention context
-				<select name="context" value={data.filters.context || ''}>
-					{#each pathologyContexts as context (context.value)}<option value={context.value}>{context.label}</option>{/each}
-				</select>
-			</label>
 		</div>
 		<div class="form-actions"><button class="btn btn-sm btn-primary" type="submit">Search reports</button><a class="btn btn-sm btn-ghost" href={resolve('/pathology-search')}>Reset</a></div>
 		<p class="help-text">Dates are inclusive examination dates, not report creation dates. All available recording reports are searched, including unsigned drafts and disabled studies. Older recordings appear later.</p>
 	</form>
 	<aside class="search-notice">
-		<strong>Text search, not a diagnosis.</strong> Context labels are conservative wording hints, not clinical verification. Negated, uncertain and historical mentions remain separate from positive wording. Review the source report before using a result.
-		<p>Terms must occur in the same sentence or clause. Organ matching is approximate; ambiguous wording can be missed or remain unclassified. English aliases are curated, not a complete medical vocabulary. Other terms use literal whole-word matching. No report text is sent to AI.</p>
+		<strong>Text search, not a diagnosis.</strong> Results include all matching wording, including negated, uncertain and historical mentions. Read the complete sentence and source report before using a result.
+		<p>Terms must occur in the same sentence or clause. Organ matching is approximate and can miss matches. English aliases are curated, not a complete medical vocabulary. Other terms use literal whole-word matching. No report text is sent to AI.</p>
 	</aside>
 	{#if data.validationError}<p class="validation-error" role="alert">{data.validationError}</p>{/if}
 	{#if data.search?.searched}
@@ -59,11 +53,11 @@
 					</div>
 					<div class="report-state"><span class:unsigned={!row.attending_checked}>{row.attending_checked ? 'Attending signed' : 'Unsigned draft — not attending-signed'}</span>{#if row.disabled}<span>Disabled study</span>{/if}</div>
 					{#each row.mentions as mention, index (index)}
-						<div class="mention"><span class="context-label" data-context={mention.context}>{pathologyContexts.find((context) => context.value === mention.context)?.label}</span><p dir="auto">{mention.excerpt}</p></div>
+						<div class="mention"><p dir="auto">{mention.excerpt}</p></div>
 					{/each}
-					{#if row.mentionCount > row.mentions.length}<p class="help-text">Showing {row.mentions.length} of {row.mentionCount} matching passages. Open the study to review the full report.</p>{/if}
+					{#if row.mentionCount > row.mentions.length}<p class="help-text">Showing {row.mentions.length} of {row.mentionCount} matching sentences. Open the study to review the full report.</p>{/if}
 				</article>
-			{:else}<p class="empty-state">{data.search.total ? 'No reports on this page. Use Previous to return to earlier results.' : 'No matching report text found. Try a broader term, another spelling, all mention contexts or a wider date range.'}</p>{/each}
+			{:else}<p class="empty-state">{data.search.total ? 'No reports on this page. Use Previous to return to earlier results.' : 'No matching report text found. Try a broader term, another spelling or a wider date range.'}</p>{/each}
 		</div>
 		{#if data.search.totalPages > 1 || data.search.page > 1}
 			<nav class="pagination" aria-label="Pathology search results pages">
@@ -86,7 +80,7 @@
 	input, select { width: 100%; min-width: 0; height: 2.5rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; padding: 0 0.625rem; background-color: #fff; font-size: 0.8125rem; font-weight: 400; }
 	input:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible, button:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
 	.query-field { max-width: 44rem; }
-	.search-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.875rem; margin-top: 1rem; }
+	.search-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.875rem; margin-top: 1rem; }
 	.form-actions, .report-state, .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 	.form-actions { margin-top: 1rem; }
 	.search-notice { margin: 0 1.5rem; padding: 0.875rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.75rem; color: #475569; line-height: 1.6; }
@@ -102,10 +96,8 @@
 	.result-header > div { min-width: 0; flex: 1 1 16rem; }
 	h4 { font-size: 0.9375rem; font-weight: 650; }
 	.report-state { margin-top: 0.75rem; }
-	.report-state span, .context-label { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: #f1f5f9; color: #475569; font-size: 0.6875rem; }
-	.report-state .unsigned, .context-label[data-context='suspected'] { color: #854d0e; background: #fef9c3; }
-	.context-label[data-context='present'] { color: #166534; background: #f0fdf4; }
-	.context-label[data-context='absent'] { color: #991b1b; background: #fef2f2; }
+	.report-state span { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: #f1f5f9; color: #475569; font-size: 0.6875rem; }
+	.report-state .unsigned { color: #854d0e; background: #fef9c3; }
 	.mention { border-top: 1px solid #edf2f7; margin-top: 0.875rem; padding-top: 0.875rem; }
 	.mention p { margin-top: 0.5rem; font-size: 0.8125rem; line-height: 1.7; }
 	.empty-state { padding: 2rem 1.5rem; color: #64748b; font-size: 0.8125rem; }

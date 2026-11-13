@@ -46,7 +46,7 @@ test('invalid search filters stay inline and authorization/server errors are not
 	assert.equal(result.search, null);
 	assert.equal(result.filters.q, 'liver hemangioma');
 	assert.equal(result.filters.date_from, 'invalid');
-	assert.equal(result.filters.context, 'absent');
+	assert.equal(Object.hasOwn(result.filters, 'context'), false);
 	assert.equal(result.validationError, 'Enter valid Jalali dates.');
 	for (const status of [401, 403]) {
 		state.failure = { status, message: 'Private error details' };
@@ -69,24 +69,25 @@ async function compiledPage() {
 
 test('search page renders escaped excerpts, report signature states, warnings and filter-preserving pagination', async () => {
 	const Page = await compiledPage();
-	const filters = { q: 'liver hemangioma', date_range: 'custom', date_from: '1405-08-01', date_to: '1405-08-22', context: 'absent' };
+	const filters = { q: 'liver hemangioma', date_range: 'custom', date_from: '1405-08-01', date_to: '1405-08-22' };
 	const data = { filters, validationError: null, search: {
 		searched: true, scanned: 25, unavailable: 2, total: 21, totalPages: 2, page: 1, expansions: [['hemangioma', 'haemangioma']],
 		rows: [0, 1].map((signed) => ({ recording_id: signed + 1, study_id: 1, patient_code: 'SYNTHETIC & CODE', patient_fullname: '<Synthetic patient>', exam_date_jalali: '1405-08-22', attending_checked: signed, disabled: signed, mentionCount: 4,
-			mentions: [{ context: 'absent', excerpt: 'No hepatic hemangioma. <script>not executable</script>' }] }))
+			mentions: [{ excerpt: 'No hepatic hemangioma. <script>not executable</script>' }] }))
 	} };
 	const { body } = render(Page, { props: { data } });
 	assert.match(body, /Text search, not a diagnosis/);
 	assert.match(body, /Unsigned draft — not attending-signed/);
 	assert.match(body, /Attending signed/);
 	assert.match(body, /Disabled study/);
-	assert.match(body, /Negated wording/);
+	assert.doesNotMatch(body, /name="context"|data-context|context-label|Positive wording|Uncertain wording|Negated wording|Unclassified context/);
 	assert.match(body, /&lt;script(?:>|&gt;)not executable&lt;\/script(?:>|&gt;)/);
 	assert.doesNotMatch(body, /<script>|<Synthetic patient>/);
 	assert.match(body, /Results may be incomplete/);
-	assert.match(body, /Showing 1 of 4 matching passages/);
+	assert.match(body, /Showing 1 of 4 matching sentences/);
 	assert.ok(body.includes('/studies?patient_code=SYNTHETIC+%26+CODE'));
-	assert.ok(body.includes('q=liver+hemangioma&amp;date_range=custom&amp;date_from=1405-08-01&amp;date_to=1405-08-22&amp;context=absent&amp;page=2'));
+	assert.ok(body.includes('q=liver+hemangioma&amp;date_range=custom&amp;date_from=1405-08-01&amp;date_to=1405-08-22&amp;page=2'));
+	assert.doesNotMatch(body, /[?&](?:amp;)?context=/);
 	assert.match(body, /type="search" required(?:="")? maxlength="160"/);
 	assert.match(body, /value="1405-08-01"/);
 });

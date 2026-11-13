@@ -2,7 +2,7 @@ import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import jalaali from 'jalaali-js';
 import { examinationDateRange } from '../study-date-ranges.js';
-import { pathologyContexts, pathologyQuery, matchPathologyReport } from '../pathology-search.js';
+import { pathologyQuery, matchPathologyReport } from '../pathology-search.js';
 
 const pageSize = 20;
 const maxReportBytes = 1024 * 1024;
@@ -11,16 +11,14 @@ function failure(message, status = 400) {
 }
 
 export function pathologyFilters(params, now = new Date()) {
-	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'context', 'page']) {
+	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'page']) {
 		if (params.getAll(key).length > 1) throw failure('Select each search filter only once.');
 	}
 	const filters = {
 		q: (params.get('q') || '').trim(),
 		date_range: params.get('date_range') || 'all',
-		date_from: params.get('date_from') || '', date_to: params.get('date_to') || '',
-		context: params.get('context') || ''
+		date_from: params.get('date_from') || '', date_to: params.get('date_to') || ''
 	};
-	if (!pathologyContexts.some(({ value }) => value === filters.context)) throw failure('Select a valid mention context.');
 	if (filters.date_range === 'all') {
 		filters.date_from = '';
 		filters.date_to = '';
@@ -96,8 +94,7 @@ export async function searchPathologyReports(db, user, params, { now = new Date(
 			const row = batch[i];
 			result.scanned++;
 			if (reports[i] === null || !reports[i].trim()) { result.unavailable++; continue; }
-			let mentions = matchPathologyReport(reports[i], query);
-			if (filters.context) mentions = mentions.filter((mention) => mention.context === filters.context);
+			const mentions = matchPathologyReport(reports[i], query);
 			if (!mentions.length) continue;
 			result.total++;
 			if (result.total > (page - 1) * pageSize && result.rows.length < pageSize) {

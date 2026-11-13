@@ -41,7 +41,7 @@ test('curated spelling, plural, abbreviation and full-name expansions are symmet
 		for (const text of ['Hepatic hemangioma.', 'Hepatic haemangiomas.']) assert.equal(matches(text, query).length, 1);
 	}
 	for (const query of ['HCC', 'hepatocellular carcinoma']) {
-		for (const text of ['There is HCC.', 'There is hepatocellular carcinoma.']) assert.equal(matches(text, query)[0].context, 'present');
+		for (const text of ['There is HCC.', 'There is hepatocellular carcinoma.']) assert.equal(matches(text, query).length, 1);
 		for (const text of ['THCC', 'HCC123', 'hepatocellular adenoma']) assert.equal(matches(text, query).length, 0);
 	}
 	assert.equal(matches('There is oedema.', 'edema').length, 1);
@@ -57,34 +57,35 @@ test('organ + pathology requires co-occurrence in a clause and rejects a closer 
 		assert.equal(matches('There is a hepatic haemangioma.', query).length, 1);
 		for (const text of ['Vertebral hemangioma.', 'Liver is normal. Vertebral hemangioma.', 'Liver normal; vertebral hemangioma.', 'The liver is normal and there is a vertebral hemangioma.']) assert.equal(matches(text, query).length, 0);
 	}
-	assert.equal(matches('No ascites. There is a liver hemangioma.', 'liver hemangioma')[0].context, 'present');
-	assert.equal(matches('There is a hepatic 2.3 cm hemangioma.', 'liver hemangioma')[0].context, 'present');
+	assert.deepEqual(matches('No ascites. There is a liver hemangioma.', 'liver hemangioma'), [{ excerpt: 'There is a liver hemangioma.' }]);
+	assert.deepEqual(matches('There is a hepatic 2.3 cm hemangioma.', 'liver hemangioma'), [{ excerpt: 'There is a hepatic 2.3 cm hemangioma.' }]);
 });
 
-test('negation, uncertainty and history do not become positive findings', () => {
-	const cases = [
-		['There is no hepatic hemangioma.', 'absent'], ['Without evidence of hemangioma.', 'absent'],
-		['Hepatic hemangioma is not seen.', 'absent'], ['Negative for hemangioma.', 'absent'],
-		['Possible hepatic hemangioma.', 'suspected'], ['Cannot exclude a hemangioma.', 'suspected'],
-		['Hemangioma cannot be excluded.', 'suspected'], ['Hemangioma?', 'suspected'],
-		['History of hepatic hemangioma.', 'historical'], ['Previously treated hemangioma.', 'historical'],
-		['No interval change in hepatic hemangioma.', 'unclassified'], ['No new hepatic hemangioma.', 'unclassified'],
-		['No cyst and hepatic hemangioma.', 'unclassified'], ['Hepatic hemangioma.', 'unclassified'],
-		['There is a hepatic hemangioma.', 'present'], ['Hepatic hemangioma is identified.', 'present']
-	];
-	for (const [text, expected] of cases) assert.equal(matches(text)[0].context, expected, text);
+test('all matching wording is returned without interpreting or classifying it', () => {
+	for (const text of [
+		'There is no hepatic hemangioma.', 'Without evidence of hemangioma.',
+		'Hepatic hemangioma is not seen.', 'Negative for hemangioma.',
+		'Possible hepatic hemangioma.', 'Cannot exclude a hemangioma.',
+		'Hemangioma cannot be excluded.', 'Hemangioma?',
+		'History of hepatic hemangioma.', 'Previously treated hemangioma.',
+		'No interval change in hepatic hemangioma.', 'No new hepatic hemangioma.',
+		'No cyst and hepatic hemangioma.', 'Hepatic hemangioma.',
+		'There is a hepatic hemangioma.', 'Hepatic hemangioma is identified.'
+	]) assert.deepEqual(matches(text), [{ excerpt: text }]);
 	const report = 'Clinical history: HCC\nFindings:\nNo evidence of HCC.\nImpression:\nThere is a hepatic hemangioma.';
-	assert.deepEqual(matches(report, 'HCC').map((match) => match.context), ['historical', 'absent']);
-	assert.equal(matches(report)[0].context, 'present');
+	assert.deepEqual(matches(report, 'HCC'), [{ excerpt: 'Clinical history: HCC' }, { excerpt: 'No evidence of HCC.' }]);
 });
 
-test('large single-line excerpts stay bounded and retain the matched pathology', () => {
-	const report = `${'x'.repeat(80000)} There is a hepatic haemangioma ${'y'.repeat(80000)}`;
-	const result = matches(report, 'liver hemangioma');
-	assert.equal(result.length, 1);
-	assert.equal(result[0].context, 'present');
-	assert.ok(result[0].excerpt.length <= 704);
-	assert.match(result[0].excerpt, /hepatic haemangioma/);
+test('complete sentences preserve clauses, punctuation and decimal measurements without duplicate hits', () => {
+	const sentence = 'No ascites; however there is a 2.3 cm hepatic hemangioma, without suspicious features.';
+	assert.deepEqual(matches(`Kidneys are normal. ${sentence} Spleen is normal!`, 'liver hemangioma'), [{ excerpt: sentence }]);
+	assert.deepEqual(matches('No hemangioma, but a hemangioma cannot be excluded.'), [{ excerpt: 'No hemangioma, but a hemangioma cannot be excluded.' }]);
+	assert.deepEqual(matches('Hemangioma? No HCC.', 'hemangioma'), [{ excerpt: 'Hemangioma?' }]);
+});
+
+test('long matching sentences are returned completely rather than clipped', () => {
+	const report = `${'x'.repeat(80000)} There is a hepatic haemangioma ${'y'.repeat(80000)}.`;
+	assert.deepEqual(matches(report, 'liver hemangioma'), [{ excerpt: report }]);
 });
 
 test('date bounds validate Jalali dates and preserve Tehran preset semantics', () => {
@@ -93,9 +94,9 @@ test('date bounds validate Jalali dates and preserve Tehran preset semantics', (
 	for (const input of [
 		{ ...custom, date_from: '1404-12-30' }, { ...custom, date_to: '1403-12-29' },
 		{ ...custom, date_from: '1405-1-01' }, { ...custom, date_to: '' },
-		{ date_range: 'invalid' }, { context: 'invalid' }, { page: '1.2' }, { page: '0' }, { page: '1000001' }
+		{ date_range: 'invalid' }, { page: '1.2' }, { page: '0' }, { page: '1000001' }
 	]) assert.throws(() => pathologyFilters(params(input)), { status: 400 });
-	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'context', 'page']) {
+	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'page']) {
 		const duplicate = params({ [key]: 'x' }); duplicate.append(key, 'y');
 		assert.throws(() => pathologyFilters(duplicate), { status: 400 });
 	}
@@ -118,13 +119,18 @@ test('search includes drafts, signed reports and disabled studies, with inclusiv
 	assert.equal(result.total, 3);
 	assert.equal(result.scanned, 5);
 	assert.equal(result.unavailable, 2);
-	assert.deepEqual(result.rows.map((row) => row.mentions[0].context), ['suspected', 'absent', 'present']);
+	assert.deepEqual(result.rows.map((row) => row.mentions), [
+		[{ excerpt: 'Possible hepatic hemangioma.' }],
+		[{ excerpt: 'No hepatic hemangioma.' }],
+		[{ excerpt: 'There is a hepatic haemangioma.' }]
+	]);
 	assert.equal(result.rows[0].disabled, 1);
 	assert.equal(result.rows[1].attending_checked, 1);
 	assert.equal(result.rows[2].attending_checked, 0);
 	assert.doesNotMatch(JSON.stringify(result), /text_report_path|pathology-test-/);
-	assert.equal((await search({ ...input, context: 'present' })).total, 1);
-	assert.equal((await search({ ...input, context: 'absent' })).total, 1);
+	const legacy = await search({ ...input, context: 'present' });
+	assert.equal(legacy.total, 3);
+	assert.equal(Object.hasOwn(legacy.filters, 'context'), false);
 	assert.equal(db.prepare('SELECT total_changes() AS count').get().count, changes);
 });
 
