@@ -74,6 +74,9 @@
 				</button>
 			</li>
 			<li><a href={resolve('/studies')} class="link link-primary p-3">Studies</a></li>
+			{#if ['admin', 'resident', 'attending', 'typist'].includes(data.user?.role)}
+				<li><a href={resolve('/pathology-search')} class="p-3" class:active={page.route.id === '/pathology-search'} aria-current={page.route.id === '/pathology-search' ? 'page' : undefined} onclick={closeNavigation}>Pathology search</a></li>
+			{/if}
 			{#if data.user?.role === 'admin'}
 				<li><a href={resolve('/admin')} class="p-3" class:active={adminPanelActive} aria-current={adminPanelActive ? (page.route.id === '/admin' ? 'page' : 'location') : undefined} onclick={closeNavigation}>Admin panel</a></li>
 			{:else}

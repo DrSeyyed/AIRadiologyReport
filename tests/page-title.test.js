@@ -12,6 +12,7 @@ test('existing page-specific browser titles are retained', () => {
 	const expected = {
 		'/account': 'Account',
 		'/statistics': 'Study statistics',
+		'/pathology-search': 'Pathology search',
 		'/admin/statistics': 'Study statistics',
 		'/studies/import': 'Import studies from Excel',
 		'/admin/pacs': 'PACS viewer settings',

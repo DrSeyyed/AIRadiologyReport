@@ -103,12 +103,13 @@ test('root drawer has one admin panel entry while non-admins retain Account and 
 		assert.equal(drawer.includes('Admin panel'), user?.role === 'admin');
 		assert.equal(drawer.includes('Report templates'), ['resident', 'attending'].includes(user?.role));
 		assert.equal(drawer.includes('href="/account"'), Boolean(user && user.role !== 'admin'));
+		assert.equal(drawer.includes('href="/pathology-search"'), Boolean(user));
 		assert.equal(drawer.includes('href="/statistics"'), ['resident', 'attending', 'typist'].includes(user?.role));
 		assert.doesNotMatch(drawer, /href="\/admin\/statistics"/);
 		assert.doesNotMatch(drawer, /Admin overview|Telegram registrations|Storage &amp; Backups|Clinical workflow|href="\/admin\/users"|href="\/admin\/telegram-study-refresh"/);
 		if (user?.role === 'admin') {
 			assert.match(drawer, /href="\/admin"[^>]*aria-current="location"/);
-			assert.equal((drawer.match(/<a\s/g) ?? []).length, 2);
+			assert.equal((drawer.match(/<a\s/g) ?? []).length, 3);
 		}
 	}
 });
