@@ -13,10 +13,13 @@ async function component(name) {
 	for (const generate of ['client', 'server']) {
 		assert.deepEqual(compile(source, { filename: name, generate }).warnings, []);
 	}
-	const description = name === 'StudyTable.svelte' ? await component('StudyDescription.svelte') : null;
+	const children = {};
+	if (name === 'StudyTable.svelte') {
+		for (const child of ['StudyDescription.svelte', 'StudyFavorite.svelte', 'StudyAttention.svelte', 'PacsViewer.svelte']) children[`./${child}`] = await component(child);
+	}
 	const code = compile(source, { filename: name, generate: 'server' }).js.code.replace(/from (['"])([^'"]+)\1/g, (_statement, _quote, specifier) => {
 		let target;
-		if (specifier === './StudyDescription.svelte') target = description.url;
+		if (children[specifier]) target = children[specifier].url;
 		else if (specifier.endsWith('.svelte')) target = stub;
 		else if (specifier === '$app/navigation') target = moduleUrl('export async function invalidateAll() {}');
 		else if (specifier === '$app/paths') target = moduleUrl('export const resolve = (path) => path;');
@@ -55,12 +58,16 @@ test('long and multiline descriptions have a collapsed preview and retain escape
 	}
 });
 
-test('study text columns wrap long tokens within bounded widths and the table retains local scrolling', () => {
+test('five grouped columns have fixed proportions, wrapped content and keyboard-accessible local scrolling', () => {
 	const source = read('StudyTable.svelte');
-	assert.match(source, /w-full min-w-0 max-w-full overflow-x-auto rounded-box border/);
+	assert.match(source, /study-table-scroll w-full min-w-0 max-w-full overflow-x-auto/);
+	assert.match(source, /role="region"[^>]*tabindex="0"/);
+	assert.match(source, /\.study-table\s*\{[^}]*min-width: 66rem;[^}]*table-layout: fixed;/);
 	assert.match(source, /\.study-table td\s*\{[^}]*vertical-align: top;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
-	for (const name of ['study-code-cell', 'study-text-cell', 'study-description-cell']) {
-		assert.match(source, new RegExp(`\\.${name}\\s*\\{[^}]*min-width:[^}]*width:[^}]*max-width:`));
+	for (const name of ['patient', 'examination', 'team', 'reporting', 'actions']) assert.match(source, new RegExp(`\\.${name}-column\\s*\\{ width: \\d+%;`));
+	for (const name of ['StudyAttention.svelte', 'PacsViewer.svelte']) {
+		assert.match(read(name), /w-full min-w-0/);
+		assert.doesNotMatch(read(name), /min-w-48|min-w-\[13rem\]/);
 	}
 	const description = read('StudyDescription.svelte');
 	assert.match(description, /-webkit-line-clamp: 3/);
@@ -72,7 +79,7 @@ test('study text columns wrap long tokens within bounded widths and the table re
 test('table preserves study information, sorting, workflow buttons, and role restrictions', async () => {
 	const { Component } = await component('StudyTable.svelte');
 	const study = {
-		id: 1, patient_code: 'SYNTHETIC-CODE-'.repeat(40), patient_fullname: 'Synthetic patient '.repeat(20),
+		id: 1, study_key: 'synthetic key', patient_code: 'SYNTHETIC-CODE-'.repeat(40), patient_fullname: 'Synthetic patient '.repeat(20),
 		patient_age: 42, patient_age_unit: 'Y', source_modality: 'SYNTHETIC-MODALITY'.repeat(30),
 		source_description: 'Synthetic long reference '.repeat(60), description: 'Fallback reference',
 		exam_date_jalali: '1405-08-22', exam_time: '14:00', attending_fullname: 'Synthetic attending '.repeat(20),
@@ -82,15 +89,66 @@ test('table preserves study information, sorting, workflow buttons, and role res
 	for (const role of ['admin', 'resident', 'attending', 'typist']) {
 		const { body } = render(Component, { props: { data: {
 			user: { id: 3, role }, studies: [study], filters: {},
-			paging: { orderedby: 's.patient_code', orderdir: 'ASC' }
+			paging: { orderedby: 's.patient_code', orderdir: 'ASC' },
+			pacsViewerUrl: 'https://pacs.example/view?key={studyKey}'
 		} } });
 		for (const value of [study.patient_code, study.patient_fullname, study.source_modality, study.source_description, study.attending_fullname, study.residents[0].full_name]) assert.ok(body.includes(value.trim()));
 		assert.match(body, /Recordings &amp; reports/);
-		assert.match(body, /2 recordings · 1 reports/);
+		assert.equal((body.match(/<th\b/g) || []).length, 5);
+		assert.equal((body.match(/<td\b/g) || []).length, 5);
+		for (const label of ['Patient', 'Examination', 'Review team', 'Reporting', 'Actions']) assert.ok(body.includes(label));
+		assert.match(body, /Resident signatures: 2 of 2/);
+		assert.match(body, /Attending signatures: 0 of 2/);
+		assert.match(body, /Typist signatures: 0 of 2/);
+		assert.match(body, /href="https:\/\/pacs.example\/view\?key=synthetic%20key"/);
+		assert.match(body, /More actions/);
+		assert.match(body, /Favorite categories/);
+		assert.match(body, /Filters &amp; sorting/);
 		assert.match(body, /aria-sort="ascending"/);
 		assert.match(body, /Sort by Code, descending/);
 		assert.equal(body.includes('Edit study'), role !== 'typist');
 		assert.equal(body.includes('>Delete<'), role !== 'typist');
 		assert.doesNotMatch(body, /Fallback reference/);
+	}
+});
+
+test('grouped header sorting retains all fourteen fields and only the active group has aria-sort', async () => {
+	const { Component } = await component('StudyTable.svelte');
+	const keys = ['s.patient_code', 's.patient_fullname', 's.patient_age', 's.exam_date_jalali', 'source_modality', 'source_description', 'attending_fullname', 'residents', 'recording_count', 'report_count', 'resident_checked_count', 'attending_checked_count', 'typist_checked_count', 'is_favorite'];
+	for (const orderedby of keys) {
+		const { body } = render(Component, { props: { data: { user: { id: 1, role: 'admin' }, studies: [], filters: {}, paging: { orderedby, orderdir: 'DESC', total: 0 } } } });
+		assert.equal((body.match(/aria-sort="descending"/g) || []).length, 1);
+		for (const key of keys) assert.ok(body.includes(`orderedby=${encodeURIComponent(key)}`));
+		assert.match(body, /colspan="5"/);
+		assert.match(body, /No studies found/);
+	}
+});
+
+test('zero-recording and disabled states retain accurate badges, signatures and protected controls', async () => {
+	const { Component } = await component('StudyTable.svelte');
+	for (const disabled of [0, 1]) {
+		const { body } = render(Component, { props: { data: {
+			user: { id: 2, role: 'resident' }, studies: [{ id: 1, disabled, patient_code: 'SYNTHETIC', residents: [], attention_note: 'Synthetic retained note' }], filters: {},
+			paging: { orderedby: 's.exam_date_jalali', orderdir: 'DESC' }
+		} } });
+		assert.match(body, new RegExp(`data-study-status="${disabled ? 'disabled' : 'no-recording'}"`));
+		assert.match(body, /Resident signatures: 0 of 0/);
+		assert.doesNotMatch(body, /class="[^"]*signature-complete/);
+		assert.match(body, /Synthetic retained note/);
+		assert.equal(/<button[^>]*disabled[^>]*>Edit study/.test(body), Boolean(disabled));
+		assert.match(body, disabled ? /Retry deletion/ : />Delete</);
+		assert.doesNotMatch(body, /<details[^>]*\bopen\b/);
+	}
+});
+
+test('compact favorite is accessible and category management remains available in the full variant', async () => {
+	const { Component } = await component('StudyFavorite.svelte');
+	for (const compact of [false, true]) {
+		for (const is_favorite of [false, true]) {
+			const { body } = render(Component, { props: { study: { patient_code: 'SYNTHETIC', is_favorite, favorite_category_ids: [1] }, compact, onCategories() {} } });
+			assert.match(body, new RegExp(`aria-pressed="${is_favorite}"`));
+			assert.match(body, new RegExp(`aria-label="${is_favorite ? 'Remove' : 'Add'} SYNTHETIC`));
+			assert.equal(body.includes('Categories'), !compact);
+		}
 	}
 });

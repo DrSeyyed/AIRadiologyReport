@@ -44,7 +44,7 @@
 	}
 </script>
 
-<div class="min-w-[13rem] max-w-xs whitespace-normal">
+<div class="w-full min-w-0 max-w-xs whitespace-normal">
 	{#if editable}
 		<form onsubmit={save} class="space-y-2">
 			<label class="flex items-center gap-2">

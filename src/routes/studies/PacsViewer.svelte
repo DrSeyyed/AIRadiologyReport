@@ -43,10 +43,10 @@
 			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
 			<a class="btn btn-outline btn-xs" href={link} target="_blank" rel="noopener noreferrer">Open PACS</a>
 		{:else if enteringKey}
-			<div class="min-w-48 space-y-2">
+			<div class="w-full min-w-0 space-y-2">
 				<label class="form-control">
 					<span class="label-text">PACS Study key</span>
-					<input class="input input-bordered input-sm" type="text" maxlength="128" bind:value={key} disabled={saving} />
+					<input class="input input-bordered input-sm w-full min-w-0" type="text" maxlength="128" bind:value={key} disabled={saving} />
 				</label>
 				<p class="text-xs">{canSave ? 'The key will be saved to this study.' : 'Temporary key; typists cannot save it.'}</p>
 				<div class="flex gap-2">

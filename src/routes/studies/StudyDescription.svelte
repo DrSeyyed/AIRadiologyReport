@@ -20,6 +20,10 @@
 	.study-description,
 	.description-full {
 		overflow-wrap: anywhere;
+	}
+
+	.description-preview,
+	.description-full {
 		white-space: pre-wrap;
 	}
 

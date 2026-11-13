@@ -1,6 +1,6 @@
 <script>
 	import { invalidateAll } from '$app/navigation';
-	let { study, onCategories } = $props();
+	let { study, onCategories, compact = false } = $props();
 	let busy = $state(false);
 	let error = $state('');
 
@@ -22,8 +22,8 @@
 </script>
 
 <div class="flex flex-col items-start gap-1">
-	<button class="btn btn-sm btn-outline" aria-pressed={study.is_favorite} aria-label={`${study.is_favorite ? 'Remove' : 'Add'} ${study.patient_code} ${study.is_favorite ? 'from' : 'to'} favorites`} disabled={busy} onclick={toggle}>{study.is_favorite ? '★ Saved' : '☆ Favorite'}</button>
-	<button class="btn btn-xs btn-ghost" aria-label={`Choose favorite categories for ${study.patient_code}`} disabled={busy} onclick={() => onCategories(study)}>Categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
+	<button class="btn btn-outline" class:btn-xs={compact} class:btn-sm={!compact} aria-pressed={Boolean(study.is_favorite)} aria-label={`${study.is_favorite ? 'Remove' : 'Add'} ${study.patient_code} ${study.is_favorite ? 'from' : 'to'} favorites`} disabled={busy} onclick={toggle}>{#if compact}<span aria-hidden="true">{study.is_favorite ? '★' : '☆'}</span>{:else}{study.is_favorite ? '★ Saved' : '☆ Favorite'}{/if}</button>
+	{#if !compact}<button class="btn btn-xs btn-ghost" aria-label={`Choose favorite categories for ${study.patient_code}`} disabled={busy} onclick={() => onCategories(study)}>Categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>{/if}
 	{#if error}<p class="text-error text-sm" role="alert">{error}</p>{/if}
 </div>
 
