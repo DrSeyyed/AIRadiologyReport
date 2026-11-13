@@ -63,7 +63,7 @@ test('five grouped columns have fixed proportions, wrapped content and keyboard-
 	const source = read('StudyTable.svelte');
 	assert.match(source, /study-table-scroll w-full min-w-0 max-w-full overflow-x-auto/);
 	assert.match(source, /role="region"[^>]*tabindex="0"/);
-	assert.match(source, /\.study-table\s*\{[^}]*min-width: 66rem;[^}]*table-layout: fixed;/);
+	assert.match(source, /\.study-table\s*\{[^}]*min-width: calc\(var\(--worklist-width\) - 2px\);[^}]*table-layout: fixed;/);
 	assert.match(source, /\.study-table td\s*\{[^}]*vertical-align: top;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
 	for (const name of ['patient', 'examination', 'team', 'reporting', 'actions']) assert.match(source, new RegExp(`\\.${name}-column\\s*\\{ width: \\d+%;`));
 	for (const name of ['StudyAttention.svelte', 'PacsViewer.svelte']) {
@@ -89,27 +89,36 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /onscroll=\{updateTableScroll\}/);
 	assert.match(source, /scrollBy\(/);
 	assert.doesNotMatch(source, /max-width: 1150px|table-scroll-hint/);
-	assert.match(source, /\.examination-column\s*\{ width: 16%;/);
-	assert.match(source, /\.reporting-column\s*\{ width: 15%;/);
-	assert.match(source, /\.actions-column\s*\{ width: 23%;/);
+	assert.match(source, /\.examination-column\s*\{ width: 18%;/);
+	assert.match(source, /\.reporting-column\s*\{ width: 16%;/);
+	assert.match(source, /\.actions-column\s*\{ width: 24%;/);
 	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
 });
 
-test('compact examination, review team and reporting columns retain balanced widths and wrapping count boxes', () => {
+test('the entire worklist has a compact width cap instead of redistributing spare viewport space to patient names', () => {
 	const source = read('StudyTable.svelte');
 	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
 	const rules = [];
 	postcss.parse(css.code).walkRules(rule => rules.push(rule));
 	const styles = selector => new Map(rules.find(rule => selector.test(rule.selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
 	const widths = ['patient', 'examination', 'team', 'reporting', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
-	assert.deepEqual(widths, [28, 16, 18, 15, 23]);
+	assert.deepEqual(widths, [23, 18, 19, 16, 24]);
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
+	const workspace = styles(/^\.study-workspace\.[^ >]+$/);
+	assert.equal(workspace.get('--worklist-width'), '57rem');
+	assert.equal(workspace.get('width'), 'var(--worklist-width)');
+	assert.equal(workspace.get('max-width'), '100%');
+	const table = styles(/^\.study-table\.[^ >]+$/);
+	assert.equal(table.get('min-width'), 'calc(var(--worklist-width) - 2px)');
+	assert.equal(table.get('table-layout'), 'fixed');
 	const metrics = styles(/^\.report-metrics\.[^ >]+$/);
 	assert.equal(metrics.get('display'), 'flex');
 	assert.equal(metrics.get('flex-wrap'), 'wrap');
 	const box = styles(/^\.report-metrics\.[^ >]+ > div/);
 	assert.equal(box.get('display'), 'inline-flex');
+	assert.equal(box.get('flex-wrap'), 'wrap');
+	assert.equal(styles(/^\.report-metrics\.[^ >]+ span/).get('white-space'), 'nowrap');
 	assert.equal(box.get('padding'), '0.25rem 0.375rem');
 	assert.equal(box.get('min-width'), '0');
 	assert.equal(box.get('max-width'), '100%');
