@@ -3,13 +3,14 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
-	import { adminNavigation } from '$lib/admin-navigation.js';
+	import { canManageTemplates } from '$lib/template-permissions.js';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/page-title.js';
 
 	let { data, children } = $props();
 	let drawerOpen = $state(false);
 	let navigationButton = $state();
+	const adminPanelActive = $derived(page.route.id === '/admin' || Boolean(page.route.id?.startsWith('/admin/')));
 
 	function closeNavigation() {
 		drawerOpen = false;
@@ -73,19 +74,19 @@
 				</button>
 			</li>
 			<li><a href={resolve('/studies')} class="link link-primary p-3">Studies</a></li>
-			{#if data.user}
-				<li><a href={resolve('/account')} class="link link-primary p-3">Account</a></li>
-			{/if}
 			{#if data.user?.role === 'admin'}
-				<li class="menu-title">Administration</li>
-				<li><a href={resolve('/admin')} class="p-3" aria-current={page.route.id === '/admin' ? 'page' : undefined} onclick={closeNavigation}>Admin overview</a></li>
+				<li><a href={resolve('/admin')} class="p-3" class:active={adminPanelActive} aria-current={adminPanelActive ? (page.route.id === '/admin' ? 'page' : 'location') : undefined} onclick={closeNavigation}>Admin panel</a></li>
+			{:else}
+				{#if data.user}
+					<li><a href={resolve('/account')} class="link link-primary p-3" onclick={closeNavigation}>Account</a></li>
+				{/if}
+				{#if ['resident', 'attending', 'typist'].includes(data.user?.role)}
+					<li><a href={resolve('/statistics')} class="p-3" class:active={page.route.id === '/statistics'} aria-current={page.route.id === '/statistics' ? 'page' : undefined} onclick={closeNavigation}>Statistics</a></li>
+				{/if}
+				{#if canManageTemplates(data.user)}
+					<li><a href={resolve('/admin/templates')} class="p-3" onclick={closeNavigation}>Report templates</a></li>
+				{/if}
 			{/if}
-			{#each adminNavigation(data.user) as group (group.id)}
-				<li class="menu-title">{group.label}</li>
-				{#each group.links as link (link.href)}
-					<li><a href={resolve(link.href)} class="p-3" class:active={page.route.id === link.href} aria-current={page.route.id === link.href ? 'page' : undefined} onclick={closeNavigation}>{link.label}</a></li>
-				{/each}
-			{/each}
 		</ul>
 	</aside>
 </div>

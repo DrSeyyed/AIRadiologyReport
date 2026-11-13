@@ -11,6 +11,8 @@ test('pages without custom titles and unknown routes use the application title',
 test('existing page-specific browser titles are retained', () => {
 	const expected = {
 		'/account': 'Account',
+		'/statistics': 'Study statistics',
+		'/admin/statistics': 'Study statistics',
 		'/studies/import': 'Import studies from Excel',
 		'/admin/pacs': 'PACS viewer settings',
 		'/admin/transcription': 'Transcription settings',
@@ -19,6 +21,7 @@ test('existing page-specific browser titles are retained', () => {
 		'/admin/body-parts': 'Manage body parts',
 		'/admin/telegram-registrations': 'Telegram registrations',
 		'/admin': 'Administration',
+		'/admin/account': 'Account settings',
 		'/admin/templates': 'Report templates',
 		'/admin/users': 'Users',
 		'/admin/integrations': 'Integrations',

@@ -95,18 +95,74 @@ test('shared admin navigation highlights current page and shows only its categor
 	}
 });
 
-test('root drawer groups administration and preserves role-scoped clinical links', async () => {
+test('root drawer has one admin panel entry while non-admins retain Account and eligible template access', async () => {
 	const Layout = await component('../src/routes/+layout.svelte', '/admin/users');
 	for (const user of [null, { role: 'typist' }, { role: 'resident' }, { role: 'attending' }, { role: 'admin' }]) {
 		const { body } = render(Layout, { props: { data: { user } } });
-		assert.equal(body.includes('Admin overview'), user?.role === 'admin');
-		assert.equal(body.includes('Report templates'), ['admin', 'resident', 'attending'].includes(user?.role));
-		assert.equal(body.includes('/admin/telegram-study-refresh'), user?.role === 'admin');
+		const drawer = body.slice(body.indexOf('<aside'));
+		assert.equal(drawer.includes('Admin panel'), user?.role === 'admin');
+		assert.equal(drawer.includes('Report templates'), ['resident', 'attending'].includes(user?.role));
+		assert.equal(drawer.includes('href="/account"'), Boolean(user && user.role !== 'admin'));
+		assert.equal(drawer.includes('href="/statistics"'), ['resident', 'attending', 'typist'].includes(user?.role));
+		assert.doesNotMatch(drawer, /href="\/admin\/statistics"/);
+		assert.doesNotMatch(drawer, /Admin overview|Telegram registrations|Storage &amp; Backups|Clinical workflow|href="\/admin\/users"|href="\/admin\/telegram-study-refresh"/);
 		if (user?.role === 'admin') {
-			assert.match(body, /href="\/admin\/users"[^>]*aria-current="page"/);
-			for (const group of adminNavigation(user)) assert.ok(body.includes(group.label));
+			assert.match(drawer, /href="\/admin"[^>]*aria-current="location"/);
+			assert.equal((drawer.match(/<a\s/g) ?? []).length, 2);
 		}
 	}
+});
+
+test('statistics drawer entry is active for supported non-admins without exposing admin tools', async () => {
+	const Layout = await component('../src/routes/+layout.svelte', '/statistics');
+	for (const role of ['resident', 'attending', 'typist']) {
+		const { body } = render(Layout, { props: { data: { user: { role } } } });
+		const drawer = body.slice(body.indexOf('<aside'));
+		assert.match(drawer, /href="\/statistics"[^>]*aria-current="page"/);
+		assert.doesNotMatch(drawer, /href="\/admin"|href="\/admin\/statistics"/);
+	}
+});
+
+test('admin panel drawer entry stays active on overview and account settings but not studies', async () => {
+	for (const route of ['/admin', '/admin/account', '/admin/statistics', '/studies', null]) {
+		const Layout = await component('../src/routes/+layout.svelte', route);
+		const { body } = render(Layout, { props: { data: { user: { role: 'admin' } } } });
+		const expected = route === '/admin' ? 'page' : ['/admin/account', '/admin/statistics'].includes(route) ? 'location' : null;
+		if (expected) assert.match(body, new RegExp(`href="/admin"[^>]*aria-current="${expected}"`));
+		else assert.doesNotMatch(body, /href="\/admin"[^>]*aria-current=/);
+	}
+});
+
+test('admin account reuses existing account behavior with an admin-only page guard', async () => {
+	const source = read('../src/routes/admin/account/+page.server.js')
+		.replace("from '@sveltejs/kit'", `from ${JSON.stringify(import.meta.resolve('@sveltejs/kit'))}`)
+		.replace("from '../../account/+page.server.js'", `from ${JSON.stringify(new URL('../src/routes/account/+page.server.js', import.meta.url).href)}`);
+	const { load } = await import(moduleUrl(source));
+	let requests = 0;
+	const account = { id: 1, full_name: 'Administrator', username: 'admin', role: 'admin' };
+	const fetch = async (path) => {
+		requests++;
+		assert.equal(path, '/api/account');
+		return { ok: true, json: async () => account };
+	};
+	await assert.rejects(async () => load({ locals: {}, fetch }), { status: 302, location: '/login' });
+	for (const role of ['resident', 'attending', 'typist']) {
+		await assert.rejects(async () => load({ locals: { user: { role } }, fetch }), { status: 403 });
+	}
+	assert.equal(requests, 0);
+	assert.deepEqual(await load({ locals: { user: { role: 'admin' } }, fetch }), { account, signingDelegates: null, reportPreferences: null });
+	assert.equal(requests, 1);
+	await assert.rejects(async () => load({ locals: { user: { role: 'admin' } }, fetch: async () => ({ ok: false, status: 503 }) }), { status: 503 });
+	const wrapper = read('../src/routes/admin/account/+page.svelte');
+	assert.match(wrapper, /import AccountSettings from '\.\.\/\.\.\/account\/\+page\.svelte'/);
+	assert.match(wrapper, /<AccountSettings \{data\} \/>/);
+	for (const generate of ['client', 'server']) assert.deepEqual(compile(wrapper, { filename: '+page.svelte', generate }).warnings, []);
+	const Account = await component('../src/routes/account/+page.svelte');
+	const { body } = render(Account, { props: { data: { account } } });
+	assert.match(body, /Full name/);
+	assert.match(body, /Username/);
+	assert.match(body, /New password \(optional\)/);
+	assert.match(body, /Save changes/);
 });
 
 test('users and registration pages compile and keep their primary controls and safety warnings', async () => {

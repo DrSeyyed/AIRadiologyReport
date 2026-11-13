@@ -243,7 +243,10 @@ test('role selection uses buttons, accepts typists and removes the keyboard befo
 	assert.equal(result.user.role, 'typist');
 	assert.equal(getApprovedTelegramUser(db, 200).role, 'typist');
 	await send('/start');
-	assert.equal(sent.at(-1).text, 'Account approved. Website login is active.');
+	assert.equal(
+		sent.at(-1).text,
+		'Account approved. Website login is active. Use /stats for private study statistics or /stats help for usage.'
+	);
 	assert.ok(!sent.at(-1).text.includes('Reply to a study'));
 	assert.equal(
 		queueVoiceReply(db, {

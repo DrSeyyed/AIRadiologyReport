@@ -5,7 +5,14 @@ import {
 	handleTelegramRegistration
 } from '$lib/server/telegram-registration.js';
 import { handleTelegramGroupMessage } from '$lib/server/telegram-group.js';
-import { isSiteMaintenanceEnabled, maintenanceTelegramContext } from '$lib/server/site-maintenance.js';
+import {
+	handleTelegramStatistics,
+	isTelegramStatisticsCommand
+} from '$lib/server/telegram-statistics.js';
+import {
+	isSiteMaintenanceEnabled,
+	maintenanceTelegramContext
+} from '$lib/server/site-maintenance.js';
 import { createMaintenanceTelegramResponder } from '$lib/server/maintenance-telegram.js';
 
 const respondDuringMaintenance = createMaintenanceTelegramResponder();
@@ -24,7 +31,10 @@ export const POST = async ({ request }) => {
 		if (!msg) return json({ ok: true });
 		const db = getDb();
 		if (msg.chat?.type === 'private') {
-			if (update.message) await handleTelegramRegistration(db, msg);
+			if (update.message) {
+				if (isTelegramStatisticsCommand(msg.text)) await handleTelegramStatistics(db, update);
+				else await handleTelegramRegistration(db, msg);
+			}
 			return json({ ok: true });
 		}
 		await handleTelegramGroupMessage(db, msg, { allowDelete: Boolean(update.message) });

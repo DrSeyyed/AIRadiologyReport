@@ -28,9 +28,11 @@ const groups = [
 		description: 'Manage access, integrations and site operations.',
 		links: [
 			{ href: '/admin/users', label: 'Users', description: 'Manage accounts, roles and onboarding links.' },
+			{ href: '/admin/statistics', label: 'Study statistics', description: 'View aggregate study totals, reporting and signature status by exam date.' },
 			{ href: '/admin/integrations', label: 'Integrations', description: 'Manage provider credentials and Telegram webhooks.' },
 			{ href: '/admin/storage', label: 'Storage & Backups', description: 'Configure storage, schedules, backups and restoration.' },
-			{ href: '/admin/maintenance', label: 'Maintenance', description: 'Open or close the site and manage the Telegram maintenance lock.' }
+			{ href: '/admin/maintenance', label: 'Maintenance', description: 'Open or close the site and manage the Telegram maintenance lock.' },
+			{ href: '/admin/account', label: 'Account settings', description: 'Update your own name, username and password.' }
 		]
 	}
 ];

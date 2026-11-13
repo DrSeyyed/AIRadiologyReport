@@ -1,5 +1,7 @@
 const titles = new Map([
 	['/account', 'Account'],
+	['/statistics', 'Study statistics'],
+	['/admin/statistics', 'Study statistics'],
 	['/studies/import', 'Import studies from Excel'],
 	['/admin/pacs', 'PACS viewer settings'],
 	['/admin/transcription', 'Transcription settings'],
@@ -8,6 +10,7 @@ const titles = new Map([
 	['/admin/body-parts', 'Manage body parts'],
 	['/admin/telegram-registrations', 'Telegram registrations'],
 	['/admin', 'Administration'],
+	['/admin/account', 'Account settings'],
 	['/admin/templates', 'Report templates'],
 	['/admin/users', 'Users'],
 	['/admin/integrations', 'Integrations'],

@@ -352,7 +352,7 @@ test('maintenance pending restore keeps discard safety and reopening controls vi
 	assert.match(unreadable, /Pending restore details are unavailable/);
 });
 
-test('layout maintenance navigation and enabled banner are admin-only and preserve existing admin entries', async () => {
+test('layout keeps one admin panel entry and an admin-only maintenance shortcut when enabled', async () => {
 	const source = readFileSync(layoutUrl, 'utf8')
 		.replace("import '../app.css';", '')
 		.replace("import favicon from '$lib/assets/favicon.svg';", "const favicon = 'favicon.svg';");
@@ -360,13 +360,11 @@ test('layout maintenance navigation and enabled banner are admin-only and preser
 	for (const user of [null, { role: 'resident' }, { role: 'admin' }]) {
 		for (const enabled of [false, true]) {
 			const { body } = render(Layout, { props: { data: { user, maintenance: { enabled } } } });
-			assert.equal(body.includes('>Maintenance</a>'), user?.role === 'admin');
+			assert.equal(body.includes('Admin panel'), user?.role === 'admin');
 			assert.equal(body.includes('Manage maintenance'), user?.role === 'admin' && enabled);
-			if (user?.role === 'admin') {
-				assert.match(body, /href="\/admin\/maintenance"/);
-				assert.match(body, /Storage &amp; Backups/);
-				assert.match(body, /Telegram registrations/);
-			}
+			assert.equal(body.includes('href="/admin/maintenance"'), user?.role === 'admin' && enabled);
+			assert.doesNotMatch(body, /Storage &amp; Backups|Telegram registrations|>Maintenance<\/a>/);
+			if (user?.role === 'admin') assert.match(body, /href="\/admin"/);
 		}
 	}
 });

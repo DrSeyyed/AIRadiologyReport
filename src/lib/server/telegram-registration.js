@@ -85,7 +85,9 @@ export async function handleTelegramRegistration(
 	const erase = () => quiet(() => remove(message.message_id, id));
 	const approved = getApprovedTelegramUser(db, id);
 	if (approved) {
-		await reply('Account approved. Website login is active.');
+		await reply(
+			'Account approved. Website login is active. Use /stats for private study statistics or /stats help for usage.'
+		);
 		return true;
 	}
 	db.prepare(
