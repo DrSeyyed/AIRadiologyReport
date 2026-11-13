@@ -8,8 +8,8 @@ import Database from 'better-sqlite3';
 // The caller must treat ANY rejection as a boot veto, and call finalize only after health checks.
 // Environment files are never installed. Missing staged voice means an empty voice root.
 // Inventories and journal checksums detect corruption, not a hostile filesystem administrator.
-// Rollback/history and failed verification copies are retained for offline recovery.
-// Only health-confirmed completion permits best-effort removal of its temporary source.
+// Failed rollback/verification copies and activation journals remain available for recovery.
+// Only health-confirmed completion permits removal of temporary sources and rollback copies.
 // Directory fsync requires POSIX for power-loss durability. Windows supports file fsync only.
 // Unreadable/corrupt locks or reused live PIDs fail closed. Locks require one shared PID namespace.
 const ROOTS = ['db', 'uploads', 'voice'];
@@ -303,7 +303,7 @@ async function removePrivateTree(directory, expected, control) {
 	const parent = path.dirname(directory);
 	if (
 		!validId(path.basename(directory)) ||
-		(parent !== staging && parent !== path.join(control, 'verification'))
+		(parent !== staging && parent !== path.join(control, 'verification') && parent !== path.join(control, 'rollback'))
 	)
 		throw fail();
 	await directories(parent);
@@ -488,17 +488,19 @@ function validateRequest(stored) {
 		)
 	)
 		throw fail();
-	if (
-		request.cleanup !== undefined &&
-		(!request.cleanup ||
-			!['pending', 'completed'].includes(request.cleanup.state) ||
-			!/^\d+$/.test(request.cleanup.dev) ||
-			!/^\d+$/.test(request.cleanup.ino) ||
-			typeof request.cleanup.dev !== 'string' ||
-			typeof request.cleanup.ino !== 'string' ||
-			(request.cleanup.state === 'completed' && request.state !== 'completed'))
-	)
-		throw fail();
+	for (const cleanup of [request.cleanup, request.rollbackCleanup]) {
+		if (
+			cleanup !== undefined &&
+			(!cleanup ||
+				!['pending', 'completed'].includes(cleanup.state) ||
+				!/^\d+$/.test(cleanup.dev) ||
+				!/^\d+$/.test(cleanup.ino) ||
+				typeof cleanup.dev !== 'string' ||
+				typeof cleanup.ino !== 'string' ||
+				(cleanup.state === 'completed' && request.state !== 'completed'))
+		)
+			throw fail();
+	}
 	validateInventory(request.source);
 	if (
 		!request.source.roots.includes('db') ||
@@ -532,9 +534,9 @@ function publicStatus(request) {
 				createdAt: request.createdAt,
 				bytes: request.source.bytes,
 				...(request.state === 'completed' && request.cleanup
-					? { cleanupPending: request.cleanup.state === 'pending' }
+					? { cleanupPending: request.cleanup.state === 'pending' || request.rollbackCleanup?.state === 'pending' }
 					: {}),
-				...(request.attempt
+				...(request.attempt && request.state !== 'completed'
 					? {
 							rollbackDirectory: path.join(
 								'restore-staging',
@@ -741,6 +743,10 @@ async function backup(ctx, request, hook) {
 	await phase(ctx, request, 'backing_up', hook);
 	const destination = rollbackPath(ctx, request);
 	await copyInventory(ctx.cwd, destination, request.original, hook, 'backup_file');
+	request.rollbackCleanup = {
+		state: 'pending',
+		...directoryIdentity(await fs.lstat(path.dirname(destination), { bigint: true }))
+	};
 	await databaseIntegrity(destination, ctx.control);
 	if (!same(await inventoryAt(ctx.cwd), request.original)) throw fail();
 	await phase(ctx, request, 'backed_up', hook);
@@ -801,6 +807,30 @@ async function cleanupCompleted(ctx, request, file) {
 	}
 }
 
+async function cleanupCompletedRollback(ctx, request, file) {
+	if (request.state !== 'completed' || request.rollbackCleanup?.state === 'completed') return;
+	try {
+		const directory = path.join(ctx.control, 'rollback', request.id);
+		if (!request.rollbackCleanup) {
+			// Older completed restores acquire a durable identity before removal too.
+			if (!(await present(directory))) return;
+			const cleanup = {
+				state: 'pending',
+				...directoryIdentity(await fs.lstat(directory, { bigint: true }))
+			};
+			await writeJson(file, { ...request, rollbackCleanup: cleanup });
+			request.rollbackCleanup = cleanup;
+		}
+		const { dev, ino } = request.rollbackCleanup;
+		await removePrivateTree(directory, { dev, ino }, ctx.control);
+		const cleanup = { ...request.rollbackCleanup, state: 'completed' };
+		await writeJson(file, { ...request, rollbackCleanup: cleanup });
+		request.rollbackCleanup = cleanup;
+	} catch {
+		// Retry cleanup after restart without undoing a healthy restored site.
+	}
+}
+
 async function retryCleanup(ctx, current) {
 	try {
 		const requests = current ? [{ request: current, file: ctx.request }] : [];
@@ -821,6 +851,7 @@ async function retryCleanup(ctx, current) {
 				.map(({ request }) => request.restoreId)
 		);
 		for (const { request, file } of requests) {
+			await cleanupCompletedRollback(ctx, request, file);
 			// Old history without a cleanup marker remains operator-owned. Never remove
 			// a source reused by a newer queued, failed, or restorable activation.
 			if (!retained.has(request.restoreId) && (file === ctx.request || request.cleanup))

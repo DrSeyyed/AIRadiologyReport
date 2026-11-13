@@ -524,7 +524,7 @@ test('real offline engine pending activation without persistence fails before ap
 	assert.deepEqual(await activationRootIdentities(disk.cwd), disk.identities);
 });
 
-test('real offline engine installs before fake DB scripts and finalizes before confirming IPC, retaining originals', async (t) => {
+test('real offline engine installs before fake DB scripts and removes successful rollback before confirming IPC', async (t) => {
 	const disk = await offlineActivationFixture(t);
 	const f = fixture();
 	f.options.cwd = disk.cwd;
@@ -546,8 +546,10 @@ test('real offline engine installs before fake DB scripts and finalizes before c
 		return child;
 	};
 	f.options.checkHealth = async () => {
-		assert.equal(activationFiles.activationStatus({ cwd: disk.cwd }).state, 'installed');
+		const status = activationFiles.activationStatus({ cwd: disk.cwd });
+		assert.equal(status.state, 'installed');
 		assert.equal(activationDatabaseValue(disk.cwd), 'installed');
+		assert.deepEqual(await activationTree(path.join(disk.cwd, status.rollbackDirectory)), disk.original);
 		return true;
 	};
 	assert.equal(await superviseApp(f.options), 7);
@@ -561,11 +563,9 @@ test('real offline engine installs before fake DB scripts and finalizes before c
 	const status = activationFiles.activationStatus({ cwd: disk.cwd });
 	assert.equal(status.id, disk.queued.id);
 	assert.equal(status.state, 'completed');
+	assert.equal(Object.hasOwn(status, 'rollbackDirectory'), false);
 	assert.deepEqual(await activationTree(disk.cwd), disk.installed);
-	assert.deepEqual(
-		await activationTree(path.join(disk.cwd, status.rollbackDirectory)),
-		disk.original
-	);
+	await assert.rejects(fs.lstat(path.join(disk.cwd, 'restore-staging', '.activation', 'rollback', disk.queued.id)), { code: 'ENOENT' });
 	assert.deepEqual(await activationRootIdentities(disk.cwd), disk.identities);
 });
 

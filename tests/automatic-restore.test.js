@@ -209,6 +209,11 @@ test('approved restore replaces real SQLite only offline and cleans its source o
 	const installed = await applyPendingActivation({ cwd });
 	assert.equal(installed.state, 'installed');
 	assert.equal(existsSync(prepared), true);
+	const rollback = new Database(path.join(cwd, installed.rollbackDirectory, 'db', 'pacs.db'), { readonly: true });
+	try {
+		assert.equal(rollback.prepare('SELECT value FROM restore_smoke').get().value, 'original');
+		assert.equal(rollback.prepare('SELECT state FROM storage_restore_activations').get().state, 'queued');
+	} finally { rollback.close(); }
 	const healthy = new Database(path.join(cwd, 'db', 'pacs.db'));
 	try {
 		assert.equal(healthy.prepare('SELECT value FROM restore_smoke').get().value, 'restored');
@@ -216,9 +221,5 @@ test('approved restore replaces real SQLite only offline and cleans its source o
 		assert.equal((await finalizeActivation({ cwd, id: activation.id })).state, 'completed');
 	} finally { healthy.close(); }
 	assert.equal(existsSync(prepared), false);
-	const rollback = new Database(path.join(cwd, installed.rollbackDirectory, 'db', 'pacs.db'), { readonly: true });
-	try {
-		assert.equal(rollback.prepare('SELECT value FROM restore_smoke').get().value, 'original');
-		assert.equal(rollback.prepare('SELECT state FROM storage_restore_activations').get().state, 'queued');
-	} finally { rollback.close(); }
+	assert.equal(existsSync(path.join(cwd, installed.rollbackDirectory)), false);
 });

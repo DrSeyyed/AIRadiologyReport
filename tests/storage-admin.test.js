@@ -791,9 +791,10 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	data.status.jobs = originalJobs;
 	const originalActivation = data.activation;
 	for (const cleanupPending of [false, true, undefined]) {
-		data.activation = { supported: true, state: 'completed', cleanupPending };
+		data.activation = { supported: true, state: 'completed', cleanupPending, rollbackDirectory: 'private-rollback-sentinel' };
 		const { body: completedBody } = render(component.default, { props: { data } });
 		assert.match(completedBody, /Restore completed\./);
+		assert.doesNotMatch(completedBody, /Private rollback copy|Keep it until|private-rollback-sentinel/);
 		assert.match(completedBody, /Maintenance remains on for review; storage schedules stay paused\./);
 		assert.equal(completedBody.includes('Temporary restore files removed.'), cleanupPending === false);
 		assert.equal(completedBody.includes('Temporary-file cleanup will retry on the next restart.'), cleanupPending === true);

@@ -126,7 +126,7 @@ async function backupDirectory(f) {
 	);
 }
 
-test('sealed inventory, synchronous sanitized status, exact offline install, finalize and retained rollback', async (t) => {
+test('sealed inventory, synchronous status, exact offline install and health-confirmed source and rollback cleanup', async (t) => {
 	const f = await fixture(t);
 	assert.deepEqual(activationStatus({ cwd: f.cwd }), { state: 'idle' });
 	const inspected = await inspectActivationSource(f);
@@ -177,7 +177,9 @@ test('sealed inventory, synchronous sanitized status, exact offline install, fin
 	assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).state, 'completed');
 	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 	assert.equal(value(f.cwd), 'restored');
-	assert.deepEqual(await tree(await backupDirectory(f)), f.original);
+	await assert.rejects(fs.lstat(path.dirname(await backupDirectory(f))), { code: 'ENOENT' });
+	assert.equal((await journal(f)).rollbackCleanup.state, 'completed');
+	assert.equal(Object.hasOwn(finalized, 'rollbackDirectory'), false);
 });
 
 test('distinct 64-bit directory identities must not collide through Number rounding', async (t) => {
@@ -441,7 +443,7 @@ test('concurrent queues are excluded and an active operation cannot be stolen', 
 	await applying;
 });
 
-test('new request after completion retains history and previous rollback', async (t) => {
+test('new request after completion retains history without the previous rollback', async (t) => {
 	const f = await fixture(t);
 	const first = await queue(f);
 	await applyPendingActivation({ cwd: f.cwd });
@@ -450,7 +452,7 @@ test('new request after completion retains history and previous rollback', async
 	await restage(f);
 	const second = await queue(f);
 	assert.notEqual(first.id, second.id);
-	assert.deepEqual(await tree(rollback), f.original);
+	await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
 	const history = path.join(f.cwd, 'restore-staging', '.activation', 'history', `${first.id}.json`);
 	assert.equal(JSON.parse(await fs.readFile(history, 'utf8')).state, 'completed');
 	await assert.rejects(finalizeActivation({ cwd: f.cwd, id: first.id }), SAFE_ERROR);
@@ -678,6 +680,160 @@ test('traversal IDs, unsafe filenames, and hard-linked source files are rejected
 });
 
 for (const retry of ['apply', 'finalize']) {
+	test(`rollback deletion failure keeps completion durable and retries on ${retry}`, async (t) => {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollbackRoot = path.dirname(await backupDirectory(f));
+		const extraAttempt = path.join(rollbackRoot, randomUUID());
+		await fs.mkdir(extraAttempt);
+		await fs.writeFile(path.join(extraAttempt, 'partial-backup'), 'interrupted previous attempt');
+		const originalUnlink = fs.unlink;
+		let deleted = 0;
+		const mocked = t.mock.method(fs, 'unlink', async (file) => {
+			if (file.startsWith(rollbackRoot + path.sep)) {
+				assert.equal((await journal(f)).state, 'completed');
+				if (++deleted === 2) throw Object.assign(new Error('cleanup denied'), { code: 'EACCES' });
+			}
+			return originalUnlink(file);
+		});
+		try {
+			const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+			assert.equal(finalized.state, 'completed');
+			assert.equal(finalized.cleanupPending, true);
+			assert.equal(Object.hasOwn(finalized, 'rollbackDirectory'), false);
+			assert.equal((await journal(f)).rollbackCleanup.state, 'pending');
+			assert.equal((await journal(f)).cleanup.state, 'completed');
+			assert.equal(value(f.cwd), 'restored');
+		} finally { mocked.mock.restore(); }
+		if (retry === 'apply') assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+		else await finalizeActivation({ cwd: f.cwd, id: request.id });
+		await assert.rejects(fs.lstat(rollbackRoot), { code: 'ENOENT' });
+		assert.equal((await journal(f)).rollbackCleanup.state, 'completed');
+		assert.equal(activationStatus({ cwd: f.cwd }).cleanupPending, false);
+		assert.equal(value(f.cwd), 'restored');
+	});
+}
+
+test('rollback cleanup journal failure retries safely after the copy is already gone', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const rollbackRoot = path.dirname(await backupDirectory(f));
+	const originalRename = fs.rename;
+	const mocked = t.mock.method(fs, 'rename', async (from, to) => {
+		if (to === f.requestFile && JSON.parse(await fs.readFile(from, 'utf8')).rollbackCleanup?.state === 'completed')
+			throw new Error('cleanup journal unavailable');
+		return originalRename(from, to);
+	});
+	try {
+		assert.equal((await finalizeActivation({ cwd: f.cwd, id: request.id })).cleanupPending, true);
+		assert.equal((await journal(f)).rollbackCleanup.state, 'pending');
+		await assert.rejects(fs.lstat(rollbackRoot), { code: 'ENOENT' });
+	} finally { mocked.mock.restore(); }
+	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+	assert.equal((await journal(f)).rollbackCleanup.state, 'completed');
+	assert.equal(activationStatus({ cwd: f.cwd }).cleanupPending, false);
+	assert.equal(value(f.cwd), 'restored');
+});
+
+for (const historical of [false, true]) {
+	test(`upgrade removes legacy successful rollback from ${historical ? 'history' : 'current journal'}`, async (t) => {
+		const f = await fixture(t);
+		const first = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollbackRoot = path.dirname(await backupDirectory(f));
+		await journal(f, (request) => {
+			request.state = 'completed';
+			request.cleanup.state = 'completed';
+			delete request.rollbackCleanup;
+		});
+		await fs.rm(f.staged, { recursive: true });
+		let file = f.requestFile;
+		if (historical) {
+			await restage(f);
+			await queue(f);
+			file = path.join(path.dirname(file), 'history', `${first.id}.json`);
+		}
+		await applyPendingActivation({ cwd: f.cwd });
+		await assert.rejects(fs.lstat(rollbackRoot), { code: 'ENOENT' });
+		assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).rollbackCleanup.state, 'completed');
+		if (historical) assert.ok((await fs.stat(await backupDirectory(f))).isDirectory());
+		assert.equal(value(f.cwd), 'restored');
+	});
+}
+
+for (const kind of ['root-junction', 'nested-junction', 'hardlink', 'replacement']) {
+	test(`completed rollback cleanup refuses ${kind} without touching live or unrelated data`, async (t) => {
+		const f = await fixture(t);
+		const request = await queue(f);
+		await applyPendingActivation({ cwd: f.cwd });
+		const rollbackRoot = path.dirname(await backupDirectory(f));
+		const live = await tree(f.cwd);
+		const sibling = path.join(f.cwd, 'restore-staging', randomUUID());
+		await fs.mkdir(sibling);
+		await fs.writeFile(path.join(sibling, 'sentinel'), 'keep');
+		if (kind === 'root-junction' || kind === 'replacement') {
+			await fs.rename(rollbackRoot, path.join(sibling, 'saved-rollback'));
+			if (kind === 'root-junction') await fs.symlink(path.join(f.cwd, 'uploads'), rollbackRoot, 'junction');
+			else {
+				await fs.mkdir(rollbackRoot);
+				await fs.writeFile(path.join(rollbackRoot, 'replacement'), 'keep');
+			}
+		} else if (kind === 'nested-junction') {
+			await fs.symlink(path.join(f.cwd, 'uploads'), path.join(rollbackRoot, 'unsafe'), 'junction');
+		} else {
+			await fs.link(path.join(f.cwd, 'uploads', 'zero'), path.join(rollbackRoot, 'unsafe'));
+		}
+		const finalized = await finalizeActivation({ cwd: f.cwd, id: request.id });
+		assert.equal(finalized.state, 'completed');
+		assert.equal(finalized.cleanupPending, true);
+		assert.equal((await journal(f)).rollbackCleanup.state, 'pending');
+		assert.deepEqual(await tree(f.cwd), live);
+		assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'keep');
+		assert.ok(await fs.lstat(rollbackRoot));
+	});
+}
+
+test('rollback copies remain available for failed or unconfirmed activations and their history', async (t) => {
+	const f = await fixture(t);
+	const first = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const rollbackRoot = path.dirname(await backupDirectory(f));
+	assert.deepEqual(await tree(await backupDirectory(f)), f.original);
+	await rollbackActivation({ cwd: f.cwd, id: first.id });
+	assert.equal((await journal(f)).state, 'rolled_back');
+	await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	assert.ok((await fs.stat(rollbackRoot)).isDirectory());
+	const second = await journal(f);
+	await finalizeActivation({ cwd: f.cwd, id: second.id });
+	assert.ok((await fs.stat(rollbackRoot)).isDirectory());
+	await assert.rejects(fs.lstat(path.dirname(await backupDirectory(f))), { code: 'ENOENT' });
+});
+
+test('process exit during rollback deletion resumes without rolling back the healthy site', async (t) => {
+	const f = await fixture(t);
+	const request = await queue(f);
+	await applyPendingActivation({ cwd: f.cwd });
+	const rollbackRoot = path.dirname(await backupDirectory(f));
+	const moduleUrl = new URL('../src/lib/server/restore-activation-files.js', import.meta.url).href;
+	const script = `import fs from 'node:fs/promises';
+		import {finalizeActivation} from ${JSON.stringify(moduleUrl)};
+		const unlink=fs.unlink; fs.unlink=async file=>{await unlink(file);
+		if(file.startsWith(${JSON.stringify(rollbackRoot + path.sep)}))process.exit(77)};
+		await finalizeActivation({cwd:${JSON.stringify(f.cwd)},id:${JSON.stringify(request.id)}});`;
+	const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+	assert.equal(child.status, 77, child.stderr);
+	assert.equal((await journal(f)).state, 'completed');
+	assert.equal((await journal(f)).rollbackCleanup.state, 'pending');
+	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
+	await assert.rejects(fs.lstat(rollbackRoot), { code: 'ENOENT' });
+	assert.equal((await journal(f)).rollbackCleanup.state, 'completed');
+	assert.equal(value(f.cwd), 'restored');
+});
+
+for (const retry of ['apply', 'finalize']) {
 	test(`partial cleanup failure preserves completed activation and retries on ${retry}`, async (t) => {
 		const f = await fixture(t);
 		const request = await queue(f);
@@ -713,7 +869,7 @@ for (const retry of ['apply', 'finalize']) {
 		await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
 		assert.equal((await journal(f)).cleanup.state, 'completed');
 		assert.equal(activationStatus({ cwd: f.cwd }).cleanupPending, false);
-		assert.deepEqual(await tree(rollback), f.original);
+		await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
 		assert.equal(value(f.cwd), 'restored');
 		await assert.rejects(rollbackActivation({ cwd: f.cwd, id: request.id }), SAFE_ERROR);
 	});
@@ -739,7 +895,7 @@ test('process exit during cleanup resumes from the durable completed boundary', 
 	assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 	assert.equal((await journal(f)).cleanup.state, 'completed');
 	await assert.rejects(fs.lstat(f.staged), { code: 'ENOENT' });
-	assert.deepEqual(await tree(rollback), f.original);
+	await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
 	assert.equal(value(f.cwd), 'restored');
 });
 
@@ -835,7 +991,8 @@ for (const kind of ['source-junction', 'nested-junction', 'hardlink', 'replaceme
 			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 			assert.equal(removed, 0);
 			assert.equal((await journal(f)).cleanup.state, 'pending');
-			assert.deepEqual(await tree(rollback), f.original);
+			if (kind === 'replacement') await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
+			else assert.deepEqual(await tree(rollback), f.original);
 			assert.equal(value(f.cwd), 'restored');
 			assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'keep other restore');
 			assert.ok((await fs.stat(path.join(saved || f.staged, 'db', 'pacs.db'))).isFile());
@@ -887,7 +1044,8 @@ for (const kind of [
 				await fs.readFile(path.join(f.staged, '.env'), 'utf8'),
 				'LIVE_SECRET=replace-me'
 			);
-			assert.deepEqual(await tree(rollback), f.original);
+			if (kind === 'rollback-alias') assert.deepEqual(await tree(rollback), f.original);
+			else await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
 			assert.equal(await fs.readFile(path.join(sibling, 'sentinel'), 'utf8'), 'keep');
 		} finally {
 			mocked.mock.restore();
@@ -972,7 +1130,7 @@ for (const reused of [false, true]) {
 		assert.equal(historical.state, 'completed');
 		assert.equal(historical.cleanup.state, reused ? 'pending' : 'completed');
 		assert.ok((await fs.stat(next.staged)).isDirectory());
-		assert.deepEqual(await tree(rollback), f.original);
+		await assert.rejects(fs.lstat(rollback), { code: 'ENOENT' });
 		if (reused) {
 			assert.equal(await applyPendingActivation({ cwd: f.cwd }), null);
 			assert.equal(activationStatus({ cwd: f.cwd }).state, 'rolled_back');

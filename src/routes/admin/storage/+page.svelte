@@ -135,7 +135,7 @@
 		</div></div>
 	{/if}
 	{#if data.activation?.state && data.activation.state !== 'idle'}
-		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.state === 'completed'}<p>Restore completed.{#if data.activation.cleanupPending === false} Temporary restore files removed.{:else if data.activation.cleanupPending === true} Temporary-file cleanup will retry on the next restart.{/if} Maintenance remains on for review; storage schedules stay paused.</p>{/if}{#if data.activation.rollbackDirectory}<p>Private rollback copy: <code class="break-all">{data.activation.rollbackDirectory}</code>. Keep it until the restored site has been tested.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
+		<div class="alert alert-info" role="status"><div>Last restore activation: {data.activation.state}{#if data.activation.id} — {data.activation.id}{/if}.{#if data.activation.state === 'completed'}<p>Restore completed.{#if data.activation.cleanupPending === false} Temporary restore files removed.{:else if data.activation.cleanupPending === true} Temporary-file cleanup will retry on the next restart.{/if} Maintenance remains on for review; storage schedules stay paused.</p>{/if}{#if data.activation.error}<p>{data.activation.error}</p>{/if}</div></div>
 	{/if}
 	{#if form?.fingerprint}<p class="break-all font-mono">Observed (not yet trusted): {form.fingerprint}</p>{/if}
 	{#if !data.keyConfigured}
