@@ -67,8 +67,9 @@
 	</header>
 	<details class="worklist-filters">
 		<summary>Filters & sorting <span class="filter-caption">{hasFilters ? 'Filtered view' : 'All studies'} · Search, dates and reviewers</span></summary>
-		<div class="filter-content"><Filters {data} /><FavoriteCategories {data} /></div>
+		<div class="filter-content"><Filters {data} /></div>
 	</details>
+	<div class="worklist-favorites"><FavoriteCategories {data} /></div>
 	<nav class="status-navigation" aria-label="Study status filters">
 		<ul>
 			{#each [{ key: '', label: 'All studies' }, ...studyRowStatuses] as status (status.key)}
@@ -237,6 +238,7 @@
 	.worklist-filters > summary { padding: 0.875rem 1.5rem; font-size: 0.8125rem; font-weight: 600; }
 	.filter-caption { margin-left: 0.75rem; font-weight: 400; }
 	.filter-content { display: grid; gap: 1rem; padding: 0.5rem 1.5rem 1.5rem; }
+	.worklist-favorites { border-top: 1px solid #e2e8f0; padding: 0.75rem 1.5rem; }
 
 	summary { cursor: pointer; }
 	summary:focus-visible,
@@ -324,6 +326,7 @@
 
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }
+		.worklist-favorites { padding: 0.75rem 1rem; }
 		.worklist-filters > summary { padding: 0.875rem 1rem; }
 		.filter-caption { display: block; margin: 0.25rem 0 0; }
 		.filter-content { padding: 0.5rem 1rem 1rem; }

@@ -37,7 +37,7 @@
 
 <div class="min-w-0 w-full">
 	<form
-		class="flex flex-wrap items-end gap-3"
+		class="study-filters flex flex-wrap items-end gap-3"
 		onsubmit={(e) => {
 			e.preventDefault();
 			applyFilters(e); // your existing function that reads FormData and updates the URL
@@ -221,6 +221,16 @@
 </div>
 
 <style>
+	.study-filters :global(.input),
+	.study-filters :global(.select) {
+		border: 1px solid #cbd5e1;
+	}
+
+	.study-filters :global(.input:focus),
+	.study-filters :global(.select:focus) {
+		border-color: #6366f1;
+	}
+
 	label {
 		min-width: 0;
 		max-width: 100%;

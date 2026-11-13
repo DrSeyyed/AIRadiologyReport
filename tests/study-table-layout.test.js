@@ -76,6 +76,15 @@ test('five grouped columns have fixed proportions, wrapped content and keyboard-
 	assert.match(description, /\.study-description\[open\] \.description-preview/);
 });
 
+test('filter fields have visible borders including searchable selectors, with favorites managed outside the filter disclosure', async () => {
+	await component('Filters.svelte');
+	const filters = read('Filters.svelte');
+	assert.match(filters, /class="study-filters flex flex-wrap items-end gap-3"/);
+	assert.match(filters, /\.study-filters :global\(\.input\),\s*\.study-filters :global\(\.select\)\s*\{\s*border: 1px solid #cbd5e1;/);
+	assert.match(filters, /\.study-filters :global\(\.input:focus\),\s*\.study-filters :global\(\.select:focus\)\s*\{\s*border-color: #6366f1;/);
+	assert.match(read('StudyTable.svelte'), /class="filter-content"><Filters \{data\} \/><\/div>\s*<\/details>\s*<div class="worklist-favorites"><FavoriteCategories \{data\} \/><\/div>/);
+});
+
 test('table preserves study information, sorting, workflow buttons, and role restrictions', async () => {
 	const { Component } = await component('StudyTable.svelte');
 	const study = {
