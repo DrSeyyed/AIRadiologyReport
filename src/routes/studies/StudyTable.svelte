@@ -298,10 +298,10 @@
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
 	.study-table { width: 100%; min-width: 66rem; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
-	.patient-column { width: 20%; }
-	.examination-column { width: 19%; }
-	.team-column { width: 19%; }
-	.reporting-column { width: 19%; }
+	.patient-column { width: 24%; }
+	.examination-column { width: 16%; }
+	.team-column { width: 22%; }
+	.reporting-column { width: 15%; }
 	.actions-column { width: 23%; }
 	.study-table th { vertical-align: top; padding: 0.875rem 1rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
 	.study-table td { vertical-align: top; padding: 1.25rem 1rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
@@ -334,11 +334,11 @@
 	.attention-disclosure > .attention-active { color: #854d0e; font-weight: 700; }
 	.attention-editor { margin-top: 0.75rem; }
 	.attention-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 0.375rem; color: #854d0e; font-size: 0.6875rem; white-space: pre-wrap; }
-	.report-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
-	.report-metrics > div { padding: 0.5rem 0.625rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
-	.report-metrics strong { display: block; font-size: 1.125rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
+	.report-metrics { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+	.report-metrics > div { display: inline-flex; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.375rem; background: #fff; }
+	.report-metrics strong { min-width: 0; font-size: 0.875rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
 	.report-metrics span { font-size: 0.625rem; color: #64748b; }
-	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.875rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: #475569; }
+	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.625rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: #475569; }
 	.signature-heading > span { font-weight: 400; font-size: 0.5625rem; color: #64748b; }
 	.signature-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #64748b; font-size: 0.625rem; font-variant-numeric: tabular-nums; }

@@ -89,10 +89,31 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /onscroll=\{updateTableScroll\}/);
 	assert.match(source, /scrollBy\(/);
 	assert.doesNotMatch(source, /max-width: 1150px|table-scroll-hint/);
-	assert.match(source, /\.examination-column\s*\{ width: 19%;/);
+	assert.match(source, /\.examination-column\s*\{ width: 16%;/);
+	assert.match(source, /\.reporting-column\s*\{ width: 15%;/);
 	assert.match(source, /\.actions-column\s*\{ width: 23%;/);
 	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
+});
+
+test('narrower examination and reporting columns retain compact, wrapping count boxes', () => {
+	const source = read('StudyTable.svelte');
+	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
+	const rules = [];
+	postcss.parse(css.code).walkRules(rule => rules.push(rule));
+	const styles = selector => new Map(rules.find(rule => selector.test(rule.selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
+	const widths = ['patient', 'examination', 'team', 'reporting', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
+	assert.deepEqual(widths, [24, 16, 22, 15, 23]);
+	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
+	const metrics = styles(/^\.report-metrics\.[^ >]+$/);
+	assert.equal(metrics.get('display'), 'flex');
+	assert.equal(metrics.get('flex-wrap'), 'wrap');
+	const box = styles(/^\.report-metrics\.[^ >]+ > div/);
+	assert.equal(box.get('display'), 'inline-flex');
+	assert.equal(box.get('padding'), '0.25rem 0.375rem');
+	assert.equal(box.get('min-width'), '0');
+	assert.equal(box.get('max-width'), '100%');
+	assert.equal(styles(/^\.report-metrics\.[^ >]+ strong/).get('font-size'), '0.875rem');
 });
 
 test('row actions share compact button sizing and the reports button fits its label instead of filling the column', () => {
