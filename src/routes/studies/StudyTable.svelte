@@ -1,4 +1,5 @@
 <script>
+	import { onMount } from 'svelte';
 	import Filters from './Filters.svelte';
 	import { patientName } from '$lib/patient-name.js';
 	import StudyAttention from './StudyAttention.svelte';
@@ -19,6 +20,31 @@
 	let warning = $state('');
 	let deleteForStudy = $state(null);
 	let favoriteForStudy = $state(null);
+	let tableScroll = $state();
+	let tableElement = $state();
+	let tableOverflows = $state(false);
+	let canScrollLeft = $state(false);
+	let canScrollRight = $state(false);
+
+	function updateTableScroll() {
+		if (!tableScroll) return;
+		const maximum = tableScroll.scrollWidth - tableScroll.clientWidth;
+		tableOverflows = maximum > 1;
+		canScrollLeft = tableScroll.scrollLeft > 1;
+		canScrollRight = tableScroll.scrollLeft < maximum - 1;
+	}
+
+	function scrollTable(direction) {
+		tableScroll?.scrollBy({ left: direction * tableScroll.clientWidth * 0.75, behavior: 'smooth' });
+	}
+
+	onMount(() => {
+		const observer = new ResizeObserver(updateTableScroll);
+		observer.observe(tableScroll);
+		observer.observe(tableElement);
+		updateTableScroll();
+		return () => observer.disconnect();
+	});
 	const isAdmin = $derived(data.user?.role === 'admin');
 	const readOnly = $derived(data.user?.role === 'typist');
 	const hasFilters = $derived(Object.entries(data.filters).some(([key, value]) => key !== 'status' && value != null && value !== '' && value !== 0 && value !== '0'));
@@ -83,10 +109,18 @@
 			{/each}
 		</ul>
 	</nav>
-	<p class="table-scroll-hint">Scroll horizontally to see all columns <span aria-hidden="true">→</span></p>
+	{#if tableOverflows}
+		<div class="table-scroll-controls">
+			<p>Scroll horizontally to see all columns</p>
+			<div class="scroll-buttons">
+				<button type="button" aria-label="Scroll table left" aria-controls="study-worklist-table" disabled={!canScrollLeft} onclick={() => scrollTable(-1)}><span aria-hidden="true">←</span></button>
+				<button type="button" aria-label="Scroll table right" aria-controls="study-worklist-table" disabled={!canScrollRight} onclick={() => scrollTable(1)}><span aria-hidden="true">→</span></button>
+			</div>
+		</div>
+	{/if}
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users need to focus this region to scroll the table.) -->
-	<div class="study-table-scroll w-full min-w-0 max-w-full overflow-x-auto" role="region" aria-label="Studies table, scroll horizontally on smaller screens" tabindex="0">
-		<table class="study-table">
+	<div id="study-worklist-table" bind:this={tableScroll} class="study-table-scroll w-full min-w-0 max-w-full overflow-x-auto" role="region" aria-label="Studies table, scroll horizontally" tabindex="0" onscroll={updateTableScroll}>
+		<table bind:this={tableElement} class="study-table">
 			<caption class="sr-only">Study worklist grouped by patient, examination, review team, reporting and actions.</caption>
 			<colgroup><col class="patient-column" /><col class="examination-column" /><col class="team-column" /><col class="reporting-column" /><col class="actions-column" /></colgroup>
 			<thead>
@@ -259,16 +293,20 @@
 	.status-filter[aria-current='true'] { background: var(--status-tint); color: var(--status-ink); font-weight: 700; box-shadow: inset 0 0 0 1px var(--status-dot); }
 	.status-dot { width: 0.375rem; height: 0.375rem; flex-shrink: 0; border-radius: 50%; background: var(--status-dot); }
 
-	.table-scroll-hint { display: none; }
+	.table-scroll-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid #e2e8f0; background: #f8fafc; color: #64748b; font-size: 0.75rem; }
+	.scroll-buttons { display: flex; gap: 0.375rem; }
+	.scroll-buttons button { width: 2rem; height: 2rem; border: 1px solid #cbd5e1; border-radius: 0.375rem; background: #fff; color: #334155; }
+	.scroll-buttons button:disabled { opacity: 0.4; cursor: not-allowed; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
 	.study-table { width: 100%; min-width: 66rem; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
 	.patient-column { width: 20%; }
-	.examination-column { width: 24%; }
+	.examination-column { width: 19%; }
 	.team-column { width: 19%; }
 	.reporting-column { width: 19%; }
-	.actions-column { width: 18%; }
+	.actions-column { width: 23%; }
 	.study-table th { vertical-align: top; padding: 0.875rem 1rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
 	.study-table td { vertical-align: top; padding: 1.25rem 1rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
+	.study-table td > * { min-width: 0; max-width: 100%; }
 	.study-table tbody tr:last-child td { border-bottom: 0; }
 	.study-table tbody tr:hover { background: #fafbff; }
 	.study-table tbody tr[data-study-status='disabled'] { background: #f8fafc; }
@@ -297,7 +335,7 @@
 	.attention-disclosure > .attention-active { color: #854d0e; font-weight: 700; }
 	.attention-editor { margin-top: 0.75rem; }
 	.attention-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 0.375rem; color: #854d0e; font-size: 0.6875rem; white-space: pre-wrap; }
-	.report-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+	.report-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
 	.report-metrics > div { padding: 0.5rem 0.625rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
 	.report-metrics strong { display: block; font-size: 1.125rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
 	.report-metrics span { font-size: 0.625rem; color: #64748b; }
@@ -307,9 +345,10 @@
 	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #64748b; font-size: 0.625rem; font-variant-numeric: tabular-nums; }
 	.signature-chip > span { font-weight: 700; }
 	.signature-complete { background: #f0fdf4; color: #166534; }
-	.row-actions { display: grid; gap: 0.625rem; }
-	.report-button { display: flex; justify-content: space-between; width: 100%; height: auto; min-height: 2.25rem; padding: 0.5rem 0.625rem; font-size: 0.6875rem; }
+	.row-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.625rem; }
+	.report-button { display: flex; justify-content: space-between; width: 100%; min-width: 0; max-width: 100%; height: auto; min-height: 2.25rem; padding: 0.5rem 0.625rem; font-size: 0.6875rem; white-space: normal; text-align: left; }
 	.quick-actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; }
+	.quick-actions > :global(*) { min-width: 0; max-width: 100%; }
 	.more-actions > summary { width: fit-content; color: #64748b; font-size: 0.6875rem; }
 	.action-list { display: grid; gap: 0.25rem; margin-top: 0.5rem; padding: 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
 	.action-button { padding: 0.375rem; border-radius: 0.25rem; text-align: left; font-size: 0.75rem; }
@@ -319,10 +358,6 @@
 	.empty-state { text-align: center; padding: 3rem 1rem !important; }
 	.empty-state strong { display: block; font-size: 1rem; }
 	.empty-state span { display: block; margin-top: 0.5rem; color: #64748b; }
-
-	@media (max-width: 1150px) {
-		.table-scroll-hint { display: block; padding: 0.5rem 1rem; border-top: 1px solid #e2e8f0; background: #f8fafc; color: #64748b; font-size: 0.6875rem; }
-	}
 
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }

@@ -76,6 +76,24 @@ test('five grouped columns have fixed proportions, wrapped content and keyboard-
 	assert.match(description, /\.study-description\[open\] \.description-preview/);
 });
 
+test('overflow controls follow actual table size instead of a mobile-only breakpoint', () => {
+	const source = read('StudyTable.svelte');
+	assert.match(source, /new ResizeObserver\(updateTableScroll\)/);
+	assert.match(source, /observer\.observe\(tableScroll\)/);
+	assert.match(source, /observer\.observe\(tableElement\)/);
+	assert.match(source, /observer\.disconnect\(\)/);
+	assert.match(source, /tableScroll\.scrollWidth - tableScroll\.clientWidth/);
+	assert.match(source, /\{#if tableOverflows\}/);
+	for (const direction of ['left', 'right']) assert.match(source, new RegExp(`aria-label="Scroll table ${direction}" aria-controls="study-worklist-table" disabled=\\{!canScroll${direction === 'left' ? 'Left' : 'Right'}\\}`));
+	assert.match(source, /onscroll=\{updateTableScroll\}/);
+	assert.match(source, /scrollBy\(/);
+	assert.doesNotMatch(source, /max-width: 1150px|table-scroll-hint/);
+	assert.match(source, /\.examination-column\s*\{ width: 19%;/);
+	assert.match(source, /\.actions-column\s*\{ width: 23%;/);
+	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
+});
+
 test('filter fields have visible borders including searchable selectors, with favorites managed outside the filter disclosure', async () => {
 	await component('Filters.svelte');
 	const filters = read('Filters.svelte');
