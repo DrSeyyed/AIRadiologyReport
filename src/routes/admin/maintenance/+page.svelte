@@ -70,8 +70,8 @@
 		<dl class="grid gap-3 sm:grid-cols-2">
 			<div><dt class="font-semibold">Website</dt><dd>{status.enabled ? 'Closed for maintenance' : 'Open'}</dd></div>
 			<div><dt class="font-semibold">Maintenance phase</dt><dd>{status.phase}</dd></div>
-			<div><dt class="font-semibold">Telegram group</dt><dd>{status.telegram === 'disabled' ? 'Not configured' : status.telegram}</dd></div>
-			{#if status.updatedAt}<div><dt class="font-semibold">Last updated</dt><dd>{status.updatedAt}</dd></div>{/if}
+			<div><dt class="font-semibold">Telegram maintenance lock</dt><dd>{status.telegram === 'disabled' ? 'Not locked' : status.telegram}</dd></div>
+						{#if status.updatedAt}<div><dt class="font-semibold">Maintenance last changed</dt><dd>{status.updatedAt}</dd></div>{/if}
 		</dl>
 	</div>
 	{#if needsRetry}

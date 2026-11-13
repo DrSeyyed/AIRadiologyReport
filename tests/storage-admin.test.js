@@ -784,7 +784,8 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 		assert.doesNotMatch(panel, /\(8\/8\)|Retry:/);
 		if (activationState === 'blocked') assert.match(panel, /Restore rolled back/);
 		if (activationState === 'completed') {
-			assert.match(panel, /Restore completed\. Maintenance remains on for review; storage schedules stay paused\./);
+			assert.match(panel, /Restore completed\./);
+			assert.doesNotMatch(panel, /Maintenance remains on for review; storage schedules stay paused\./);
 			assert.doesNotMatch(panel, /Verified copy ready|verified-copy/);
 		}
 	}
@@ -793,15 +794,19 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 	for (const cleanupPending of [false, true, undefined]) {
 		data.activation = { supported: true, state: 'completed', cleanupPending, rollbackDirectory: 'private-rollback-sentinel' };
 		const { body: completedBody } = render(component.default, { props: { data } });
-		assert.match(completedBody, /Restore completed\./);
-		assert.doesNotMatch(completedBody, /Private rollback copy|Keep it until|private-rollback-sentinel/);
-		assert.match(completedBody, /Maintenance remains on for review; storage schedules stay paused\./);
-		assert.equal(completedBody.includes('Temporary restore files removed.'), cleanupPending === false);
+		assert.doesNotMatch(completedBody, /Last restore activation|Private rollback copy|Keep it until|private-rollback-sentinel/);
+		assert.doesNotMatch(completedBody, /Maintenance remains on for review; storage schedules stay paused\./);
+		assert.doesNotMatch(completedBody, /Temporary restore files removed\./);
 		assert.equal(completedBody.includes('Temporary-file cleanup will retry on the next restart.'), cleanupPending === true);
 	}
 	data.activation = { supported: true, state: 'activating', cleanupPending: false };
 	const { body: activatingBody } = render(component.default, { props: { data } });
 	assert.doesNotMatch(activatingBody, /Temporary restore files removed\./);
+	assert.match(activatingBody, /Last restore activation: activating/);
+	data.activation = { supported: true, state: 'rolled_back', error: 'Restore needs attention' };
+	const { body: rolledBackBody } = render(component.default, { props: { data } });
+	assert.match(rolledBackBody, /Last restore activation: rolled_back/);
+	assert.match(rolledBackBody, /Restore needs attention/);
 	data.activation = originalActivation;
 	assert.match(archiveBody, /<input[^>]*name="parallelConnections"[^>]*min="1"[^>]*max="16"/);
 	assert.match(archiveBody, /Parallel storage connections: 1–16, default 4/);

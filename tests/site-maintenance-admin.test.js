@@ -315,7 +315,16 @@ test('maintenance UI compiles and SSR renders explicit confirmations, acknowledg
 	const busy = render(Page, { props: { data: { status: { ...on, phase: 'enabling' } } } }).body;
 	assert.equal((busy.match(/<fieldset disabled/g) ?? []).length, 2);
 	const disabledTelegram = render(Page, { props: { data: { status: off } } }).body;
-	assert.match(disabledTelegram, /Not configured/);
+	assert.match(disabledTelegram, /Telegram maintenance lock/);
+	assert.match(disabledTelegram, /Not locked/);
+	assert.doesNotMatch(disabledTelegram, /Not configured/);
+	const unlocked = render(Page, { props: { data: { status: { ...off, updatedAt: '2026-11-12T04:18:09.528Z' } } } }).body;
+	assert.match(unlocked, /Maintenance last changed/);
+	assert.match(unlocked, /2026-11-12T04:18:09.528Z/);
+	assert.doesNotMatch(unlocked, /Not configured/);
+	const locked = render(Page, { props: { data: { status: on } } }).body;
+	assert.match(locked, /Telegram maintenance lock/);
+	assert.match(locked, />locked</);
 });
 
 test('maintenance pending restore keeps discard safety and reopening controls visible', async () => {
