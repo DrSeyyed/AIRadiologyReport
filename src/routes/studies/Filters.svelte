@@ -27,9 +27,7 @@
 		for (const [k, v] of fd.entries()) {
 			if (v) params.set(k, v);
 		}
-		const current = { ...data.filters, ...data.paging };
-		if (['favorites', 'date_range', 'date_from', 'date_to', 'orderedby', 'orderdir', 'rowcount'].some((key) => (params.get(key) || '') !== String(current[key] ?? '')))
-			params.set('page', '1');
+		params.set('page', '1');
 		const url = `/studies?${params.toString()}`;
 		window.location.href = url; // server-side load to refetch
 	}
@@ -148,34 +146,7 @@
 			</label>
 		{/each}
 
-		<!-- Records Per Page -->
-		<label class="form-control w-16">
-			<span class="label-text mb-1 text-sm">Records</span>
-			<select
-				name="rowcount"
-				class="select select-sm leading-normal h-9"
-				value={String(data.paging?.rowcount ?? 20)}
-			>
-				<option value="10">10</option>
-				<option value="20">20</option>
-				<option value="50">50</option>
-				<option value="100">100</option>
-			</select>
-		</label>
-
-		<!-- Page -->
-		<label class="form-control w-16">
-			<span class="label-text mb-1 text-sm">Page</span>
-			<select
-				name="page"
-				class="select select-sm leading-normal h-9"
-				value={Number(data.paging?.page ?? 1)}
-			>
-				{#each Array.from({ length: data.paging?.totalPages ?? 1 }, (_, i) => i + 1) as p}
-					<option value={p}>{p}</option>
-				{/each}
-			</select>
-		</label>
+		<input type="hidden" name="rowcount" value={String(data.paging?.rowcount ?? 20)} />
 
 		<!-- Order By -->
 		<label class="form-control w-32">

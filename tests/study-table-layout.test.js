@@ -9,14 +9,14 @@ const read = (name) => readFileSync(new URL(`../src/routes/studies/${name}`, imp
 const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const stub = moduleUrl('export default function Component() {}');
 
-async function component(name) {
+async function component(name, search = '') {
 	const source = read(name);
 	for (const generate of ['client', 'server']) {
 		assert.deepEqual(compile(source, { filename: name, generate }).warnings, []);
 	}
 	const children = {};
 	if (name === 'StudyTable.svelte') {
-		for (const child of ['StudyDescription.svelte', 'StudyFavorite.svelte', 'StudyAttention.svelte', 'PacsViewer.svelte']) children[`./${child}`] = await component(child);
+		for (const child of ['StudyDescription.svelte', 'StudyFavorite.svelte', 'StudyAttention.svelte', 'PacsViewer.svelte', 'StudyPagination.svelte']) children[`./${child}`] = await component(child);
 	}
 	const code = compile(source, { filename: name, generate: 'server' }).js.code.replace(/from (['"])([^'"]+)\1/g, (_statement, _quote, specifier) => {
 		let target;
@@ -24,7 +24,7 @@ async function component(name) {
 		else if (specifier.endsWith('.svelte')) target = stub;
 		else if (specifier === '$app/navigation') target = moduleUrl('export async function invalidateAll() {}');
 		else if (specifier === '$app/paths') target = moduleUrl('export const resolve = (path) => path;');
-		else if (specifier === '$app/state') target = moduleUrl("export const page = { url: new URL('http://localhost/studies') };");
+		else if (specifier === '$app/state') target = moduleUrl(`export const page = { url: new URL(${JSON.stringify(`http://localhost/studies${search}`)}) };`);
 		else if (specifier.startsWith('$lib/')) target = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 		else target = import.meta.resolve(specifier);
 		return `from ${JSON.stringify(target)}`;
@@ -32,6 +32,40 @@ async function component(name) {
 	const url = moduleUrl(code);
 	return { Component: (await import(url)).default, url };
 }
+
+test('pagination is above and below the table, outside filters, with query-preserving native forms', async () => {
+	const source = read('StudyTable.svelte');
+	assert.match(source, /<StudyPagination paging=\{data.paging\} position="above table" \/>[\s\S]*<table[\s\S]*<\/table>[\s\S]*<StudyPagination paging=\{data.paging\} position="below table" \/>/);
+	const filters = read('Filters.svelte');
+	assert.doesNotMatch(filters, /<select\s+name="(?:page|rowcount)"/);
+	assert.match(filters, /type="hidden" name="rowcount"/);
+	assert.match(filters, /params.set\('page', '1'\)/);
+	const { Component } = await component('StudyPagination.svelte', '?page=3&rowcount=10&status=unsigned&resident_checked=0&orderedby=report_count&orderdir=ASC&patient_fullname=Synthetic');
+	for (const position of ['above table', 'below table']) {
+		const { body } = render(Component, { props: { position, paging: { page: 3, rowcount: 10, totalPages: 5 } } });
+		assert.ok(body.includes(`aria-label="Study pagination ${position}"`));
+		assert.match(body, /method="GET" action="\/studies"/);
+		for (const [name, value] of [['status', 'unsigned'], ['resident_checked', '0'], ['orderedby', 'report_count'], ['orderdir', 'ASC'], ['patient_fullname', 'Synthetic']]) assert.ok(body.includes(`name="${name}" value="${value}"`));
+		assert.doesNotMatch(body, /type="hidden" name="(?:page|rowcount)"/);
+		assert.match(body, /Records per page/);
+		assert.match(body, />of 5</);
+	}
+	const empty = render(Component, { props: { position: 'below table', paging: { totalPages: 0 } } }).body;
+	assert.match(empty, />of 1</);
+});
+
+test('pagination changes submit immediately and only page-size changes reset the selected page', () => {
+	const handler = read('StudyPagination.svelte').match(/function changePage\(event\) \{([\s\S]*?)\n\t\}/)[1];
+	const changePage = new Function('event', handler);
+	for (const name of ['page', 'rowcount']) {
+		const page = { value: '3' };
+		let submitted = false;
+		const form = { elements: { namedItem: key => { assert.equal(key, 'page'); return page; } }, requestSubmit() { submitted = true; } };
+		changePage({ currentTarget: { name, form } });
+		assert.equal(page.value, name === 'rowcount' ? '1' : '3');
+		assert.ok(submitted);
+	}
+});
 
 test('short and empty study descriptions stay compact without disclosure controls', async () => {
 	const { Component } = await component('StudyDescription.svelte');
@@ -89,9 +123,9 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /onscroll=\{updateTableScroll\}/);
 	assert.match(source, /scrollBy\(/);
 	assert.doesNotMatch(source, /max-width: 1150px|table-scroll-hint/);
-	assert.match(source, /\.examination-column\s*\{ width: 18%;/);
-	assert.match(source, /\.reporting-column\s*\{ width: 16%;/);
-	assert.match(source, /\.actions-column\s*\{ width: 24%;/);
+	assert.match(source, /\.examination-column\s*\{ width: 17%;/);
+	assert.match(source, /\.reporting-column\s*\{ width: 20%;/);
+	assert.match(source, /\.actions-column\s*\{ width: 23%;/);
 	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
 });
@@ -103,10 +137,12 @@ test('the entire worklist has a compact width cap instead of redistributing spar
 	postcss.parse(css.code).walkRules(rule => rules.push(rule));
 	const styles = selector => new Map(rules.find(rule => selector.test(rule.selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
 	const widths = ['patient', 'examination', 'team', 'reporting', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
-	assert.deepEqual(widths, [23, 18, 19, 16, 24]);
+	assert.deepEqual(widths, [22, 17, 18, 20, 23]);
+	assert.ok(60 * widths[3] / 100 > 57 * 0.16 * 1.3, 'Reporting gains over 30% width');
+	for (const index of [0, 1, 2, 4]) assert.ok(Math.abs(60 * widths[index] / 100 - 57 * [23, 18, 19, 16, 24][index] / 100) < 0.15, 'Other columns keep their compact widths');
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
 	const workspace = styles(/^\.study-workspace\.[^ >]+$/);
-	assert.equal(workspace.get('--worklist-width'), '57rem');
+	assert.equal(workspace.get('--worklist-width'), '60rem');
 	assert.equal(workspace.get('width'), 'var(--worklist-width)');
 	assert.equal(workspace.get('max-width'), '100%');
 	const table = styles(/^\.study-table\.[^ >]+$/);

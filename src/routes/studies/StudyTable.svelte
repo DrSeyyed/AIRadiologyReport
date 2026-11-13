@@ -1,6 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import Filters from './Filters.svelte';
+	import StudyPagination from './StudyPagination.svelte';
 	import { patientName } from '$lib/patient-name.js';
 	import StudyAttention from './StudyAttention.svelte';
 	import StudyDescription from './StudyDescription.svelte';
@@ -109,6 +110,7 @@
 			{/each}
 		</ul>
 	</nav>
+	<StudyPagination paging={data.paging} position="above table" />
 	{#if tableOverflows}
 		<div class="table-scroll-controls">
 			<p>Scroll horizontally to see all columns</p>
@@ -205,11 +207,12 @@
 			</tbody>
 		</table>
 	</div>
+	<StudyPagination paging={data.paging} position="below table" />
 </section>
 
 <style>
 	.study-workspace {
-		--worklist-width: 57rem;
+		--worklist-width: 60rem;
 		width: var(--worklist-width);
 		min-width: 0;
 		max-width: 100%;
@@ -300,11 +303,11 @@
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
 	.study-table { width: 100%; min-width: calc(var(--worklist-width) - 2px); table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
-	.patient-column { width: 23%; }
-	.examination-column { width: 18%; }
-	.team-column { width: 19%; }
-	.reporting-column { width: 16%; }
-	.actions-column { width: 24%; }
+	.patient-column { width: 22%; }
+	.examination-column { width: 17%; }
+	.team-column { width: 18%; }
+	.reporting-column { width: 20%; }
+	.actions-column { width: 23%; }
 	.study-table th { vertical-align: top; padding: 0.875rem 1rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
 	.study-table td { vertical-align: top; padding: 1.25rem 1rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
 	.study-table td > * { min-width: 0; max-width: 100%; }
