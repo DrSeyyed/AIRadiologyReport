@@ -2,6 +2,7 @@
 	import Filters from './Filters.svelte';
 	import { patientName } from '$lib/patient-name.js';
 	import StudyAttention from './StudyAttention.svelte';
+	import StudyDescription from './StudyDescription.svelte';
 	import PacsViewer from './PacsViewer.svelte';
 	import DeleteStudyModal from './DeleteStudyModal.svelte';
 	import FavoriteCategories from './FavoriteCategories.svelte';
@@ -73,8 +74,8 @@
 		{/each}
 	</ul>
 </nav>
-<div class="overflow-x-auto rounded-box border">
-	<table class="table table-sm">
+<div class="w-full min-w-0 max-w-full overflow-x-auto rounded-box border">
+	<table class="table table-sm study-table">
 		<thead class="bg-base-200">
 			<tr>
 				{#each headers as header (header.label)}
@@ -99,14 +100,14 @@
 		<tbody>
 			{#each data.studies as study (study.id)}
 				<tr class="study-status" data-study-status={studyRowStatus(study)}>
-					<td><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error disabled-badge">Disabled</div>{/if}</td>
-					<td>{patientName(study)}</td>
+					<td class="study-code-cell"><span class:line-through={Boolean(study.disabled)}>{study.patient_code}</span>{#if study.disabled}<div class="badge badge-error disabled-badge">Disabled</div>{/if}</td>
+					<td class="study-text-cell">{patientName(study)}</td>
 					<td>{study.patient_age == null ? '-' : `${study.patient_age} ${study.patient_age_unit ?? 'Y'}`}</td>
-					<td>{study.source_modality || study.modality_code || '-'}</td>
-					<td class="max-w-xs whitespace-normal">{study.source_description || study.description || '-'}</td>
+					<td class="study-code-cell">{study.source_modality || study.modality_code || '-'}</td>
+					<td class="study-description-cell"><StudyDescription text={study.source_description || study.description || '-'} /></td>
 					<td>{study.exam_date_jalali}<div>{study.exam_time}</div></td>
-					<td>{study.attending_fullname ?? '-'}</td>
-					<td class="max-w-xs whitespace-normal">
+					<td class="study-text-cell">{study.attending_fullname ?? '-'}</td>
+					<td class="study-text-cell">
 						{#each study.residents as resident (resident.id)}
 							<div>{resident.full_name}</div>
 						{:else}-{/each}
@@ -129,6 +130,30 @@
 </div>
 
 <style>
+	.study-table td {
+		vertical-align: top;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.study-code-cell {
+		min-width: 6rem;
+		width: 8rem;
+		max-width: 9rem;
+	}
+
+	.study-text-cell {
+		min-width: 8rem;
+		width: 10rem;
+		max-width: 12rem;
+	}
+
+	.study-description-cell {
+		min-width: 12rem;
+		width: 16rem;
+		max-width: 18rem;
+	}
+
 	.study-status {
 		color: #1f2937;
 		border-color: #cbd5e1;
@@ -185,7 +210,11 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.25rem;
-		white-space: nowrap;
+		white-space: normal;
+	}
+
+	.sort-link span {
+		flex-shrink: 0;
 	}
 
 	.sort-link:hover,
