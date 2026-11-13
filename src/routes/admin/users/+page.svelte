@@ -209,8 +209,8 @@
       <input class="border rounded px-2 py-1 w-full" type="password" bind:value={form.password} autocomplete="new-password" minlength="8" required disabled={loading} />
     </label>
     <div class="md:col-span-2 flex gap-2">
-      <button class="border rounded px-3 py-2 hover:bg-gray-100" type="submit" disabled={loading}>Create administrator</button>
-      <button class="border rounded px-3 py-2" type="button" disabled={loading} onclick={() => { form.full_name = ''; form.username = ''; form.password = ''; }}>Reset</button>
+      <button class="button-tint border rounded px-3 py-2" type="submit" disabled={loading}>Create administrator</button>
+      <button class="button-tint border rounded px-3 py-2" type="button" disabled={loading} onclick={() => { form.full_name = ''; form.username = ''; form.password = ''; }}>Reset</button>
     </div>
   </form>
   </details>
@@ -241,8 +241,8 @@
       </label>
       <p class="md:col-span-2 text-sm">Blank password keeps the current one. Use 8+ characters, at most 72 UTF-8 bytes. To enable login, provide both username and password. Signed or processing assignments may block role changes or removal. The last administrator cannot be removed or demoted.</p>
       <div class="md:col-span-2 flex gap-2">
-        <button class="border rounded px-3 py-2 hover:bg-gray-100" type="submit" disabled={loading}>Save changes</button>
-        <button class="border rounded px-3 py-2" type="button" disabled={loading} onclick={() => (editing = null)}>Cancel</button>
+        <button class="button-tint border rounded px-3 py-2" type="submit" disabled={loading}>Save changes</button>
+        <button class="button-tint border rounded px-3 py-2" type="button" disabled={loading} onclick={() => (editing = null)}>Cancel</button>
       </div>
     </form>
   {/if}
@@ -255,7 +255,7 @@
       Website link
       <input class="border rounded px-2 py-1 w-full" type="url" placeholder="https://reports.example.com" bind:value={websiteUrl} maxlength="2000" disabled={loading} />
     </label>
-    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="submit" disabled={loading || (Boolean(websiteUrl.trim()) && !validWebsiteUrl)}>Save website link</button>
+    <button class="button-tint border rounded px-3 py-2" type="submit" disabled={loading || (Boolean(websiteUrl.trim()) && !validWebsiteUrl)}>Save website link</button>
     <p class="text-sm">Saved website: {data.websiteUrl || 'Not configured — website links will not be sent.'} Changes apply to future queued messages; already queued links keep their original address.</p>
   </form>
   </details>
@@ -263,8 +263,8 @@
   <h2 id="user-accounts-heading" class="text-lg font-semibold">User accounts ({data.users.length})</h2>
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-sm" role="status">{selectedIds.length} selected</span>
-    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>
-    <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0 || !data.websiteUrl} onclick={() => sendLink('website')}>Send website link</button>
+    <button class="button-tint border rounded px-3 py-2" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>
+    <button class="button-tint border rounded px-3 py-2" type="button" disabled={loading || selectedIds.length === 0 || !data.websiteUrl} onclick={() => sendLink('website')}>Send website link</button>
   </div>
   {#if websiteUrl && !validWebsiteUrl}<p class="text-sm text-red-600" role="alert">Enter a valid HTTP or HTTPS website link without embedded credentials.</p>{/if}
 
@@ -296,8 +296,8 @@
             <td class="p-2 whitespace-nowrap">{invitationStatus(user, 'website')}</td>
             <td class="p-2">
               <div class="flex gap-2">
-                <button class="border rounded px-3 py-1" disabled={loading} onclick={() => editUser(user)}>Edit</button>
-                <button class="border rounded px-3 py-1 text-red-600" disabled={loading || user.id === data.user?.id} title={user.id === data.user?.id ? 'You cannot remove your own account.' : 'Remove user'} onclick={() => removeUser(user)}>Remove</button>
+                <button class="button-tint border rounded px-3 py-1" disabled={loading} onclick={() => editUser(user)}>Edit</button>
+                <button class="button-tint btn-error border rounded px-3 py-1" disabled={loading || user.id === data.user?.id} title={user.id === data.user?.id ? 'You cannot remove your own account.' : 'Remove user'} onclick={() => removeUser(user)}>Remove</button>
               </div>
             </td>
           </tr>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
+import postcss from 'postcss';
 
 const read = (name) => readFileSync(new URL(`../src/routes/studies/${name}`, import.meta.url), 'utf8');
 const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
@@ -92,6 +93,27 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /\.actions-column\s*\{ width: 23%;/);
 	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
+});
+
+test('row actions share compact button sizing and the reports button fits its label instead of filling the column', () => {
+	const source = read('StudyTable.svelte');
+	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
+	const rules = [];
+	postcss.parse(css.code).walkRules(rule => rules.push(rule));
+	const styles = (selector) => new Map(rules.find(rule => rule.selector.startsWith(selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
+	const report = styles('.report-button.');
+	assert.equal(report.get('width'), 'fit-content');
+	assert.equal(report.get('min-width'), '0');
+	assert.equal(report.get('max-width'), '100%');
+	const shared = new Map(rules.find(rule => rule.selector.startsWith('.row-actions.') && rule.selector.endsWith(' .btn')).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
+	assert.equal(shared.get('min-height'), '2rem');
+	assert.equal(shared.get('border-radius'), '0.375rem');
+	assert.equal(shared.get('font-size'), '0.6875rem');
+	assert.match(source, /class="btn btn-xs btn-primary report-button"/);
+	assert.match(source, /<summary class="btn btn-xs btn-ghost"[^>]*>More actions<\/summary>/);
+	assert.match(source, /class="btn btn-xs btn-ghost action-button"/);
+	assert.match(source, /class="btn btn-xs btn-error action-button"/);
+	assert.doesNotMatch(source, /\.delete-action|\.action-button:hover|\.action-button:disabled/);
 });
 
 test('filter fields have visible borders including searchable selectors, with favorites managed outside the filter disclosure', async () => {

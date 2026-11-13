@@ -113,8 +113,8 @@
 		<div class="table-scroll-controls">
 			<p>Scroll horizontally to see all columns</p>
 			<div class="scroll-buttons">
-				<button type="button" aria-label="Scroll table left" aria-controls="study-worklist-table" disabled={!canScrollLeft} onclick={() => scrollTable(-1)}><span aria-hidden="true">←</span></button>
-				<button type="button" aria-label="Scroll table right" aria-controls="study-worklist-table" disabled={!canScrollRight} onclick={() => scrollTable(1)}><span aria-hidden="true">→</span></button>
+				<button type="button" class="btn btn-xs btn-square" aria-label="Scroll table left" aria-controls="study-worklist-table" disabled={!canScrollLeft} onclick={() => scrollTable(-1)}><span aria-hidden="true">←</span></button>
+				<button type="button" class="btn btn-xs btn-square" aria-label="Scroll table right" aria-controls="study-worklist-table" disabled={!canScrollRight} onclick={() => scrollTable(1)}><span aria-hidden="true">→</span></button>
 			</div>
 		</div>
 	{/if}
@@ -186,15 +186,15 @@
 						</td>
 						<td>
 							<div class="row-actions">
-								<button class="btn btn-sm btn-primary report-button" onclick={() => { recordingsForStudy = study; }}>Recordings & reports <span aria-hidden="true">→</span></button>
+								<button class="btn btn-xs btn-primary report-button" onclick={() => { recordingsForStudy = study; }}>Recordings & reports <span aria-hidden="true">→</span></button>
 								<div class="quick-actions"><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} /><StudyFavorite {study} compact /></div>
 								<details class="more-actions">
-									<summary aria-label={`More actions for study ${study.patient_code}`}>More actions</summary>
+									<summary class="btn btn-xs btn-ghost" aria-label={`More actions for study ${study.patient_code}`}>More actions</summary>
 									<div class="action-list">
-										<button class="action-button" onclick={() => (favoriteForStudy = study)}>Favorite categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
+										<button class="btn btn-xs btn-ghost action-button" onclick={() => (favoriteForStudy = study)}>Favorite categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
 										{#if !readOnly}
-											<button class="action-button" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
-											<button class="action-button delete-action" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
+											<button class="btn btn-xs btn-ghost action-button" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
+											<button class="btn btn-xs btn-error action-button" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 										{/if}
 									</div>
 								</details>
@@ -295,8 +295,7 @@
 
 	.table-scroll-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid #e2e8f0; background: #f8fafc; color: #64748b; font-size: 0.75rem; }
 	.scroll-buttons { display: flex; gap: 0.375rem; }
-	.scroll-buttons button { width: 2rem; height: 2rem; border: 1px solid #cbd5e1; border-radius: 0.375rem; background: #fff; color: #334155; }
-	.scroll-buttons button:disabled { opacity: 0.4; cursor: not-allowed; }
+	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
 	.study-table { width: 100%; min-width: 66rem; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
 	.patient-column { width: 20%; }
@@ -345,16 +344,14 @@
 	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #64748b; font-size: 0.625rem; font-variant-numeric: tabular-nums; }
 	.signature-chip > span { font-weight: 700; }
 	.signature-complete { background: #f0fdf4; color: #166534; }
-	.row-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.625rem; }
-	.report-button { display: flex; justify-content: space-between; width: 100%; min-width: 0; max-width: 100%; height: auto; min-height: 2.25rem; padding: 0.5rem 0.625rem; font-size: 0.6875rem; white-space: normal; text-align: left; }
+	.row-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+	.row-actions :global(.btn) { min-height: 2rem; height: auto; border-radius: 0.375rem; padding: 0.375rem 0.625rem; font-size: 0.6875rem; line-height: 1.4; font-weight: 600; }
+	.report-button { display: inline-flex; justify-content: center; gap: 0.5rem; width: fit-content; min-width: 0; max-width: 100%; white-space: normal; text-align: left; }
 	.quick-actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; }
 	.quick-actions > :global(*) { min-width: 0; max-width: 100%; }
-	.more-actions > summary { width: fit-content; color: #64748b; font-size: 0.6875rem; }
-	.action-list { display: grid; gap: 0.25rem; margin-top: 0.5rem; padding: 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
-	.action-button { padding: 0.375rem; border-radius: 0.25rem; text-align: left; font-size: 0.75rem; }
-	.action-button:hover:not(:disabled) { background: #f1f5f9; }
-	.action-button:disabled { cursor: not-allowed; opacity: 0.45; }
-	.delete-action { color: #b91c1c; }
+	.more-actions > summary { width: fit-content; }
+	.action-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.375rem; width: fit-content; max-width: 100%; margin-top: 0.5rem; padding: 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
+	.action-button { justify-content: flex-start; white-space: normal; text-align: left; }
 	.empty-state { text-align: center; padding: 3rem 1rem !important; }
 	.empty-state strong { display: block; font-size: 1rem; }
 	.empty-state span { display: block; margin-top: 0.5rem; color: #64748b; }

@@ -21,7 +21,7 @@
 		{#if activeGroup}
 			<div class="flex flex-wrap gap-2 border-t border-base-200 pt-3" role="group" aria-label={`${activeGroup.label} pages`}>
 				{#each activeGroup.links as link (link.href)}
-					<a href={resolve(link.href)} class="rounded-btn px-3 py-2 text-sm hover:bg-base-200" class:bg-primary={page.route.id === link.href} class:text-primary-content={page.route.id === link.href} aria-current={page.route.id === link.href ? 'page' : undefined}>{link.label}</a>
+					<a href={resolve(link.href)} class="button-tint rounded-btn px-3 py-2 text-sm" class:btn-primary={page.route.id === link.href} aria-current={page.route.id === link.href ? 'page' : undefined}>{link.label}</a>
 				{/each}
 			</div>
 		{/if}

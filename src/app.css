@@ -2,6 +2,127 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Button-only tokens leave badges, alerts and other DaisyUI surfaces unchanged.
+   Keep these rules after utilities so outline/ghost and legacy color classes cannot
+   restore saturated fills. button-tint opts custom controls in without resizing them. */
+:is(.btn.btn, .button-tint.button-tint) {
+	--button-bg: #f8fafc;
+	--button-hover: #f1f5f9;
+	--button-active: #e2e8f0;
+	--button-text: #334155;
+	--button-border: #64748b;
+	background-color: var(--button-bg);
+	background-image: none;
+	color: var(--button-text);
+	border: 1px solid var(--button-border);
+	box-shadow: none;
+	text-shadow: none;
+}
+
+:is(.btn.btn, .button-tint.button-tint):where(:not(.btn-circle)) {
+	border-radius: var(--rounded-btn, 0.5rem);
+}
+
+:is(.btn, .button-tint).btn-primary {
+	--button-bg: #eff6ff;
+	--button-hover: #dbeafe;
+	--button-active: #bfdbfe;
+	--button-text: #1e40af;
+	--button-border: #3b82f6;
+}
+
+:is(.btn, .button-tint).btn-secondary {
+	--button-bg: #f5f3ff;
+	--button-hover: #ede9fe;
+	--button-active: #ddd6fe;
+	--button-text: #5b21b6;
+	--button-border: #8b5cf6;
+}
+
+:is(.btn, .button-tint).btn-accent {
+	--button-bg: #f0fdfa;
+	--button-hover: #ccfbf1;
+	--button-active: #99f6e4;
+	--button-text: #115e59;
+	--button-border: #0d9488;
+}
+
+:is(.btn, .button-tint).btn-info {
+	--button-bg: #f0f9ff;
+	--button-hover: #e0f2fe;
+	--button-active: #bae6fd;
+	--button-text: #075985;
+	--button-border: #0284c7;
+}
+
+:is(.btn, .button-tint).btn-success {
+	--button-bg: #f0fdf4;
+	--button-hover: #dcfce7;
+	--button-active: #bbf7d0;
+	--button-text: #166534;
+	--button-border: #16a34a;
+}
+
+:is(.btn, .button-tint).btn-warning {
+	--button-bg: #fffbeb;
+	--button-hover: #fef3c7;
+	--button-active: #fde68a;
+	--button-text: #92400e;
+	--button-border: #b45309;
+}
+
+:is(.btn, .button-tint).btn-error {
+	--button-bg: #fef2f2;
+	--button-hover: #fee2e2;
+	--button-active: #fecaca;
+	--button-text: #991b1b;
+	--button-border: #dc2626;
+}
+
+@media (hover: hover) {
+	:is(.btn.btn, .button-tint.button-tint):where(
+			:not(:disabled, [disabled], .btn-disabled, [aria-disabled='true'])
+		):hover {
+		background-color: var(--button-hover);
+		color: var(--button-text);
+		border-color: var(--button-border);
+	}
+}
+
+:is(.btn.btn, .button-tint.button-tint):where(
+		:not(:disabled, [disabled], .btn-disabled, [aria-disabled='true'])
+	):is(
+		:active,
+		.btn-active,
+		[aria-pressed='true'],
+		[aria-selected='true'],
+		[aria-current],
+		:checked
+	) {
+	background-color: var(--button-active);
+	color: var(--button-text);
+	border-color: var(--button-border);
+}
+
+:is(.btn.btn, .button-tint.button-tint):focus-visible {
+	outline: 2px solid var(--button-text);
+	outline-offset: 2px;
+}
+
+:is(.btn.btn, .button-tint.button-tint):is(
+	:disabled,
+	[disabled],
+	.btn-disabled,
+	[aria-disabled='true']
+) {
+	background-color: #f1f5f9;
+	color: #475569;
+	border-color: #cbd5e1;
+	opacity: 1;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
 @layer components {
 	/* Compact DaisyUI selects otherwise inherit a line height as tall as the control. */
 	select.select {

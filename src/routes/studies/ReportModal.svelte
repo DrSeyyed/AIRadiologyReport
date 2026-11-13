@@ -238,7 +238,7 @@
       <div role="tablist" class="tabs tabs-boxed mb-3">
         <button
           role="tab"
-          class="tab {state.tab === 'write' ? 'tab-active' : ''}"
+          class="tab button-tint btn-primary {state.tab === 'write' ? 'tab-active' : ''}"
           aria-selected={state.tab === 'write'}
           disabled={!editable || state.saving}
           onclick={() => (state.tab = 'write')}
@@ -248,7 +248,7 @@
         </button>
         <button
           role="tab"
-          class="tab {state.tab === 'preview' ? 'tab-active' : ''}"
+          class="tab button-tint btn-primary {state.tab === 'preview' ? 'tab-active' : ''}"
           aria-selected={state.tab === 'preview'}
           onclick={() => (state.tab = 'preview')}
           type="button"

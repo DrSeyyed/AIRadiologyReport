@@ -78,8 +78,8 @@
                   <pre class="max-w-[36ch] whitespace-pre-wrap line-clamp-3">{row.text}</pre>
                 </td>
                 <td class="p-2 whitespace-nowrap">
-                  <button class="border rounded px-2 py-1 text-xs mr-1 hover:bg-gray-100" disabled={editorBusy} onclick={() => editRow(row)}>Edit</button>
-                  {#if data.user.role === 'admin'}<button class="border rounded px-2 py-1 text-xs hover:bg-red-50" disabled={editorBusy} onclick={() => deleteRow(row)}>Delete</button>{/if}
+                  <button class="button-tint border rounded px-2 py-1 text-xs mr-1" disabled={editorBusy} onclick={() => editRow(row)}>Edit</button>
+                  {#if data.user.role === 'admin'}<button class="button-tint btn-error border rounded px-2 py-1 text-xs" disabled={editorBusy} onclick={() => deleteRow(row)}>Delete</button>{/if}
                 </td>
               </tr>
             {/each}
