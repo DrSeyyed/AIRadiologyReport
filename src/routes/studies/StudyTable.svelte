@@ -298,9 +298,9 @@
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
 	.study-table { width: 100%; min-width: 66rem; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
-	.patient-column { width: 24%; }
+	.patient-column { width: 28%; }
 	.examination-column { width: 16%; }
-	.team-column { width: 22%; }
+	.team-column { width: 18%; }
 	.reporting-column { width: 15%; }
 	.actions-column { width: 23%; }
 	.study-table th { vertical-align: top; padding: 0.875rem 1rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }

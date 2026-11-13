@@ -96,14 +96,14 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
 });
 
-test('narrower examination and reporting columns retain compact, wrapping count boxes', () => {
+test('compact examination, review team and reporting columns retain balanced widths and wrapping count boxes', () => {
 	const source = read('StudyTable.svelte');
 	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
 	const rules = [];
 	postcss.parse(css.code).walkRules(rule => rules.push(rule));
 	const styles = selector => new Map(rules.find(rule => selector.test(rule.selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
 	const widths = ['patient', 'examination', 'team', 'reporting', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
-	assert.deepEqual(widths, [24, 16, 22, 15, 23]);
+	assert.deepEqual(widths, [28, 16, 18, 15, 23]);
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
 	const metrics = styles(/^\.report-metrics\.[^ >]+$/);
 	assert.equal(metrics.get('display'), 'flex');
