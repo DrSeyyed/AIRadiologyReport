@@ -46,13 +46,10 @@
 	}
 </script>
 
-<section class="w-full min-w-0 max-w-3xl space-y-4">
+<section class="w-full min-w-0 max-w-5xl space-y-6">
 	<h1 class="text-2xl font-semibold">Integrations</h1>
 	<p class="text-sm">Manage encrypted provider keys and Telegram settings. Secrets are never displayed; blank secret fields keep existing values.</p>
-	<details class="rounded-box border bg-base-100 p-4 text-sm">
-		<summary class="cursor-pointer font-medium">Private settings and restore behavior</summary>
-		<p class="mt-3">Settings are stored separately from restored databases in <code>config/settings.json</code> (the private <code>/app/config</code> volume in Docker). Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve this private configuration volume and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>
-	</details>
+
 	{#if data.pendingRestore?.pending}
 		<div class="alert alert-warning" role="status"><div>
 			<p class="font-semibold">Credential restore pending</p>
@@ -74,29 +71,14 @@
 	{:else if form?.success}<div class="alert alert-success" role="status">Operation completed.</div>{/if}
 	{#if form?.webhookError}<div class="alert alert-warning" role="alert">{form.webhookError}</div>{/if}
 
-	{#if Object.values(fields).some((field) => field.source === 'environment' && field.configured)}
-		<details class="rounded-box border bg-base-100 p-4">
-			<summary class="cursor-pointer font-medium">Import legacy environment settings</summary>
-		<form method="POST" action="?/importEnvironment" use:enhance={enhanceSettings} class="mt-4">
-			<fieldset disabled={telegramDisabled} class="min-w-0 space-y-4">
-				<legend class="text-lg font-semibold">Import legacy environment settings</legend>
-				<p class="text-sm">Copy configured legacy environment credentials into encrypted administrator settings without retyping or displaying secrets. After a successful import, legacy API environment variables can be removed.</p>
-				{#if data.maintenanceEnabled}<p class="text-sm">Import is unavailable during site maintenance.</p>{/if}
-				<label class="form-control min-w-0">
-					<span class="label-text">Type IMPORT SETTINGS exactly</span>
-					<input name="confirmation" required pattern="IMPORT SETTINGS" class="input input-bordered w-full" autocomplete="off" spellcheck="false" />
-				</label>
-				<button type="submit" class="btn btn-primary">Import environment settings</button>
-			</fieldset>
-		</form>
-		</details>
-	{/if}
 
+	<section aria-labelledby="integration-providers-heading" class="space-y-3">
+	<h2 id="integration-providers-heading" class="text-lg font-semibold">AI providers</h2>
 	<form method="POST" action="?/saveProviders" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
 		<fieldset disabled={pending || !data.settings.encryptionConfigured} class="min-w-0 space-y-4">
-			<legend class="text-lg font-semibold">AI providers</legend>
+			<legend class="sr-only">Provider keys</legend>
 			<p id="provider-help" class="text-sm">Blank keeps the saved key. Clear disables the provider and its legacy fallback; do not also enter a replacement.</p>
-			<div class="grid gap-4">
+			<div class="grid gap-4 md:grid-cols-3">
 			{#each providers as provider (provider.key)}
 				<div class="rounded-box space-y-2 border border-base-300 p-3">
 					<label class="form-control min-w-0">
@@ -115,12 +97,16 @@
 		</fieldset>
 	</form>
 
+	</section>
+	<section aria-labelledby="integration-telegram-heading" class="space-y-3">
+	<h2 id="integration-telegram-heading" class="text-lg font-semibold">Telegram</h2>
 	{#if data.maintenanceEnabled}
 		<div class="alert alert-warning" role="alert">Telegram changes and webhook registration or removal are unavailable during site maintenance. Provider keys remain editable.</div>
 	{/if}
-	<form method="POST" action="?/saveTelegram" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
+	<div class="grid items-start gap-4 lg:grid-cols-3">
+	<form method="POST" action="?/saveTelegram" use:enhance={enhanceSettings} class="card border bg-base-100 p-4 lg:col-span-2">
 		<fieldset disabled={telegramDisabled} class="min-w-0 space-y-4">
-			<legend class="text-lg font-semibold">Telegram</legend>
+			<legend class="text-lg font-semibold">Bot &amp; connection</legend>
 			<p class="text-sm">Saving a configured bot and website URL automatically registers the webhook.</p>
 			<div class="rounded-box border border-warning p-3 text-sm" role="note">Retiring a bot? Remove its webhook below before changing tokens. Clearing the website URL does not remove the remote webhook.</div>
 			<label class="form-control min-w-0">
@@ -142,6 +128,8 @@
 				<input name="TELEGRAM_CHAT_ID" value={fields.TELEGRAM_CHAT_ID.value ?? ''} class="input input-bordered w-full" autocomplete="off" spellcheck="false" aria-describedby="chat-status group-help" />
 			</label>
 			<p id="group-help" class="text-sm">For maintenance controls, the bot must be a group administrator with permission to restrict members.</p>
+			<section aria-labelledby="integration-endpoint-heading" class="space-y-4 border-t border-base-300 pt-4">
+			<h3 id="integration-endpoint-heading" class="font-semibold">Webhook endpoint &amp; authentication</h3>
 			<label class="form-control min-w-0">
 				<span class="label-text">Website URL (public HTTPS origin)</span>
 				<span id="url-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_WEBHOOK_BASE_URL')}</span>
@@ -161,12 +149,13 @@
 				<input type="checkbox" name="rotateWebhookSecret" bind:checked={rotateWebhookSecret} disabled={hasWebhookSecret} class="checkbox shrink-0" />
 				<span class="text-sm">Generate a new random webhook secret</span>
 			</label>
+			</section>
 			<button type="submit" class="btn btn-primary">Save Telegram settings</button>
 		</fieldset>
 	</form>
 
-	<div class="card space-y-4 border bg-base-100 p-4">
-		<h2 class="text-lg font-semibold">Webhook</h2>
+	<section aria-labelledby="integration-webhook-heading" class="card space-y-4 border bg-base-100 p-4">
+		<h3 id="integration-webhook-heading" class="text-lg font-semibold">Webhook status</h3>
 		<dl class="space-y-2" aria-live="polite">
 			<div><dt class="font-semibold">State</dt><dd>{data.webhook.state}</dd></div>
 			{#if data.webhook.url}<div><dt class="font-semibold">URL</dt><dd class="break-all">{data.webhook.url}</dd></div>{/if}
@@ -189,6 +178,33 @@
 			</fieldset>
 		</form>
 		</details>
+	</section>
 	</div>
+	</section>
 	{#if pending}<p role="status">Updating integration settings…</p>{/if}
+	<section aria-labelledby="integration-guidance-heading" class="space-y-3 border-t border-base-300 pt-4">
+	<h2 id="integration-guidance-heading" class="text-lg font-semibold">Configuration &amp; recovery guidance</h2>
+	<details class="rounded-box border bg-base-100 p-4 text-sm">
+		<summary class="cursor-pointer font-medium">Private settings and restore behavior</summary>
+		<p class="mt-3">Settings are stored separately from restored databases in <code>config/settings.json</code> (the private <code>/app/config</code> volume in Docker). Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve this private configuration volume and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>
+	</details>
+	{#if Object.values(fields).some((field) => field.source === 'environment' && field.configured)}
+		<details class="rounded-box border bg-base-100 p-4">
+			<summary class="cursor-pointer font-medium">Import legacy environment settings</summary>
+		<form method="POST" action="?/importEnvironment" use:enhance={enhanceSettings} class="mt-4">
+			<fieldset disabled={telegramDisabled} class="min-w-0 space-y-4">
+				<legend class="text-lg font-semibold">Import legacy environment settings</legend>
+				<p class="text-sm">Copy configured legacy environment credentials into encrypted administrator settings without retyping or displaying secrets. After a successful import, legacy API environment variables can be removed.</p>
+				{#if data.maintenanceEnabled}<p class="text-sm">Import is unavailable during site maintenance.</p>{/if}
+				<label class="form-control min-w-0">
+					<span class="label-text">Type IMPORT SETTINGS exactly</span>
+					<input name="confirmation" required pattern="IMPORT SETTINGS" class="input input-bordered w-full" autocomplete="off" spellcheck="false" />
+				</label>
+				<button type="submit" class="btn btn-primary">Import environment settings</button>
+			</fieldset>
+		</form>
+		</details>
+	{/if}
+
+	</section>
 </section>

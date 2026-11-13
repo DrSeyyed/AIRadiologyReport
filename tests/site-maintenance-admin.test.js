@@ -267,7 +267,10 @@ async function component(source, filename) {
 					'export function canManageTemplates(user){return user?.role === "admin";}',
 				'$lib/page-title.js': 'export function pageTitle(){return "Maintenance";}'
 			};
-			return `from ${JSON.stringify(specifier in stubs ? moduleUrl(stubs[specifier]) : import.meta.resolve(specifier))}`;
+			const target = specifier === '$lib/admin-navigation.js'
+				? new URL('../src/lib/admin-navigation.js', import.meta.url).href
+				: specifier in stubs ? moduleUrl(stubs[specifier]) : import.meta.resolve(specifier);
+			return `from ${JSON.stringify(target)}`;
 		}
 	);
 	return (await import(moduleUrl(compiled))).default;
@@ -302,6 +305,11 @@ test('maintenance UI compiles and SSR renders explicit confirmations, acknowledg
 		'startup temporarily blocks everyone'
 	])
 		assert.ok(body.includes(text), text);
+	assert.ok(body.indexOf('id="maintenance-status-heading"') < body.indexOf('id="maintenance-actions-heading"'));
+	assert.ok(body.indexOf('id="maintenance-actions-heading"') < body.indexOf('What maintenance pauses and preserves'));
+	const visibleContent = body.replace(/<details\b[\s\S]*?<\/details>/g, '');
+	for (const text of ['may remain closed', 'ENABLE MAINTENANCE', 'DISABLE MAINTENANCE', 'name="acknowledgement"'])
+		assert.ok(visibleContent.includes(text), text);
 	assert.match(body, /Current status/);
 	assert.match(body, /<summary[^>]*>What maintenance pauses and preserves<\/summary>/);
 	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);
@@ -334,6 +342,9 @@ test('maintenance pending restore keeps discard safety and reopening controls vi
 	for (const text of ['Credential restore pending', 'Waiting settings: OpenAI API key', 'Restore order and recovery', 'DISCARD CREDENTIAL RESTORE', 'does not undo credentials already applied', 'leaves maintenance enabled'])
 		assert.ok(body.includes(text), text);
 	assert.match(body, /action="\?\/discardIntegrationRestore"/);
+	assert.ok(body.indexOf('id="maintenance-status-heading"') < body.indexOf('Credential restore pending'));
+	assert.ok(body.indexOf('id="maintenance-actions-heading"') < body.indexOf('id="maintenance-recovery-heading"'));
+	assert.match(body.replace(/<details\b[\s\S]*?<\/details>/g, ''), /DISCARD CREDENTIAL RESTORE/);
 	assert.equal((body.match(/name="confirmation"/g) ?? []).length, 3);
 	assert.equal((body.match(/name="acknowledgement"/g) ?? []).length, 3);
 	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);

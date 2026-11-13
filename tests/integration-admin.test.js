@@ -59,6 +59,17 @@ test('integration UI compiles with collapsed advanced controls and preserves pri
 	assert.doesNotMatch(body, /<details[^>]*\sopen(?:\s|>)/);
 	for (const text of ['Private settings and restore behavior', 'Emergency bot replacement', 'REMOVE WEBHOOK', 'IMPORT SETTINGS', 'Credential restore pending', 'Waiting settings: OpenAI API key', 'pending restore will replace selected fields', 'Clear OpenAI API key'])
 		assert.ok(body.includes(text), text);
+	for (const heading of ['integration-providers-heading', 'integration-telegram-heading', 'integration-webhook-heading', 'integration-guidance-heading']) {
+		assert.match(body, new RegExp(`<section[^>]*aria-labelledby="${heading}"`));
+		assert.match(body, new RegExp(`id="${heading}"`));
+	}
+	assert.ok(body.indexOf('id="integration-providers-heading"') < body.indexOf('id="integration-telegram-heading"'));
+	assert.ok(body.indexOf('id="integration-telegram-heading"') < body.indexOf('id="integration-guidance-heading"'));
+	const visibleContent = body.replace(/<details\b[\s\S]*?<\/details>/g, '');
+	for (const text of ['Webhook status', 'Retiring a bot?', 'Clear OpenAI API key', 'pending restore will replace selected fields'])
+		assert.ok(visibleContent.includes(text), text);
+	const errors = render(Page, { props: { data: { ...data, webhook: { state: 'error', error: 'Webhook needs retry' } }, form: { error: 'Save failed', webhookError: 'Registration failed' } } }).body.replace(/<details\b[\s\S]*?<\/details>/g, '');
+	for (const text of ['Save failed', 'Registration failed', 'Webhook needs retry']) assert.ok(errors.includes(text), text);
 	const pendingError = render(Page, { props: { data: { ...data, pendingRestore: { pending: true, error: true }, maintenanceEnabled: true } } }).body;
 	assert.match(pendingError, /Pending restore details are unavailable/);
 	assert.match(pendingError, /Provider keys remain editable/);

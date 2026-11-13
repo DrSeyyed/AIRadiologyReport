@@ -131,7 +131,10 @@
 			<p>Selected integration settings are waiting for an administrator to reopen the website in <a class="link" href={resolve('/admin/maintenance')}>Admin → Maintenance</a>, after the original Telegram group permissions are restored. Current settings remain active until then.</p>
 			{#if data.integrationRestore.error}<p>Pending restore details are unavailable. Check the server encryption configuration before retrying.</p>
 			{:else if pendingIntegrationLabels.length}<p>Waiting settings: {pendingIntegrationLabels.join(', ')}.</p>{/if}
-			<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+			<details class="mt-2 text-sm">
+				<summary class="cursor-pointer font-medium">Restore order and recovery</summary>
+				<p>Complete Telegram settings automatically register the webhook. If applying settings or registration fails, maintenance stays enabled and the restore stays pending; correct the problem and retry reopening.</p>
+			</details>
 		</div></div>
 	{/if}
 	{#if data.activation?.state && !['idle', 'completed'].includes(data.activation.state)}
@@ -150,7 +153,8 @@
 	<form method="POST" action="?/save&tab=settings" use:enhance={settingsEnhance} class="card space-y-4 bg-base-100 p-6 shadow">
 		{#if settingsRequestError}<div class="alert alert-error" role="alert">{settingsRequestError}</div>{/if}
 		<fieldset disabled={data.status.resetActive} class="contents">
-		<h3 class="text-lg font-semibold">SSH/SFTP connection</h3>
+		<section aria-labelledby="storage-connection-heading" class="space-y-4">
+		<h3 id="storage-connection-heading" class="text-lg font-semibold">SSH/SFTP connection</h3>
 		<p class="text-sm text-base-content/70">Use a dedicated SSH/SFTP account and verify its fingerprint independently. Leave the password blank to keep the saved one.</p>
 		<div class="grid gap-4 md:grid-cols-2">
 			<label class="form-control">Hostname or IP<input class="input input-bordered" name="host" bind:value={settings.host} autocomplete="off" maxlength="512" /></label>
@@ -168,7 +172,9 @@
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<p>Replace the account and path as appropriate; the path must match the remote directory above. Protect this directory from other users. Do not edit or gzip immutable encrypted objects. Storage-side checks hash encrypted bytes; application verification also authenticates and checks plaintext before any local audio eviction.</p>
 		</details>
-		<h3 class="text-lg font-semibold">Transfer timeouts</h3>
+		</section>
+		<section aria-labelledby="storage-timeouts-heading" class="space-y-4 border-t border-base-300 pt-6">
+		<h3 id="storage-timeouts-heading" class="text-lg font-semibold">Transfer timeouts</h3>
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each timeoutFields as [name, label] (name)}
 				<label class="form-control">{label}<input class="input input-bordered" type="number" {name} min="1" max="600" step="1" bind:value={settings[name]} required /></label>
@@ -179,7 +185,9 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<summary class="cursor-pointer font-medium">How timeouts work</summary>
 			<p class="mt-2 text-base-content/70">Uploads and download reads use inactivity limits. Storage-side hash/link commands use the verification timeout as a hard deadline, not an inactivity limit. New settings apply to subsequent jobs; changing an in-use destination requires migration.</p>
 		</details>
-		<h3 class="text-lg font-semibold">Services, schedule and retention</h3>
+		</section>
+		<section aria-labelledby="storage-schedule-heading" class="space-y-4 border-t border-base-300 pt-6">
+		<h3 id="storage-schedule-heading" class="text-lg font-semibold">Services, schedule and retention</h3>
 		<details class="text-sm"><summary class="cursor-pointer font-medium">Schedule help</summary><p class="text-base-content/70">Automatic file sync and eligible audio eviction checks: every 1–1440 minutes (default 1), in aligned time windows. Pending batches continue on the short worker cycle (normally 15 seconds); manual jobs do not wait for this interval. Full backup UTC hours are independent.</p></details>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="enabled" bind:checked={settings.enabled} /> Enable background storage jobs</label>
 		<label class="flex items-center gap-3"><input type="checkbox" class="checkbox" name="archiveEnabled" bind:checked={settings.archiveEnabled} /> Allow eviction of eligible local audio after verified synchronization and backup</label>
@@ -199,12 +207,26 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<p>Full backups capture the database, managed files and server configuration. Missed slots coalesce into the latest due backup. Integrity audits run in batches (default every 7 days).</p>
 			<p>Retention removes recovery manifests, not shared objects; it does not fully reclaim storage space.</p>
 		</details>
-		<div><button class="btn btn-primary" type="submit" disabled={!data.keyConfigured || data.status.resetActive}>Save settings</button></div>
+		</section>
+		<div class="border-t border-base-300 pt-4"><button class="btn btn-primary" type="submit" disabled={!data.keyConfigured || data.status.resetActive}>Save settings</button></div>
 		</fieldset>
 	</form>
 	</div>
 	<div id="storage-panel-overview" role="tabpanel" aria-labelledby="storage-tab-overview" tabindex="0" hidden={activeTab !== 'overview'} class="card space-y-4 bg-base-100 p-6 shadow">
-		<h3 class="text-lg font-semibold">Overview &amp; jobs</h3>
+		<section aria-labelledby="storage-status-heading" class="space-y-4">
+			<h3 id="storage-status-heading" class="text-lg font-semibold">Storage status</h3>
+			<dl class="grid gap-4 rounded-box bg-base-200 p-4 sm:grid-cols-3">
+				<div><dt class="text-sm text-base-content/70">Audio awaiting synchronization</dt><dd class="text-2xl font-semibold">{data.status.backlog}</dd></div>
+				<div><dt class="text-sm text-base-content/70">Archived audio</dt><dd class="text-2xl font-semibold">{data.status.archived.count}</dd><dd class="text-sm">{(data.status.archived.bytes / 1048576).toFixed(1)} MB</dd></div>
+				<div><dt class="text-sm text-base-content/70">Evicted from SSD</dt><dd class="text-2xl font-semibold">{data.status.archived.evicted}</dd></div>
+			</dl>
+			<p class="text-sm">Background storage jobs: <strong>{data.settings.enabled ? 'Enabled' : 'Paused'}</strong>. Scheduled backups: <strong>{data.settings.backupsEnabled ? 'Enabled' : 'Disabled'}</strong>.</p>
+			{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
+			{#each data.status.last as item (item.kind)}<p>Last successful {item.kind}: {time(item.at)}</p>{/each}
+			<form method="GET"><button class="btn btn-sm" type="submit">Refresh status</button></form>
+		</section>
+		<section aria-labelledby="storage-jobs-heading" class="space-y-4 border-t border-base-300 pt-6">
+			<h3 id="storage-jobs-heading" class="text-lg font-semibold">Run storage jobs</h3>
 		<p class="text-sm text-base-content/70">Use the saved connection to sync files or create a backup.</p>
 		<form method="POST" action="?/job&tab=overview" use:enhance class="flex flex-wrap gap-3">
 			<button class="btn btn-outline" name="kind" value="test" disabled={data.status.resetActive}>Test saved connection</button>
@@ -219,10 +241,8 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			<button class="btn btn-warning" name="confirmation" value="pause">Pause &amp; cancel all</button>
 		</form>
 		<details class="text-sm"><summary class="cursor-pointer font-medium">Pause help</summary><p>Pause disables schedules and requests cancellation. Existing audio, backups and prepared copies are kept.</p></details>
-		<p>Audio awaiting synchronization: {data.status.backlog}. Archived: {data.status.archived.count} audio files ({(data.status.archived.bytes / 1048576).toFixed(1)} MB); evicted from SSD: {data.status.archived.evicted}.</p>
-		{#if data.settings.enabled && data.settings.backupsEnabled}<p>Next scheduled full backup: {time(data.status.nextFull)}. Due jobs may already be queued.</p>{/if}
-		{#each data.status.last as item (item.kind)}<p>Last successful {item.kind}: {time(item.at)}</p>{/each}
-		<form method="GET"><button class="btn btn-sm" type="submit">Refresh status</button></form>
+
+		</section>
 		{@render jobLog()}
 	</div>
 	<div id="storage-panel-restore" role="tabpanel" aria-labelledby="storage-tab-restore" tabindex="0" hidden={activeTab !== 'restore'} class="card space-y-4 bg-base-100 p-6 shadow">
@@ -276,13 +296,18 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 		<h3 class="text-lg font-semibold">Storage maintenance</h3>
 		<p class="text-sm text-base-content/70">Backup deletion is beside the recovery-point list in Backups &amp; restore.</p>
 		<a class="btn btn-outline w-fit" href={resolve('/admin/storage?tab=restore')} onclick={(event) => tabClick(event, 'restore')}>Delete backups</a>
+		<section aria-labelledby="storage-log-heading" class="space-y-3 rounded-box border border-base-300 p-4">
+		<h4 id="storage-log-heading" class="font-semibold">Finished job history</h4>
 		<form method="POST" action="?/clearLog&tab=maintenance" use:enhance class="space-y-3">
 			<p class="text-sm text-base-content/70">Hide finished jobs only. Active jobs and pending approved restores remain visible; safety metadata, audio and backups are kept.</p>
 			<button class="btn btn-outline" name="confirmation" value="clear">Clear finished log</button>
 		</form>
+		</section>
+		<section aria-labelledby="storage-reset-heading" class="space-y-4 rounded-box border border-error p-4">
+		<h4 id="storage-reset-heading" class="font-semibold">Reset storage</h4>
 		<div class="alert alert-warning">
 			<div>
-				<h4 class="font-semibold">Reset storage permanently removes remote archives and backups</h4>
+				<p class="font-semibold">Reset storage permanently removes remote archives and backups</p>
 				<p>Pause jobs and wait for cancellation first. Allow free SSD space for all archived audio and temporary downloads.</p>
 				<p>Audio is recovered and verified locally before the app's remote <code>audio/</code>, <code>files/</code> and <code>backups/</code> are deleted. <strong>Remote backups are permanently lost.</strong></p>
 				<details class="mt-2 text-sm">
@@ -298,12 +323,13 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 				<button class="btn btn-error" type="submit" disabled={data.status.resetActive || !data.keyConfigured || !data.passwordConfigured}>Reset storage</button>
 			</fieldset>
 		</form>
+		</section>
 	</div>
 </div>
 
 {#snippet backupDeletion()}
-	<div class="space-y-3 border-t border-base-300 pt-4">
-		<h4 class="font-semibold">Delete selected recovery points</h4>
+	<section aria-labelledby="storage-delete-heading" class="space-y-3 rounded-box border border-error p-4">
+		<h4 id="storage-delete-heading" class="font-semibold">Delete selected recovery points</h4>
 		<p class="text-sm text-base-content/70">Permanently removes selected backup indexes and manifests, including the newest if selected. Shared file objects and live data stay intact, so this may reclaim little space.</p>
 		{#if !recoveryPoints.length}<p class="text-sm">Load recovery points above to select backups. The delete button becomes available after loading a non-empty list.</p>{/if}
 		<form method="POST" action="?/deleteBackups&tab=restore" use:enhance={recoveryEnhance} class="space-y-3">
@@ -322,10 +348,11 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			</fieldset>
 		</form>
 		<p class="text-sm text-base-content/70">Deletion progress and cancellation appear below. Cancelling cannot undo completed deletions. Reload the list afterward. Restore preparation must finish or be cancelled first.</p>
-	</div>
+	</section>
 {/snippet}
 
 {#snippet jobLog(tab = 'overview', kinds = null)}
+	<section aria-label={tab === 'restore' ? 'Restore and backup deletion jobs' : 'Recent storage jobs'} class="space-y-4 border-t border-base-300 pt-6">
 		<h3 class="text-lg font-semibold">{tab === 'restore' ? 'Restore & backup deletion job log' : 'Job log'}</h3>
 		<p class="text-sm text-base-content/70">Status refreshes every 5 seconds while this page is visible.</p>
 		<details class="text-sm">
@@ -345,6 +372,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code></pre>
 			{/each}
 			</tbody></table>
 		</div>
+	</section>
 {/snippet}
 
 <style>

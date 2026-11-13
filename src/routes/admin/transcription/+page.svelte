@@ -19,7 +19,7 @@
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
 	<h1 class="text-2xl font-semibold">Transcription settings</h1>
-	<p id="model-help" class="text-sm">Used only in Transcribe, then generate mode.</p>
+	<p id="model-help" class="text-sm text-base-content/70">Used only in Transcribe, then generate mode.</p>
 	{#if data.recoveryWarning}<div class="alert alert-warning" role="alert">{data.recoveryWarning}</div>{/if}
 	{#if !data.configured.openai}
 		<div class="alert alert-warning" role="alert">OPENAI_API_KEY is missing. OpenAI report generation is unavailable.</div>
@@ -32,6 +32,8 @@
 	{/if}
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">Transcription settings saved.</div>{/if}
+	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
+	<h2 class="text-lg font-semibold">Provider and model</h2>
 	<form method="POST" use:enhance={() => async ({ result, update }) => {
 		await update({ reset: false });
 		if (result.type === 'success') selection = null;
@@ -56,9 +58,13 @@
 			<p class="text-sm text-warning">This model retires on February 26, 2027.</p>
 		{/if}
 		{#if isAudioModel({ provider, model })}
-			<p class="text-sm">Requires FFmpeg. The shared audio-model recording limit and substitute are configured in <a class="link" href={resolve('/admin/reporting')}>Reporting settings</a>.</p>
+			<details class="text-sm">
+				<summary class="cursor-pointer font-medium">Audio-model requirements</summary>
+				<p class="mt-2">Requires FFmpeg. The shared audio-model recording limit and substitute are configured in <a class="link" href={resolve('/admin/reporting')}>Reporting settings</a>.</p>
+			</details>
 		{/if}
 		<noscript><p>Enable JavaScript to change providers and update the available model options.</p></noscript>
 		<button class="btn btn-primary" type="submit">Save settings</button>
 	</form>
+	</div>
 </section>

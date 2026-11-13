@@ -182,18 +182,19 @@
   }
 </script>
 
-<section class="space-y-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-semibold">User Management</h2>
-    <a href={resolve('/studies')} class="text-sm underline">Back to Studies</a>
-  </div>
+<section class="min-w-0 space-y-6">
+  <header class="space-y-1">
+    <h1 class="text-2xl font-semibold">Users</h1>
+    <p class="text-sm text-base-content/70">Manage accounts, roles and Telegram onboarding links.</p>
+  </header>
 
   <p class="text-sm">Create administrators here; other roles require approved Telegram registration. <a class="link" href={resolve('/admin/telegram-registrations')}>Review Telegram registrations</a>.</p>
   {#if error}<div class="text-sm text-red-600 border border-red-200 rounded p-2" role="alert">{error}</div>{/if}
   {#if success}<div class="text-sm text-green-700 border border-green-200 rounded p-2" role="status">{success}</div>{/if}
 
-  <form class="grid gap-4 md:grid-cols-2 border rounded p-4" onsubmit={save}>
-    <h3 class="md:col-span-2 font-semibold">Create administrator</h3>
+  <details class="rounded-box border border-base-300 p-4">
+    <summary class="cursor-pointer font-semibold">Create administrator</summary>
+  <form class="mt-4 grid gap-4 md:grid-cols-2" onsubmit={save}>
     <label class="text-sm">
       <div class="mb-1">Full name</div>
       <input class="border rounded px-2 py-1 w-full" bind:value={form.full_name} required disabled={loading} />
@@ -212,6 +213,7 @@
       <button class="border rounded px-3 py-2" type="button" disabled={loading} onclick={() => { form.full_name = ''; form.username = ''; form.password = ''; }}>Reset</button>
     </div>
   </form>
+  </details>
 
   {#if editing}
     <form class="grid gap-4 md:grid-cols-2 border rounded p-4" onsubmit={(event) => save(event, true)}>
@@ -245,8 +247,9 @@
     </form>
   {/if}
 
-  <form class="space-y-3 border rounded p-4" onsubmit={saveWebsite}>
-    <h3 class="font-semibold">Telegram onboarding links</h3>
+  <details class="rounded-box border border-base-300 p-4">
+    <summary class="cursor-pointer font-semibold">Telegram onboarding links</summary>
+  <form class="mt-4 space-y-3" onsubmit={saveWebsite}>
     <p class="text-sm">Approval automatically queues the configured study group/channel invitation and the saved website link for the user's Telegram. Configure the website once; administrators can change it here.</p>
     <label class="text-sm block">
       Website link
@@ -255,6 +258,9 @@
     <button class="border rounded px-3 py-2 hover:bg-gray-100" type="submit" disabled={loading || (Boolean(websiteUrl.trim()) && !validWebsiteUrl)}>Save website link</button>
     <p class="text-sm">Saved website: {data.websiteUrl || 'Not configured — website links will not be sent.'} Changes apply to future queued messages; already queued links keep their original address.</p>
   </form>
+  </details>
+  <section class="min-w-0 space-y-4" aria-labelledby="user-accounts-heading">
+  <h2 id="user-accounts-heading" class="text-lg font-semibold">User accounts ({data.users.length})</h2>
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-sm" role="status">{selectedIds.length} selected</span>
     <button class="border rounded px-3 py-2 hover:bg-gray-100" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>
@@ -299,4 +305,5 @@
       </tbody>
     </table>
   </div>
+  </section>
 </section>

@@ -7,14 +7,20 @@
 </script>
 
 
-<section class="mx-auto min-w-0 max-w-4xl space-y-4">
+<section class="w-full min-w-0 max-w-4xl space-y-4">
 	<h1 class="text-2xl font-semibold">Manage body parts</h1>
-	<p>These entries populate the examination / body-part lists throughout the website. Include the contrast type when it distinguishes examinations.</p>
-	<p>After adding an entry, create a <a class="link link-primary" href={resolve('/admin/templates')}>report template</a> for each modality you use with it.</p>
+	<p class="text-sm text-base-content/70">Manage the examination and body-part lists used throughout the website.</p>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">{form.message}</div>{/if}
-	<div class="min-w-0 rounded-box border bg-base-100 p-4 space-y-3">
+	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
 		<h2 class="text-lg font-semibold">{selected ? 'Edit body part' : 'Add body part'}</h2>
+		<details class="text-sm">
+			<summary class="cursor-pointer font-medium">Naming and template guidance</summary>
+			<div class="mt-2 space-y-2">
+				<p>Include the contrast type when it distinguishes examinations.</p>
+				<p>After adding an entry, create a <a class="link link-primary" href={resolve('/admin/templates')}>report template</a> for each modality you use with it.</p>
+			</div>
+		</details>
 		{#if selected}<p class="text-sm">Changes update labels for existing recordings and templates. Saved report text and signatures are not modified.</p>{/if}
 		<form method="POST" action={selected ? '?/update' : '?/create'} use:enhance={() => {
 			busy = true;
@@ -40,8 +46,9 @@
 			</fieldset>
 		</form>
 	</div>
+	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
 	<h2 class="text-lg font-semibold">Existing body parts ({data.bodyParts.length})</h2>
-	<div class="min-w-0 overflow-x-auto rounded-box border">
+	<div class="min-w-0 overflow-x-auto">
 		<table class="table table-sm">
 			<thead><tr><th scope="col">Code</th><th scope="col">Name</th><th scope="col">Actions</th></tr></thead>
 			<tbody>
@@ -54,5 +61,6 @@
 				{:else}<tr><td colspan="3">No body parts yet. Add the first entry above.</td></tr>{/each}
 			</tbody>
 		</table>
+	</div>
 	</div>
 </section>

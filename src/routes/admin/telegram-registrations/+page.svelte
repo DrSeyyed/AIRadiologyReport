@@ -46,12 +46,18 @@
 </script>
 
 
-<section class="space-y-4">
-	<div class="flex flex-wrap items-center gap-4">
-		<h1 class="text-2xl font-semibold">Telegram registrations</h1>
-		<a class="btn btn-ghost" href={resolve('/admin/users')}>User management</a>
-	</div>
-	<p>Verify identity and role before approving. Approval automatically queues the study group/channel and saved website links for Telegram delivery. Configure the website link in User management.</p>
+<section class="min-w-0 space-y-4">
+	<header class="flex flex-wrap items-start justify-between gap-3">
+		<div class="space-y-1">
+			<h1 class="text-2xl font-semibold">Telegram registrations</h1>
+			<p class="text-sm text-base-content/70">Verify identity and role before approving an account request.</p>
+		</div>
+		<a class="btn btn-outline btn-sm" href={resolve('/admin/users')}>Manage users</a>
+	</header>
+	<details class="rounded-box border border-base-300 p-4 text-sm">
+		<summary class="cursor-pointer font-medium">Approval and onboarding links</summary>
+		<p class="mt-2">Approval creates the website account and queues the study group/channel and saved website links for Telegram delivery. Configure the website link under Users → Telegram onboarding links.</p>
+	</details>
 	{#if !data.telegramConfigured}
 		<div class="alert alert-warning" role="status">Telegram bot configuration required for registrations and notifications.</div>
 	{/if}
@@ -61,7 +67,7 @@
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
 	{#if success}<div class="alert alert-success" role="status">{success}</div>{/if}
 	{#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
-	<div class="flex flex-wrap items-end gap-4">
+	<div class="flex flex-wrap items-end justify-between gap-4 rounded-box border border-base-300 bg-base-200/40 p-4">
 		<label class="form-control">
 			<span class="label-text">Status ({pendingCount} pending)</span>
 			<select class="select select-bordered" bind:value={status} disabled={busy !== null}>

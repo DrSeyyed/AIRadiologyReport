@@ -654,6 +654,15 @@ test('pending reset UI disables settings, manual jobs and restore but retains ca
 			form: { recoveryPoints: [{ id: '1800000000-example', kind: 'full' }] }
 		}
 	});
+	for (const heading of ['storage-status-heading', 'storage-jobs-heading', 'storage-connection-heading', 'storage-timeouts-heading', 'storage-schedule-heading', 'storage-log-heading', 'storage-reset-heading', 'storage-delete-heading']) {
+		assert.match(body, new RegExp(`<section[^>]*aria-labelledby="${heading}"`));
+		assert.match(body, new RegExp(`id="${heading}"`));
+	}
+	assert.ok(body.indexOf('id="storage-status-heading"') < body.indexOf('id="storage-jobs-heading"'));
+	const visibleContent = body.replace(/<details\b[\s\S]*?<\/details>/g, '');
+	for (const risk of ['Restore replaces the live database', 'Remote backups are permanently lost', 'newest or only backups', 'Type RESET STORAGE', 'I approve live replacement'])
+		assert.ok(visibleContent.includes(risk), risk);
+	assert.match(visibleContent, /Background storage jobs: <strong>Paused<\/strong>/);
 	assert.match(body, /<fieldset disabled/);
 	for (const label of [
 		'Test saved connection',
@@ -1037,7 +1046,7 @@ test('storage status refresh skips hidden pages and overlapping requests, preser
 	assert.equal(cleared, true);
 });
 
-test('storage settings page compiles and navigation is admin-only', () => {
+test('storage settings page compiles and navigation is admin-only', async () => {
 	const page = readFileSync(
 		new URL('../src/routes/admin/storage/+page.svelte', import.meta.url),
 		'utf8'
@@ -1082,8 +1091,11 @@ test('storage settings page compiles and navigation is admin-only', () => {
 	assert.match(page, /result.type === 'success'\) settings.enabled = false/);
 	assert.match(page, /name="confirmation"[^>]*pattern="RESTORE" required/);
 	assert.match(page, /Restore live site/);
-	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
-	assert.match(layout, /data\.user\?\.role === 'admin'[\s\S]*\/admin\/storage/);
+	const { adminNavigation } = await import('../src/lib/admin-navigation.js');
+	for (const user of [null, { role: 'resident' }, { role: 'attending' }, { role: 'typist' }, { role: 'admin' }]) {
+		const links = adminNavigation(user).flatMap((group) => group.links);
+		assert.equal(links.some((link) => link.href === '/admin/storage'), user?.role === 'admin');
+	}
 });
 
 test('one-form restore validates approval and queues immutable automatic intent without activating', async (t) => {

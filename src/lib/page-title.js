@@ -6,7 +6,13 @@ const titles = new Map([
 	['/admin/reporting', 'Reporting settings'],
 	['/admin/storage', 'Storage & Backups'],
 	['/admin/body-parts', 'Manage body parts'],
-	['/admin/telegram-registrations', 'Telegram registrations']
+	['/admin/telegram-registrations', 'Telegram registrations'],
+	['/admin', 'Administration'],
+	['/admin/templates', 'Report templates'],
+	['/admin/users', 'Users'],
+	['/admin/integrations', 'Integrations'],
+	['/admin/maintenance', 'Site maintenance'],
+	['/admin/telegram-study-refresh', 'Telegram study message refresh']
 ]);
 
 export function pageTitle(routeId) {

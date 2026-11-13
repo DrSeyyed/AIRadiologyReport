@@ -37,25 +37,25 @@
 </script>
 
 
-<div class="max-w-5xl mx-auto p-4 space-y-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-semibold">Patient Management</h2>
+<section class="w-full min-w-0 max-w-5xl space-y-4">
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <h1 class="text-2xl font-semibold">Report templates</h1>
     <a href={resolve('/studies')} class="text-sm underline">Back to Studies</a>
   </div>
   
-  <h1 class="text-xl font-semibold">Report Templates</h1>
+  <p class="text-sm text-base-content/70">Manage shared report templates by modality and body part.</p>
 
   {#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
-  <div class="border rounded p-4 bg-base-100 space-y-3">
+  <div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
+    <h2 class="text-lg font-semibold">{selected ? 'Edit template' : 'Create template'}</h2>
     <button class="btn btn-sm btn-outline" type="button" disabled={editorBusy} onclick={resetForm}>New template</button>
     {#key editorVersion}
       <TemplateEditor modalities={data.modalities} examTypes={data.exam_types} initialModalityId={selected?.modality_id ?? ''} initialExamTypeId={selected?.exam_type_id ?? ''} onSaved={invalidateAll} onBusyChange={(value) => (editorBusy = value)} />
     {/key}
   </div>
 
-  <!-- List card -->
-  <div class="border rounded p-4 bg-white dark:bg-black">
-    <div class="mb-3 font-medium">Existing Templates</div>
+  <div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
+    <h2 class="text-lg font-semibold">Existing templates ({data.templates.length})</h2>
     {#if data.templates.length === 0}
       <div class="text-sm opacity-70">No templates yet.</div>
     {:else}
@@ -63,10 +63,10 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b">
-              <th class="text-left p-2">Modality</th>
-              <th class="text-left p-2">Exam Type</th>
-              <th class="text-left p-2">Preview</th>
-              <th class="text-left p-2">Actions</th>
+              <th scope="col" class="text-left p-2">Modality</th>
+              <th scope="col" class="text-left p-2">Exam Type</th>
+              <th scope="col" class="text-left p-2">Preview</th>
+              <th scope="col" class="text-left p-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -88,4 +88,4 @@
       </div>
     {/if}
   </div>
-</div>
+</section>

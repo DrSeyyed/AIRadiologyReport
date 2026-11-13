@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { compile } from 'svelte/compiler';
+import { adminNavigation } from '../src/lib/admin-navigation.js';
 import { DEFAULT_TRANSCRIPTION_SETTINGS, TRANSCRIPTION_PROVIDERS } from '../src/lib/transcription-models.js';
 
 const locals = { user: { id: 1, role: 'admin' } };
@@ -132,6 +133,10 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
+	assert.match(source, /<h1 class="text-2xl font-semibold">/);
+	assert.match(source, /<h2 class="text-lg font-semibold">Provider and model<\/h2>/);
+	assert.match(source, /<details class="text-sm">/);
+	assert.match(source, /<summary class="cursor-pointer font-medium">Audio-model requirements<\/summary>/);
 	assert.match(source, /use:enhance/);
 	assert.match(source, /name="provider"/);
 	assert.match(source, /name="model"/);
@@ -149,8 +154,11 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	assert.match(source, /href=\{resolve\('\/admin\/reporting'\)\}/);
 	assert.doesNotMatch(source, /10 minutes|per audio part/);
 	assert.doesNotMatch(source, /audio-model-help|Chat Completions|gpt-6\.1-sol|Compare transcription accuracy/);
-	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
-	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/transcription'\)\}[^]*?\{\/if\}/);
+	const links = (user) => adminNavigation(user).flatMap((group) => group.links);
+	assert.ok(links({ role: 'admin' }).some((link) => link.href === '/admin/transcription'));
+	for (const user of [null, { role: 'typist' }, { role: 'resident' }, { role: 'attending' }]) {
+		assert.ok(!links(user).some((link) => link.href === '/admin/transcription'));
+	}
 });
 
 test('enhanced save keeps the selected GPT Audio model visible and preserves drafts on failure', async () => {

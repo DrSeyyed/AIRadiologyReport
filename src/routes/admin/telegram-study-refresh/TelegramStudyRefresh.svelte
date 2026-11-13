@@ -63,7 +63,7 @@
 	});
 </script>
 
-<div class="min-w-0 max-w-full space-y-1">
+<div class="min-w-0 max-w-full space-y-3">
 	<button type="button" class="btn btn-outline h-auto min-h-10 max-w-full whitespace-normal" onclick={refresh}
 		disabled={sending || !status?.configured || Boolean(status?.pending)}>
 		{sending ? 'Queuing Telegram refresh…' : 'Refresh all Telegram study messages'}

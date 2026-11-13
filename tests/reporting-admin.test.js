@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { compile } from 'svelte/compiler';
+import { adminNavigation } from '../src/lib/admin-navigation.js';
 import { DEFAULT_REPORT_GENERATION_SETTINGS, REPORT_GENERATION_MODES } from '../src/lib/report-generation-models.js';
 import { DEFAULT_GPT_AUDIO_SETTINGS, GPT_AUDIO_SUBSTITUTES, MAX_GPT_AUDIO_LIMIT_SECONDS } from '../src/lib/gpt-audio-settings.js';
 import { AUDIO_MODEL_PROVIDERS } from '../src/lib/audio-models.js';
@@ -181,12 +182,19 @@ test('reporting UI stays concise, compiles accessibly and retains essential warn
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
+	assert.match(source, /<h1 class="text-2xl font-semibold">/);
+	assert.match(source, /<h2 class="text-lg font-semibold">Report generation<\/h2>/);
+	assert.match(source, /<details class="text-sm">/);
+	assert.match(source, /<summary class="cursor-pointer font-medium">How over-limit processing works<\/summary>/);
 	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="mode-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /each REPORT_GENERATION_MODES/, /mode === 'direct_audio'/, /Requires FFmpeg/, /shared audio-model total recording limit/, /OPENAI_API_KEY is missing/, /GEMINI_API_KEY is missing/, /name="provider"/, /name="model"/, /future processing only/, /Existing reports are unchanged/, /Review generated reports before signing/]) {
 		assert.match(source, pattern);
 	}
 	assert.doesNotMatch(source, /pipeline-help|direct-help|scope-help|fixed gpt-6\.1-sol|all ordered audio parts/);
-	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
-	assert.match(layout, /\{#if data\.user\?\.role === 'admin'\}[^]*?href=\{resolve\('\/admin\/reporting'\)\}[^]*?>Reporting settings<[^]*?\{\/if\}/);
+	const links = (user) => adminNavigation(user).flatMap((group) => group.links);
+	assert.ok(links({ role: 'admin' }).some((link) => link.href === '/admin/reporting'));
+	for (const user of [null, { role: 'typist' }, { role: 'resident' }, { role: 'attending' }]) {
+		assert.ok(!links(user).some((link) => link.href === '/admin/reporting'));
+	}
 });
 
 test('GPT Audio saves independently before mode validation and all dedicated choices reload', async (t) => {

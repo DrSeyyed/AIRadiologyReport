@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
-	import { canManageTemplates } from '$lib/template-permissions.js';
+	import { adminNavigation } from '$lib/admin-navigation.js';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/page-title.js';
 
@@ -76,21 +76,16 @@
 			{#if data.user}
 				<li><a href={resolve('/account')} class="link link-primary p-3">Account</a></li>
 			{/if}
-			{#if canManageTemplates(data.user)}
-				<li><a href={resolve('/admin/templates')} class="link link-primary p-3">Templates</a></li>
-			{/if}
 			{#if data.user?.role === 'admin'}
-				<li class="menu-title">Admin</li>
-				<li><a href={resolve('/admin/users')} class="link link-primary p-3">Users</a></li>
-				<li><a href={resolve('/admin/body-parts')} class="link link-primary p-3">Body parts</a></li>
-				<li><a href={resolve('/admin/pacs')} class="link link-primary p-3">PACS viewer settings</a></li>
-				<li><a href={resolve('/admin/transcription')} class="link link-primary p-3">Transcription settings</a></li>
-				<li><a href={resolve('/admin/reporting')} class="link link-primary p-3">Reporting settings</a></li>
-				<li><a href={resolve('/admin/storage')} class="link link-primary p-3">Storage &amp; Backups</a></li>
-				<li><a href={resolve('/admin/maintenance')} class="link link-primary p-3">Maintenance</a></li>
-				<li><a href={resolve('/admin/integrations')} class="link link-primary p-3">Integrations</a></li>
-				<li><a href={resolve('/admin/telegram-registrations')} class="link link-primary p-3">Telegram registrations</a></li>
+				<li class="menu-title">Administration</li>
+				<li><a href={resolve('/admin')} class="p-3" aria-current={page.route.id === '/admin' ? 'page' : undefined} onclick={closeNavigation}>Admin overview</a></li>
 			{/if}
+			{#each adminNavigation(data.user) as group (group.id)}
+				<li class="menu-title">{group.label}</li>
+				{#each group.links as link (link.href)}
+					<li><a href={resolve(link.href)} class="p-3" class:active={page.route.id === link.href} aria-current={page.route.id === link.href ? 'page' : undefined} onclick={closeNavigation}>{link.label}</a></li>
+				{/each}
+			{/each}
 		</ul>
 	</aside>
 </div>
