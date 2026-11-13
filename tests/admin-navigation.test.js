@@ -124,6 +124,37 @@ test('statistics drawer entry is active for supported non-admins without exposin
 	}
 });
 
+test('Studies and Account use standard menu styling and highlight only the current destination', async () => {
+	for (const route of ['/studies', '/account', '/statistics']) {
+		const Layout = await component('../src/routes/+layout.svelte', route);
+		const { body } = render(Layout, { props: { data: { user: { role: 'resident' } } } });
+		const drawer = body.slice(body.indexOf('<aside'));
+		assert.doesNotMatch(drawer, /class="[^"]*\blink(?:-primary)?\b/);
+		for (const href of ['/studies', '/account']) {
+			const anchor = drawer.match(new RegExp(`<a[^>]*href="${href}"[^>]*>`))?.[0];
+			assert.ok(anchor);
+			assert.match(anchor, /class="p-3(?: active)?"/);
+			if (route === href) assert.match(anchor, /class="p-3 active"[^>]*aria-current="page"/);
+			else assert.doesNotMatch(anchor, /aria-current=|\bactive\b/);
+		}
+	}
+	const source = read('../src/routes/+layout.svelte');
+	for (const href of ['/studies', '/account']) {
+		assert.ok(source.split('\n').some((line) => line.includes(`resolve('${href}')`) && line.includes('onclick={closeNavigation}')));
+	}
+});
+
+test('shared header stays above page content and below the navigation drawer', async () => {
+	const Layout = await component('../src/routes/+layout.svelte', '/studies');
+	for (const user of [null, { role: 'resident', full_name: 'Synthetic user' }, { role: 'admin' }]) {
+		const { body } = render(Layout, { props: { data: { user } } });
+		assert.match(body, /<header class="sticky top-0 z-30 [^"]*flex-wrap[^"]*bg-blue-100/);
+		assert.match(body, /<aside[^>]*class="drawer-side z-40"/);
+		assert.match(body, /aria-label="Open navigation"/);
+		assert.ok(body.includes(user ? 'Logout' : 'Login'));
+	}
+});
+
 test('admin panel drawer entry stays active on overview and account settings but not studies', async () => {
 	for (const route of ['/admin', '/admin/account', '/admin/statistics', '/studies', null]) {
 		const Layout = await component('../src/routes/+layout.svelte', route);

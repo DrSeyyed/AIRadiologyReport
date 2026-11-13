@@ -39,7 +39,7 @@
 <div class="drawer min-h-screen w-full min-w-0 bg-green-100">
 	<input id="main-drawer" type="checkbox" class="drawer-toggle" aria-label="Open navigation" bind:checked={drawerOpen} />
 	<div class="drawer-content flex min-h-screen min-w-0 flex-col">
-		<header class="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-blue-100 px-4 py-2">
+		<header class="sticky top-0 z-30 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-blue-100 px-4 py-2">
 			<div class="flex min-w-0 items-center gap-2">
 				<button type="button" bind:this={navigationButton} class="btn btn-primary drawer-button" aria-label="Open navigation"
 					aria-controls="main-navigation" aria-expanded={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)}>☰</button>
@@ -73,7 +73,7 @@
 					<span aria-hidden="true">✕</span>
 				</button>
 			</li>
-			<li><a href={resolve('/studies')} class="link link-primary p-3">Studies</a></li>
+			<li><a href={resolve('/studies')} class="p-3" class:active={page.route.id === '/studies'} aria-current={page.route.id === '/studies' ? 'page' : undefined} onclick={closeNavigation}>Studies</a></li>
 			{#if ['admin', 'resident', 'attending', 'typist'].includes(data.user?.role)}
 				<li><a href={resolve('/pathology-search')} class="p-3" class:active={page.route.id === '/pathology-search'} aria-current={page.route.id === '/pathology-search' ? 'page' : undefined} onclick={closeNavigation}>Pathology search</a></li>
 			{/if}
@@ -81,7 +81,7 @@
 				<li><a href={resolve('/admin')} class="p-3" class:active={adminPanelActive} aria-current={adminPanelActive ? (page.route.id === '/admin' ? 'page' : 'location') : undefined} onclick={closeNavigation}>Admin panel</a></li>
 			{:else}
 				{#if data.user}
-					<li><a href={resolve('/account')} class="link link-primary p-3" onclick={closeNavigation}>Account</a></li>
+					<li><a href={resolve('/account')} class="p-3" class:active={page.route.id === '/account'} aria-current={page.route.id === '/account' ? 'page' : undefined} onclick={closeNavigation}>Account</a></li>
 				{/if}
 				{#if ['resident', 'attending', 'typist'].includes(data.user?.role)}
 					<li><a href={resolve('/statistics')} class="p-3" class:active={page.route.id === '/statistics'} aria-current={page.route.id === '/statistics' ? 'page' : undefined} onclick={closeNavigation}>Statistics</a></li>

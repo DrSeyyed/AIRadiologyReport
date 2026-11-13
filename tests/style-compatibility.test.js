@@ -35,6 +35,10 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 	assert.ok(declarations('.min-w-0', 'min-width').includes('0px'));
 	assert.ok(declarations('.overflow-x-auto', 'overflow-x').includes('auto'));
 	assert.ok(declarations('main', 'overflow-wrap').includes('anywhere'));
+	assert.ok(declarations('.sticky', 'position').includes('sticky'));
+	assert.ok(declarations('.top-0', 'top').includes('0px'));
+	assert.ok(declarations('.z-30', 'z-index').includes('30'));
+	assert.ok(declarations('.z-40', 'z-index').includes('40'));
 	assert.deepEqual(declarations('select.select', 'line-height'), ['1.5']);
 	assert.deepEqual(declarations('select.select', 'padding-top'), ['0']);
 	assert.deepEqual(declarations('select.select', 'padding-bottom'), ['0']);
