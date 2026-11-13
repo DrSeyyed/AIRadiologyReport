@@ -82,7 +82,19 @@ test('filter fields have visible borders including searchable selectors, with fa
 	assert.match(filters, /class="study-filters flex flex-wrap items-end gap-3"/);
 	assert.match(filters, /\.study-filters :global\(\.input\),\s*\.study-filters :global\(\.select\)\s*\{\s*border: 1px solid #cbd5e1;/);
 	assert.match(filters, /\.study-filters :global\(\.input:focus\),\s*\.study-filters :global\(\.select:focus\)\s*\{\s*border-color: #6366f1;/);
-	assert.match(read('StudyTable.svelte'), /class="filter-content"><Filters \{data\} \/><\/div>\s*<\/details>\s*<div class="worklist-favorites"><FavoriteCategories \{data\} \/><\/div>/);
+	assert.match(read('StudyTable.svelte'), /class="worklist-section-content filter-content"><Filters \{data\} \/><\/div>\s*<\/details>\s*<div class="worklist-favorites"><FavoriteCategories \{data\} \/><\/div>/);
+});
+
+test('filters and favorite management use the same disclosure typography, borders and spacing', () => {
+	const table = read('StudyTable.svelte');
+	const favorites = read('FavoriteCategories.svelte');
+	assert.match(table, /<details class="worklist-section worklist-filters">/);
+	assert.match(favorites, /<details class="worklist-section">\s*<summary>/);
+	for (const source of [table, favorites]) assert.match(source, /class="worklist-section-content\b/);
+	assert.match(table, /:global\(\.worklist-section\)\s*\{ border-top: 1px solid #e2e8f0;/);
+	assert.match(table, /:global\(\.worklist-section > summary\)\s*\{ padding: 0\.875rem 1\.5rem; font-size: 0\.8125rem; font-weight: 600;/);
+	assert.doesNotMatch(favorites, /rounded-box border p-3|cursor-pointer font-semibold/);
+	for (const generate of ['client', 'server']) assert.deepEqual(compile(favorites, { filename: 'FavoriteCategories.svelte', generate }).warnings, []);
 });
 
 test('table preserves study information, sorting, workflow buttons, and role restrictions', async () => {

@@ -31,9 +31,9 @@
 	}
 </script>
 
-<details class="rounded-box border p-3">
-	<summary class="cursor-pointer font-semibold">My study favorites ({data.favorites.total}) — manage categories</summary>
-	<div class="space-y-3 mt-3">
+<details class="worklist-section">
+	<summary>My study favorites ({data.favorites.total}) — manage categories</summary>
+	<div class="worklist-section-content">
 		<p class="text-sm">Favorites and categories are private to your account. A study can belong to multiple categories. Names are optional; deleting a category keeps its studies in Favorites.</p>
 		<form class="flex flex-wrap items-end gap-2" onsubmit={(event) => { event.preventDefault(); change('POST', null, name); }}>
 			<label class="form-control"><span class="label-text">New category name (optional)</span><input class="input input-bordered input-sm" maxlength="100" bind:value={name} disabled={busy} /></label>

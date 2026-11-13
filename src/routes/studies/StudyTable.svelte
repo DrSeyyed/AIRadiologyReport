@@ -65,9 +65,9 @@
 			{#if !readOnly}<button class="btn btn-sm btn-primary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}
 		</div>
 	</header>
-	<details class="worklist-filters">
+	<details class="worklist-section worklist-filters">
 		<summary>Filters & sorting <span class="filter-caption">{hasFilters ? 'Filtered view' : 'All studies'} · Search, dates and reviewers</span></summary>
-		<div class="filter-content"><Filters {data} /></div>
+		<div class="worklist-section-content filter-content"><Filters {data} /></div>
 	</details>
 	<div class="worklist-favorites"><FavoriteCategories {data} /></div>
 	<nav class="status-navigation" aria-label="Study status filters">
@@ -234,11 +234,11 @@
 
 	.toolbar-caption { margin-top: 0.25rem; }
 	.toolbar-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-	.worklist-filters { border-top: 1px solid #e2e8f0; }
-	.worklist-filters > summary { padding: 0.875rem 1.5rem; font-size: 0.8125rem; font-weight: 600; }
+	.study-workspace :global(.worklist-section) { border-top: 1px solid #e2e8f0; }
+	.study-workspace :global(.worklist-section > summary) { padding: 0.875rem 1.5rem; font-size: 0.8125rem; font-weight: 600; cursor: pointer; }
+	.study-workspace :global(.worklist-section > summary:focus-visible) { outline: 2px solid #4f46e5; outline-offset: -2px; }
+	.study-workspace :global(.worklist-section-content) { display: grid; gap: 1rem; padding: 0.5rem 1.5rem 1.5rem; }
 	.filter-caption { margin-left: 0.75rem; font-weight: 400; }
-	.filter-content { display: grid; gap: 1rem; padding: 0.5rem 1.5rem 1.5rem; }
-	.worklist-favorites { border-top: 1px solid #e2e8f0; padding: 0.75rem 1.5rem; }
 
 	summary { cursor: pointer; }
 	summary:focus-visible,
@@ -326,10 +326,9 @@
 
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }
-		.worklist-favorites { padding: 0.75rem 1rem; }
-		.worklist-filters > summary { padding: 0.875rem 1rem; }
+		.study-workspace :global(.worklist-section > summary) { padding: 0.875rem 1rem; }
+		.study-workspace :global(.worklist-section-content) { padding: 0.5rem 1rem 1rem; }
 		.filter-caption { display: block; margin: 0.25rem 0 0; }
-		.filter-content { padding: 0.5rem 1rem 1rem; }
 		.status-navigation { padding: 0.75rem 1rem; }
 		.toolbar-caption { max-width: 17rem; }
 	}
