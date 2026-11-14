@@ -12,7 +12,7 @@
 
 <section class="w-full min-w-0 max-w-screen-xl space-y-6" aria-labelledby="statistics-heading">
 	<header class="space-y-2">
-		<h1 id="statistics-heading" class="text-2xl font-bold">Study statistics</h1>
+		<h1 id="statistics-heading" class="page-title">Study statistics</h1>
 		<p class="text-sm opacity-80">Aggregate study counts only; no patient details are shown.</p>
 	</header>
 
@@ -52,7 +52,7 @@
 			<p class="break-words"><strong>Exam dates:</strong> {statistics.range.label} · <span dir="ltr">{statistics.range.date_from}</span> to <span dir="ltr">{statistics.range.date_to}</span> (Jalali, inclusive; {statistics.range.timeZone})</p>
 		</div>
 		<section class="space-y-3" aria-labelledby="statistics-totals-heading">
-			<h2 id="statistics-totals-heading" class="text-lg font-semibold">Study totals</h2>
+			<h2 id="statistics-totals-heading" class="section-title">Study totals</h2>
 			<div class="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
 				{#each statisticsMetrics.filter((metric) => summaryKeys.includes(metric.key)) as metric (metric.key)}
 					<div class="min-w-0 rounded-box border border-base-300 bg-base-100 p-4">
@@ -63,7 +63,7 @@
 			</div>
 		</section>
 		<section class="space-y-3" aria-labelledby="statistics-status-heading">
-			<h2 id="statistics-status-heading" class="text-lg font-semibold">Reporting and signature status</h2>
+			<h2 id="statistics-status-heading" class="section-title">Reporting and signature status</h2>
 			<p class="text-sm opacity-80">Every count is unique studies, not recordings. Total includes active and disabled studies; all workflow counts below include active studies only and may overlap.</p>
 			<div class="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
 				{#each statisticsMetrics.filter((metric) => !summaryKeys.includes(metric.key)) as metric (metric.key)}

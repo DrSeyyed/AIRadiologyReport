@@ -49,7 +49,7 @@
 <section class="min-w-0 space-y-4">
 	<header class="flex flex-wrap items-start justify-between gap-3">
 		<div class="space-y-1">
-			<h1 class="text-2xl font-semibold">Telegram registrations</h1>
+			<h1 class="page-title">Telegram registrations</h1>
 			<p class="text-sm text-base-content/70">Verify identity and role before approving an account request.</p>
 		</div>
 		<a class="btn btn-outline btn-sm" href={resolve('/admin/users')}>Manage users</a>

@@ -5,12 +5,12 @@
 
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
-	<h1 class="text-2xl font-semibold">PACS viewer settings</h1>
+	<h1 class="page-title">PACS viewer settings</h1>
 	<p class="text-sm text-base-content/70">Configure how studies open in the PACS viewer.</p>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">PACS viewer settings saved.</div>{/if}
 	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-	<h2 class="text-lg font-semibold">Viewer connection</h2>
+	<h2 class="section-title">Viewer connection</h2>
 	<form method="POST" use:enhance class="space-y-4">
 		<label class="form-control">
 			<span class="label-text">Viewer URL template</span>

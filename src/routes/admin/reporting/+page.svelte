@@ -22,10 +22,10 @@
 </script>
 
 <section class="w-full min-w-0 max-w-3xl space-y-4 break-words">
-	<h1 class="text-2xl font-semibold">Reporting settings</h1>
+	<h1 class="page-title">Reporting settings</h1>
 	<p id="mode-help" class="text-sm text-base-content/70">Applies to future processing only. Existing reports are unchanged.</p>
 	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-	<h2 class="text-lg font-semibold">Report generation</h2>
+	<h2 class="section-title">Report generation</h2>
 	<p class="text-sm">Review generated reports before signing.</p>
 	{#if data.recoveryWarning}<div class="alert alert-warning" role="alert">{data.recoveryWarning}</div>{/if}
 	{#if (mode !== 'direct_audio' || provider === 'openai') && !data.configured.openai}
@@ -85,7 +85,7 @@
 	</div>
 
 	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-	<h2 class="text-lg font-semibold">Audio-model duration policy</h2>
+	<h2 class="section-title">Audio-model duration policy</h2>
 	<p id="audio-help" class="text-sm">Shared by GPT Audio, GPT Realtime and Gemini in both workflows.</p>
 	<details class="text-sm">
 		<summary class="cursor-pointer font-medium">How over-limit processing works</summary>

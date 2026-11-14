@@ -14,7 +14,7 @@
 <section class="pathology-workspace" aria-labelledby="pathology-heading">
 	<header>
 		<p class="eyebrow">Clinical workspace</p>
-		<h2 id="pathology-heading">Pathology search</h2>
+		<h2 id="pathology-heading" class="page-title">Pathology search</h2>
 		<p>Find report mentions using spelling variants, medical names and common abbreviations.</p>
 	</header>
 	<form method="GET" action={resolve('/pathology-search')} class="search-form">
@@ -48,7 +48,7 @@
 	</aside>
 	{#if data.validationError}<p class="validation-error" role="alert">{data.validationError}</p>{/if}
 	{#if data.search?.searched}
-		<div class="results-heading" role="status"><h3>{data.search.total} matching {data.search.total === 1 ? 'report' : 'reports'}</h3><p>{data.search.scanned - data.search.unavailable} searchable reports checked{data.filters.date_range !== 'all' ? ` · ${data.filters.date_from} to ${data.filters.date_to}` : ' · All examination dates'}</p></div>
+		<div class="results-heading" role="status"><h3 class="section-title">{data.search.total} matching {data.search.total === 1 ? 'report' : 'reports'}</h3><p>{data.search.scanned - data.search.unavailable} searchable reports checked{data.filters.date_range !== 'all' ? ` · ${data.filters.date_from} to ${data.filters.date_to}` : ' · All examination dates'}</p></div>
 		{#if data.search.unavailable}<p class="unavailable" role="status">{data.search.unavailable} report(s) could not be searched because their text was missing, empty, unreadable or larger than 1 MB. Results may be incomplete.</p>{/if}
 		<details class="expansions"><summary>Search vocabulary used</summary><ul>{#each data.search.expansions as group, index (index)}<li>{group.join(' / ')}</li>{/each}</ul></details>
 		<div class="results">
@@ -77,10 +77,9 @@
 </section>
 
 <style>
-	.pathology-workspace { max-width: 80rem; margin: 0 auto; min-width: 0; border: 1px solid #e2e8f0; border-radius: 0.875rem; background: #fff; color: #1e293b; overflow-wrap: anywhere; }
+	.pathology-workspace { width: 100%; max-width: 80rem; min-width: 0; border: 1px solid #e2e8f0; border-radius: 0.875rem; background: #fff; color: #1e293b; overflow-wrap: anywhere; }
 	header, .search-form, .results-heading, .results, .pagination { padding: 1.25rem 1.5rem; }
 	.eyebrow { color: #64748b; text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.625rem; margin-bottom: 0.25rem; }
-	h2 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.035em; }
 	header > p:last-child, .help-text, .results-heading p, .result-header p { margin-top: 0.375rem; color: #64748b; font-size: 0.75rem; }
 	.search-form { border-top: 1px solid #e2e8f0; }
 	label { display: grid; min-width: 0; gap: 0.375rem; font-size: 0.75rem; font-weight: 600; }
@@ -93,7 +92,6 @@
 	.search-notice { margin: 0 1.5rem; padding: 0.875rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.75rem; color: #475569; line-height: 1.6; }
 	.search-notice p { margin-top: 0.375rem; }
 	.validation-error, .unavailable { margin: 1rem 1.5rem; padding: 0.75rem; border: 1px solid #fcd34d; background: #fffbeb; color: #854d0e; border-radius: 0.5rem; font-size: 0.8125rem; }
-	h3 { font-size: 1rem; font-weight: 650; }
 	.expansions { margin: 0 1.5rem; font-size: 0.75rem; color: #64748b; }
 	summary { cursor: pointer; }
 	.expansions ul { margin-top: 0.5rem; padding-left: 1rem; list-style: disc; }

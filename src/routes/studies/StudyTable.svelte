@@ -82,7 +82,7 @@
 	<header class="worklist-toolbar">
 		<div>
 			<p class="eyebrow">Clinical workspace</p>
-			<h2>Studies <span class="result-count">{data.paging.total ?? data.studies.length}</span></h2>
+			<h2 class="page-title">Studies <span class="result-count">{data.paging.total ?? data.studies.length}</span></h2>
 			<p class="toolbar-caption">Patient, examination and reporting progress at a glance.</p>
 		</div>
 		<div class="toolbar-actions">
@@ -243,9 +243,6 @@
 		display: flex;
 		align-items: center;
 		gap: 0.625rem;
-		font-size: 1.5rem;
-		font-weight: 700;
-		letter-spacing: -0.035em;
 	}
 
 	.result-count {
@@ -310,7 +307,7 @@
 	.sort-link:hover,
 	.sort-active { color: #4338ca; text-decoration: underline; }
 
-	.patient-name { font-size: 0.9375rem; line-height: 1.5; font-weight: 650; }
+	.patient-name { font-size: 0.8125rem; line-height: 1.5; font-weight: 600; }
 	.patient-meta { display: flex; align-items: baseline; gap: 0.375rem; margin: 0.5rem 0 0.25rem; }
 	.patient-code { min-width: 0; font-family: ui-monospace, monospace; font-size: 0.75rem; color: #475569; }
 	.status-badge { display: inline-block; max-width: 100%; margin-top: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }

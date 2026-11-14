@@ -47,7 +47,7 @@
 </script>
 
 <section class="w-full min-w-0 max-w-5xl space-y-6">
-	<h1 class="text-2xl font-semibold">Integrations</h1>
+	<h1 class="page-title">Integrations</h1>
 	<p class="text-sm">Manage encrypted provider keys and Telegram settings. Secrets are never displayed; blank secret fields keep existing values.</p>
 
 	{#if data.pendingRestore?.pending}
@@ -73,7 +73,7 @@
 
 
 	<section aria-labelledby="integration-providers-heading" class="space-y-3">
-	<h2 id="integration-providers-heading" class="text-lg font-semibold">AI providers</h2>
+	<h2 id="integration-providers-heading" class="section-title">AI providers</h2>
 	<form method="POST" action="?/saveProviders" use:enhance={enhanceSettings} class="card border bg-base-100 p-4">
 		<fieldset disabled={pending || !data.settings.encryptionConfigured} class="min-w-0 space-y-4">
 			<legend class="sr-only">Provider keys</legend>
@@ -99,7 +99,7 @@
 
 	</section>
 	<section aria-labelledby="integration-telegram-heading" class="space-y-3">
-	<h2 id="integration-telegram-heading" class="text-lg font-semibold">Telegram</h2>
+	<h2 id="integration-telegram-heading" class="section-title">Telegram</h2>
 	{#if data.maintenanceEnabled}
 		<div class="alert alert-warning" role="alert">Telegram changes and webhook registration or removal are unavailable during site maintenance. Provider keys remain editable.</div>
 	{/if}
@@ -129,7 +129,7 @@
 			</label>
 			<p id="group-help" class="text-sm">For maintenance controls, the bot must be a group administrator with permission to restrict members.</p>
 			<section aria-labelledby="integration-endpoint-heading" class="space-y-4 border-t border-base-300 pt-4">
-			<h3 id="integration-endpoint-heading" class="font-semibold">Webhook endpoint &amp; authentication</h3>
+			<h3 id="integration-endpoint-heading" class="section-title">Webhook endpoint &amp; authentication</h3>
 			<label class="form-control min-w-0">
 				<span class="label-text">Website URL (public HTTPS origin)</span>
 				<span id="url-status" class="mb-1 text-sm opacity-70">{status('TELEGRAM_WEBHOOK_BASE_URL')}</span>
@@ -155,7 +155,7 @@
 	</form>
 
 	<section aria-labelledby="integration-webhook-heading" class="card space-y-4 border bg-base-100 p-4">
-		<h3 id="integration-webhook-heading" class="text-lg font-semibold">Webhook status</h3>
+		<h3 id="integration-webhook-heading" class="section-title">Webhook status</h3>
 		<dl class="space-y-2" aria-live="polite">
 			<div><dt class="font-semibold">State</dt><dd>{data.webhook.state}</dd></div>
 			{#if data.webhook.url}<div><dt class="font-semibold">URL</dt><dd class="break-all">{data.webhook.url}</dd></div>{/if}
@@ -183,7 +183,7 @@
 	</section>
 	{#if pending}<p role="status">Updating integration settings…</p>{/if}
 	<section aria-labelledby="integration-guidance-heading" class="space-y-3 border-t border-base-300 pt-4">
-	<h2 id="integration-guidance-heading" class="text-lg font-semibold">Configuration &amp; recovery guidance</h2>
+	<h2 id="integration-guidance-heading" class="section-title">Configuration &amp; recovery guidance</h2>
 	<details class="rounded-box border bg-base-100 p-4 text-sm">
 		<summary class="cursor-pointer font-medium">Private settings and restore behavior</summary>
 		<p class="mt-3">Settings are stored separately from restored databases in <code>config/settings.json</code> (the private <code>/app/config</code> volume in Docker). Restore activation keeps current settings unless individual fields are explicitly selected; selected fields apply only when an administrator reopens maintenance after original Telegram group permissions are restored. Preserve this private configuration volume and the original server-side <code>STORAGE_ENCRYPTION_KEY</code> across deployments and restores. This master key must match the backup and is never restored or managed here.</p>

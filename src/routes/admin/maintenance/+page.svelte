@@ -30,12 +30,12 @@
 </script>
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
-	<h1 class="text-2xl font-semibold">Site maintenance</h1>
+	<h1 class="page-title">Site maintenance</h1>
 	<p class="text-sm">Close the website for updates. Administrators keep access; other visitors see an updating page.</p>
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.message}<div class="alert alert-success" role="status">{form.message}</div>{/if}
 	<section aria-labelledby="maintenance-status-heading" class="card space-y-3 border bg-base-100 p-4" aria-live="polite">
-		<h2 id="maintenance-status-heading" class="text-lg font-semibold">Current status</h2>
+		<h2 id="maintenance-status-heading" class="section-title">Current status</h2>
 		<dl class="grid gap-3 sm:grid-cols-2">
 			<div><dt class="font-semibold">Website</dt><dd>{status.enabled ? 'Closed for maintenance' : 'Open'}</dd></div>
 			<div><dt class="font-semibold">Maintenance phase</dt><dd>{status.phase}</dd></div>
@@ -62,7 +62,7 @@
 
 
 	<section aria-labelledby="maintenance-actions-heading" class="space-y-4">
-	<h2 id="maintenance-actions-heading" class="text-lg font-semibold">Change website availability</h2>
+	<h2 id="maintenance-actions-heading" class="section-title">Change website availability</h2>
 	<div class="grid items-start gap-4 lg:grid-cols-2">
 	{#each [true, false] as enabled (enabled)}
 		{@const confirmation = enabled ? 'ENABLE MAINTENANCE' : 'DISABLE MAINTENANCE'}
@@ -86,7 +86,7 @@
 	</section>
 	{#if data.pendingRestore?.pending}
 	<section aria-labelledby="maintenance-recovery-heading" class="space-y-3 border-t border-base-300 pt-4">
-	<h2 id="maintenance-recovery-heading" class="text-lg font-semibold">Credential restore recovery</h2>
+	<h2 id="maintenance-recovery-heading" class="section-title">Credential restore recovery</h2>
 		<form method="POST" action="?/discardIntegrationRestore" use:enhance={enhanceChange} class="card space-y-4 border bg-base-100 p-4">
 			<fieldset disabled={busy} class="space-y-4">
 				<legend class="text-lg font-semibold">Discard pending credential restore</legend>

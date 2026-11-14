@@ -39,7 +39,7 @@
 
 <section class="w-full min-w-0 max-w-5xl space-y-4">
   <div class="flex flex-wrap items-center justify-between gap-2">
-    <h1 class="text-2xl font-semibold">Report templates</h1>
+    <h1 class="page-title">Report templates</h1>
     <a href={resolve('/studies')} class="text-sm underline">Back to Studies</a>
   </div>
   
@@ -47,7 +47,7 @@
 
   {#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
   <div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-    <h2 class="text-lg font-semibold">{selected ? 'Edit template' : 'Create template'}</h2>
+    <h2 class="section-title">{selected ? 'Edit template' : 'Create template'}</h2>
     <button class="btn btn-sm btn-outline" type="button" disabled={editorBusy} onclick={resetForm}>New template</button>
     {#key editorVersion}
       <TemplateEditor modalities={data.modalities} examTypes={data.exam_types} initialModalityId={selected?.modality_id ?? ''} initialExamTypeId={selected?.exam_type_id ?? ''} onSaved={invalidateAll} onBusyChange={(value) => (editorBusy = value)} />
@@ -55,7 +55,7 @@
   </div>
 
   <div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-    <h2 class="text-lg font-semibold">Existing templates ({data.templates.length})</h2>
+    <h2 class="section-title">Existing templates ({data.templates.length})</h2>
     {#if data.templates.length === 0}
       <div class="text-sm opacity-70">No templates yet.</div>
     {:else}

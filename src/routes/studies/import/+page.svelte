@@ -76,9 +76,9 @@
 </script>
 
 
-<div class="space-y-4 p-4">
+<div class="w-full min-w-0 space-y-4">
 	<div class="flex flex-wrap items-center gap-4">
-		<h1 class="text-2xl font-bold">Import studies from Excel</h1>
+		<h1 class="page-title">Import studies from Excel</h1>
 		<a class="btn btn-ghost" href={resolve('/studies')}>Back to studies</a>
 	</div>
 	<form

@@ -184,7 +184,7 @@
 
 <section class="min-w-0 space-y-6">
   <header class="space-y-1">
-    <h1 class="text-2xl font-semibold">Users</h1>
+    <h1 class="page-title">Users</h1>
     <p class="text-sm text-base-content/70">Manage accounts, roles and Telegram onboarding links.</p>
   </header>
 
@@ -217,7 +217,7 @@
 
   {#if editing}
     <form class="grid gap-4 md:grid-cols-2 border rounded p-4" onsubmit={(event) => save(event, true)}>
-      <h3 class="md:col-span-2 font-semibold">Edit user</h3>
+      <h3 class="section-title md:col-span-2">Edit user</h3>
       <label class="text-sm">
         <div class="mb-1">Full name</div>
         <input class="border rounded px-2 py-1 w-full" bind:value={editing.full_name} required disabled={loading} />
@@ -260,7 +260,7 @@
   </form>
   </details>
   <section class="min-w-0 space-y-4" aria-labelledby="user-accounts-heading">
-  <h2 id="user-accounts-heading" class="text-lg font-semibold">User accounts ({data.users.length})</h2>
+  <h2 id="user-accounts-heading" class="section-title">User accounts ({data.users.length})</h2>
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-sm" role="status">{selectedIds.length} selected</span>
     <button class="button-tint border rounded px-3 py-2" type="button" disabled={loading || selectedIds.length === 0} onclick={() => sendLink('group')}>Send group link</button>

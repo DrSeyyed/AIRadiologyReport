@@ -109,8 +109,8 @@
 </script>
 
 
-<section class="max-w-xl space-y-4">
-	<h1 class="text-2xl font-semibold">Account</h1>
+<section class="w-full min-w-0 max-w-xl space-y-4">
+	<h1 class="page-title">Account</h1>
 	<p>Only administrators can change roles or remove accounts.</p>
 	<p>Role: {data.account.role}</p>
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
@@ -133,7 +133,7 @@
 	</form>
 	{#if data.account.role === 'attending'}
 		<section class="space-y-3 border-t pt-4" aria-labelledby="report-english-heading">
-			<h2 id="report-english-heading" class="text-xl font-semibold">Report English</h2>
+			<h2 id="report-english-heading" class="section-title">Report English</h2>
 			<p id="report-english-description" class="text-sm">Applies to future generated reports for studies assigned to you as the attending. Existing reports are unchanged.</p>
 			{#if preferencesError}<div class="alert alert-error" role="alert">{preferencesError}</div>{/if}
 			<p role="status" class="text-sm">{preferencesBusy ? 'Saving report English…' : preferencesSuccess}</p>
@@ -155,7 +155,7 @@
 	{/if}
 	{#if data.account.role === 'attending' && data.signingDelegates}
 		<section class="space-y-3 border-t pt-4" aria-labelledby="signing-delegates-heading">
-			<h2 id="signing-delegates-heading" class="text-xl font-semibold">Residents who may sign for me</h2>
+			<h2 id="signing-delegates-heading" class="section-title">Residents who may sign for me</h2>
 			<p class="text-sm">Selected residents may add or withdraw your attending approval only on studies assigned to you and recordings assigned to themselves. Resident approval is still required first. Removing permission does not remove existing signatures.</p>
 			{#if delegatesError}<div class="alert alert-error" role="alert">{delegatesError}</div>{/if}
 			{#if delegatesSuccess}<div class="alert alert-success" role="status">{delegatesSuccess}</div>{/if}

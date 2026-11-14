@@ -18,7 +18,7 @@
 </script>
 
 <section class="w-full min-w-0 max-w-3xl space-y-4">
-	<h1 class="text-2xl font-semibold">Transcription settings</h1>
+	<h1 class="page-title">Transcription settings</h1>
 	<p id="model-help" class="text-sm text-base-content/70">Used only in Transcribe, then generate mode.</p>
 	{#if data.recoveryWarning}<div class="alert alert-warning" role="alert">{data.recoveryWarning}</div>{/if}
 	{#if !data.configured.openai}
@@ -33,7 +33,7 @@
 	{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 	{#if form?.success}<div class="alert alert-success" role="status">Transcription settings saved.</div>{/if}
 	<div class="min-w-0 space-y-4 rounded-box border border-base-300 bg-base-100 p-4">
-	<h2 class="text-lg font-semibold">Provider and model</h2>
+	<h2 class="section-title">Provider and model</h2>
 	<form method="POST" use:enhance={() => async ({ result, update }) => {
 		await update({ reset: false });
 		if (result.type === 'success') selection = null;

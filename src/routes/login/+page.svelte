@@ -33,9 +33,9 @@
   }
 </script>
 
-<div class="min-h-[60vh] flex items-center justify-center">
+<div class="w-full min-w-0">
   <form class="w-full max-w-sm border rounded p-6 space-y-4 bg-pink-100" on:submit|preventDefault={onSubmit}>
-    <h2 class="text-2xl font-semibold">Login</h2>
+    <h2 class="page-title">Login</h2>
 
     {#if error}
       <div class="text-red-600 text-sm border border-red-200 rounded p-2">{error}</div>

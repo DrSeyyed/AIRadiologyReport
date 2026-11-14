@@ -9,7 +9,7 @@
 	const activeGroup = $derived(groups.find((group) => group.links.some((link) => link.href === page.route.id)));
 </script>
 
-<div class="mx-auto w-full min-w-0 max-w-screen-2xl space-y-6">
+<div class="w-full min-w-0 max-w-screen-2xl space-y-6">
 	{#if showNavigation}
 		<nav class="space-y-3 rounded-box border border-base-300 bg-base-100 p-4" aria-label="Administration">
 			<div class="flex flex-wrap items-center gap-2">

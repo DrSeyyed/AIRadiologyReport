@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
@@ -38,6 +38,16 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
 	assert.match(layout, /class="drawer [^"]*bg-slate-50"/);
 	assert.doesNotMatch(layout + source, /bg-green-100/);
+	assert.doesNotMatch(layout, /bg-blue-100/);
+	assert.match(layout, /<header class="[^"]*border-slate-200 bg-white[^"]*shadow-sm"/);
+	assert.match(layout, /<ul class="menu [^"]*bg-white/);
+	assert.deepEqual(declarations('body', 'font-size'), ['var(--app-font-size)']);
+	assert.equal(declarations('body', 'line-height').at(-1), '1.5');
+	assert.ok(declarations('body', 'font-family').some((value) => value.includes('system-ui') && value.includes('Tahoma')));
+	assert.deepEqual(declarations('.page-title.page-title', 'font-size'), ['var(--page-title-size)']);
+	assert.deepEqual(declarations('.page-title.page-title', 'font-weight'), ['600']);
+	assert.deepEqual(declarations('.section-title.section-title', 'font-size'), ['var(--section-title-size)']);
+	assert.deepEqual(declarations('.section-title.section-title', 'font-weight'), ['600']);
 	assert.ok(declarations('.min-w-0', 'min-width').includes('0px'));
 	assert.ok(declarations('.overflow-x-auto', 'overflow-x').includes('auto'));
 	assert.ok(declarations('main', 'overflow-wrap').includes('anywhere'));
@@ -70,6 +80,34 @@ test('favorites and statistics align to the shared content edge without extra pa
 		assert.match(section, /\bmin-w-0\b/);
 		assert.doesNotMatch(section, /\bmx-auto\b|\bp-\d+\b/);
 	}
+});
+
+test('route page headings use the shared title style and admin containers stay left aligned', () => {
+	function checkPages(directory) {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const path = new URL(entry.name + (entry.isDirectory() ? '/' : ''), directory);
+			if (entry.isDirectory()) checkPages(path);
+			else if (entry.name === '+page.svelte') {
+				const source = readFileSync(path, 'utf8');
+				for (const heading of source.matchAll(/<h1\b[^>]*>/g)) {
+					assert.match(heading[0], /class="[^"]*\bpage-title\b/, path.pathname);
+				}
+			}
+		}
+	}
+	checkPages(new URL('../src/routes/', import.meta.url));
+	for (const path of ['../src/routes/admin/+layout.svelte', '../src/routes/admin/storage/+page.svelte']) {
+		assert.doesNotMatch(readFileSync(new URL(path, import.meta.url), 'utf8'), /\bmx-auto\b/);
+	}
+});
+
+test('patient names match compact study text without clipping or shrinking the worklist', () => {
+	const styles = componentDeclarations('StudyTable.svelte', '.patient-name');
+	assert.equal(styles.get('font-size'), '0.8125rem');
+	assert.equal(styles.get('font-weight'), '600');
+	assert.equal(styles.get('line-height'), '1.5');
+	assert.notEqual(styles.get('white-space'), 'nowrap');
+	assert.notEqual(styles.get('overflow'), 'hidden');
 });
 
 function componentDeclarations(filename, element) {

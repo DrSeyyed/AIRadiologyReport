@@ -165,7 +165,7 @@ test('shared header stays above page content and below the navigation drawer', a
 	const Layout = await component('../src/routes/+layout.svelte', '/studies');
 	for (const user of [null, { role: 'resident', full_name: 'Synthetic user' }, { role: 'admin' }]) {
 		const { body } = render(Layout, { props: { data: { user } } });
-		assert.match(body, /<header class="sticky top-0 z-30 [^"]*flex-wrap[^"]*bg-blue-100/);
+		assert.match(body, /<header class="sticky top-0 z-30 [^"]*flex-wrap[^"]*border-slate-200 bg-white[^"]*shadow-sm/);
 		assert.match(body, /<aside[^>]*class="drawer-side z-40"/);
 		assert.match(body, /aria-label="Open navigation"/);
 		assert.ok(body.includes(user ? 'Logout' : 'Login'));
