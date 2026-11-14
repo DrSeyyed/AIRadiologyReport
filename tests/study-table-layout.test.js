@@ -208,10 +208,9 @@ test('quick filters share the pagination row and more filters retains the full b
 	assert.equal((body.match(/<\/form>/g) || []).length, 2);
 });
 
-test('favorites management is a separate linked page rather than an embedded worklist section', () => {
+test('favorites management is accessed from the dashboard, not the worklist toolbar', () => {
 	const table = read('StudyTable.svelte');
-	assert.match(table, /href=\{resolve\('\/studies\/favorites'\)\}>My study favorites/);
-	assert.doesNotMatch(table, /FavoriteCategories|worklist-favorites/);
+	assert.doesNotMatch(table, /FavoriteCategories|worklist-favorites|My study favorites|resolve\('\/favorites'\)/);
 	assert.match(table, /<FavoriteStudyModal study=\{favoriteForStudy\} categories=\{data.favorites.categories\}/);
 });
 

@@ -74,6 +74,9 @@
 				</button>
 			</li>
 			<li><a href={resolve('/studies')} class="p-3" class:active={page.route.id === '/studies'} aria-current={page.route.id === '/studies' ? 'page' : undefined} onclick={closeNavigation}>Studies</a></li>
+			{#if data.user}
+				<li><a href={resolve('/favorites')} class="p-3" class:active={page.route.id === '/favorites'} aria-current={page.route.id === '/favorites' ? 'page' : undefined} onclick={closeNavigation}>My study favorites</a></li>
+			{/if}
 			{#if ['admin', 'resident', 'attending', 'typist'].includes(data.user?.role)}
 				<li><a href={resolve('/pathology-search')} class="p-3" class:active={page.route.id === '/pathology-search'} aria-current={page.route.id === '/pathology-search' ? 'page' : undefined} onclick={closeNavigation}>Pathology search</a></li>
 			{/if}

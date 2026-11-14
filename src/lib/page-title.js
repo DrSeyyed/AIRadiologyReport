@@ -2,6 +2,7 @@ const titles = new Map([
 	['/account', 'Account'],
 	['/statistics', 'Study statistics'],
 	['/pathology-search', 'Pathology search'],
+	['/favorites', 'My study favorites'],
 	['/admin/statistics', 'Study statistics'],
 	['/studies/import', 'Import studies from Excel'],
 	['/admin/pacs', 'PACS viewer settings'],

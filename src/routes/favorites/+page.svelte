@@ -1,6 +1,6 @@
 <script>
 	import { resolve } from '$app/paths';
-	import FavoriteCategories from '../FavoriteCategories.svelte';
+	import FavoriteCategories from '../studies/FavoriteCategories.svelte';
 	let { data } = $props();
 </script>
 

@@ -37,7 +37,7 @@ async function markup(path, props) {
 }
 
 test('dedicated favorites page renders expanded management and navigation without worklist filter data', async () => {
-	const body = await markup('routes/studies/favorites/+page.svelte', { data: { favorites: {
+	const body = await markup('routes/favorites/+page.svelte', { data: { favorites: {
 		total: 2, categories: [{ id: 7, name: '<Synthetic category>', total: 1 }, { id: 8, name: '', total: 0 }]
 	} } });
 	assert.match(body, /My study favorites/);
@@ -68,7 +68,7 @@ test('modal retains the study/categories contract and exposes searchable additiv
 	assert.match(body, /Remove Unnamed category #8 from this study/);
 	assert.match(body, /Create and select category/);
 	assert.match(body, /Save favorite/);
-	assert.match(body, /\/studies\/favorites/);
+	assert.match(body, /href="\/favorites"/);
 	assert.doesNotMatch(body, /This study will be saved|Type a few letters|Selected categories stay visible|New categories are created immediately|Save favorite to apply/);
 	assert.match(body, /role="status"/);
 });

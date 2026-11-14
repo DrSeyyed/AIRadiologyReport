@@ -104,12 +104,29 @@ test('root drawer has one admin panel entry while non-admins retain Account and 
 		assert.equal(drawer.includes('Report templates'), ['resident', 'attending'].includes(user?.role));
 		assert.equal(drawer.includes('href="/account"'), Boolean(user && user.role !== 'admin'));
 		assert.equal(drawer.includes('href="/pathology-search"'), Boolean(user));
+		assert.equal(drawer.includes('href="/favorites"'), Boolean(user));
 		assert.equal(drawer.includes('href="/statistics"'), ['resident', 'attending', 'typist'].includes(user?.role));
 		assert.doesNotMatch(drawer, /href="\/admin\/statistics"/);
 		assert.doesNotMatch(drawer, /Admin overview|Telegram registrations|Storage &amp; Backups|Clinical workflow|href="\/admin\/users"|href="\/admin\/telegram-study-refresh"/);
 		if (user?.role === 'admin') {
 			assert.match(drawer, /href="\/admin"[^>]*aria-current="location"/);
-			assert.equal((drawer.match(/<a\s/g) ?? []).length, 3);
+			assert.equal((drawer.match(/<a\s/g) ?? []).length, 4);
+		}
+	}
+});
+
+test('favorites is a standalone dashboard entry and highlights only its own destination for every signed-in role', async () => {
+	for (const route of ['/favorites', '/studies']) {
+		const Layout = await component('../src/routes/+layout.svelte', route);
+		for (const role of ['admin', 'resident', 'attending', 'typist']) {
+			const { body } = render(Layout, { props: { data: { user: { role } } } });
+			const drawer = body.slice(body.indexOf('<aside'));
+			const anchor = drawer.match(/<a[^>]*href="\/favorites"[^>]*>My study favorites<\/a>/)?.[0];
+			assert.ok(anchor);
+			if (route === '/favorites') assert.match(anchor, /class="p-3 active"[^>]*aria-current="page"/);
+			else assert.doesNotMatch(anchor, /aria-current=|\bactive\b/);
+			assert.equal((drawer.match(/aria-current="page"/g) ?? []).length, 1);
+			assert.doesNotMatch(drawer, /href="\/studies\/favorites"/);
 		}
 	}
 });

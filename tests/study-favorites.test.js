@@ -15,6 +15,7 @@ async function loadModule(relativePath, dbKey) {
 	const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8').replace(/from (['"])([^'"]+)\1/g, (statement, quote, specifier) => {
 		let resolved;
 		if (specifier === '$lib/server/db') resolved = `data:text/javascript,${encodeURIComponent(`export function getDb(){return globalThis[${JSON.stringify(dbKey)}]}`)}`;
+		else if (specifier === '$app/paths') resolved = `data:text/javascript,${encodeURIComponent('export const resolve = path => path;')}`;
 		else if (specifier.startsWith('$lib/')) resolved = new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href;
 		else resolved = import.meta.resolve(specifier);
 		return `from ${JSON.stringify(resolved)}`;
@@ -188,9 +189,14 @@ test('removing studies and users cascades only their favorites; categories stay 
 	assert.deepEqual(db.pragma('foreign_key_check'), []);
 });
 
+test('the former nested favorites URL redirects to the standalone dashboard destination', async () => {
+	const { load } = await loadModule('../src/routes/studies/favorites/+page.server.js');
+	assert.throws(() => load(), { status: 308, location: '/favorites' });
+});
+
 test('dedicated favorites page authenticates before database access and isolates every user role', async (t) => {
 	const { db, key, users, studies } = await fixture(t);
-	const { load } = await loadModule('../src/routes/studies/favorites/+page.server.js', key);
+	const { load } = await loadModule('../src/routes/favorites/+page.server.js', key);
 	delete globalThis[key];
 	try {
 		assert.throws(() => load({ locals: {} }), (caught) => caught.status === 302 && caught.location === '/login');

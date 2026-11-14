@@ -86,7 +86,6 @@
 			<p class="toolbar-caption">Patient, examination and reporting progress at a glance.</p>
 		</div>
 		<div class="toolbar-actions">
-			<a class="btn btn-sm btn-ghost" href={resolve('/studies/favorites')}>My study favorites</a>
 			{#if canImportStudies(data.user)}<a class="btn btn-sm btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
 			{#if !readOnly}<button class="btn btn-sm btn-primary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}
 		</div>

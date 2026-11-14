@@ -86,7 +86,7 @@
 		</fieldset>
 		<p role="status" class="text-sm">{notice}</p>
 		{#if error}<p class="text-error" role="alert">{error}</p>{/if}
-		<a class="link text-sm" href={resolve('/studies/favorites')}>Manage my study favorites</a>
+		<a class="link text-sm" href={resolve('/favorites')}>Manage my study favorites</a>
 		<div class="modal-action"><button type="button" class="btn" disabled={busy} onclick={onClose}>Cancel</button><button class="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save favorite'}</button></div>
 	</form>
 </dialog>
