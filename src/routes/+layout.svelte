@@ -60,7 +60,7 @@
 				<a class="link" href={resolve('/admin/maintenance')}>Manage maintenance</a>
 			</div>
 		{/if}
-		<main class="w-full min-w-0 flex-1 p-4">
+		<main class="w-full min-w-0 flex-1 p-4" class:flex={page.route.id === '/login'} class:items-center={page.route.id === '/login'} class:justify-center={page.route.id === '/login'}>
 			{@render children?.()}
 		</main>
 	</div>
