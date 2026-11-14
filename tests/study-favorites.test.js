@@ -188,6 +188,38 @@ test('removing studies and users cascades only their favorites; categories stay 
 	assert.deepEqual(db.pragma('foreign_key_check'), []);
 });
 
+test('dedicated favorites page authenticates before database access and isolates every user role', async (t) => {
+	const { db, key, users, studies } = await fixture(t);
+	const { load } = await loadModule('../src/routes/studies/favorites/+page.server.js', key);
+	delete globalThis[key];
+	try {
+		assert.throws(() => load({ locals: {} }), (caught) => caught.status === 302 && caught.location === '/login');
+	} finally { globalThis[key] = db; }
+	for (const user of users.slice(1)) {
+		const category = createFavoriteCategory(db, user.id, `Private ${user.role}`);
+		saveStudyFavorite(db, user.id, studies[0], [category.id]);
+		let headers;
+		const data = load({ locals: { user }, setHeaders: (value) => { headers = value; } });
+		assert.deepEqual(data, { favorites: { total: 1, categories: [{ ...category, total: 1 }] } });
+		assert.deepEqual(headers, { 'cache-control': 'private, no-store' });
+	}
+});
+
+test('modal create/select/save flow preserves multiple categories and uncategorized favorites', async (t) => {
+	const { request, studies } = await fixture(t);
+	const first = await request('categories', 'POST', 2, { name: 'Teaching' });
+	const second = await request('categories', 'POST', 2, { name: '' });
+	assert.equal(first.status, 201);
+	assert.equal(second.status, 201);
+	assert.equal((await request('categories', 'GET', 2)).data.total, 0, 'Creating a category does not prematurely save the study');
+	const saved = await request('favorite', 'PUT', 2, { category_ids: [first.data.id, second.data.id] });
+	assert.deepEqual(saved.data, { is_favorite: true, favorite_category_ids: [first.data.id, second.data.id] });
+	const rows = (await request('studies', 'GET', 2)).data.rows;
+	assert.deepEqual(rows.find((row) => row.id === studies[0]).favorite_category_ids, [first.data.id, second.data.id]);
+	assert.equal((await request('favorite', 'PUT', 2, { category_ids: [] })).status, 200);
+	assert.equal((await request('categories', 'GET', 2)).data.total, 1);
+});
+
 test('page load forwards the favorites filter and returns only the current user category summary', async (t) => {
 	const { db, key, routes, users, studies } = await fixture(t);
 	const category = createFavoriteCategory(db, 2, 'Teaching');

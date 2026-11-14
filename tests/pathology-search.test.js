@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
 import { insertStudy } from '../src/lib/server/studies.js';
 import { appendRecording } from '../src/lib/server/recordings.js';
 import { pathologyQuery, matchPathologyReport } from '../src/lib/pathology-search.js';
-import { pathologyFilters, readPathologyReport, searchPathologyReports } from '../src/lib/server/pathology-search.js';
+import { pathologyFilters, pathologyModalities, readPathologyReport, searchPathologyReports } from '../src/lib/server/pathology-search.js';
 import { examinationDateRange } from '../src/lib/study-date-ranges.js';
 
 const now = new Date('2026-11-13T10:00:00Z');
@@ -20,7 +19,7 @@ function fixture(t) {
 	const db = new Database(':memory:');
 	initializeSchema(db, readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8'));
 	db.exec("INSERT INTO users(id,full_name,role) VALUES (1,'Synthetic administrator','admin')");
-	const directory = mkdtempSync(join(tmpdir(), 'pathology-test-'));
+	const directory = mkdtempSync(join(process.cwd(), '.pathology-test-'));
 	t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 	let count = 0;
 	const add = (text, { date = '1405-08-22', signed = 0, disabled = 0, studyId } = {}) => {
@@ -96,7 +95,7 @@ test('date bounds validate Jalali dates and preserve Tehran preset semantics', (
 		{ ...custom, date_from: '1405-1-01' }, { ...custom, date_to: '' },
 		{ date_range: 'invalid' }, { page: '1.2' }, { page: '0' }, { page: '1000001' }
 	]) assert.throws(() => pathologyFilters(params(input)), { status: 400 });
-	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'page']) {
+	for (const key of ['q', 'modality', 'date_range', 'date_from', 'date_to', 'page']) {
 		const duplicate = params({ [key]: 'x' }); duplicate.append(key, 'y');
 		assert.throws(() => pathologyFilters(duplicate), { status: 400 });
 	}
@@ -147,6 +146,66 @@ test('search pagination counts reports, retains independent recording matches, a
 	assert.equal(second.rows.length, 3);
 	assert.equal(new Set([...result.rows, ...second.rows].map((row) => row.recording_id)).size, 23);
 	assert.equal(second.rows.filter((row) => row.study_id === first.studyId).length, 2);
+});
+
+test('modality filters use examination source values before study fallback, never recording templates', async (t) => {
+	const { db, add, search } = fixture(t);
+	db.exec("INSERT INTO modalities(id,code,name) VALUES (1,'CT','CT'),(2,'MR','MR'),(3,'US','US'),(4,'Unused','Unused')");
+	const setStudy = db.prepare('UPDATE studies SET source_modality=?,modality_id=? WHERE id=?');
+	const setRecording = db.prepare('UPDATE study_recordings SET modality_id=? WHERE id=?');
+	const first = add('Hepatic hemangioma.', { signed: 1 });
+	setStudy.run(' ct ', 2, first.studyId);
+	setRecording.run(3, first.recordingId);
+	add('No hepatic hemangioma.', { studyId: first.studyId });
+	for (let i = 0; i < 21; i++) {
+		const item = add('Possible hepatic hemangioma.', { disabled: i === 0 ? 1 : 0 });
+		setStudy.run(i % 2 ? null : '   ', 1, item.studyId);
+	}
+	const mr = add('Hepatic hemangioma.');
+	setStudy.run('MR', 1, mr.studyId);
+	setRecording.run(1, mr.recordingId);
+	const imported = add('Hepatic hemangioma.');
+	setStudy.run(' dx ', null, imported.studyId);
+	const old = add('Hepatic hemangioma.', { date: '1405-08-21' });
+	setStudy.run('CT', null, old.studyId);
+	const unknown = add('Hepatic hemangioma.');
+	setRecording.run(1, unknown.recordingId);
+	const unreadable = add(null);
+	setStudy.run('MR', 2, unreadable.studyId);
+	const changes = db.prepare('SELECT total_changes() AS count').get().count;
+	assert.deepEqual(pathologyModalities(db), ['CT', 'DX', 'MR']);
+	const filter = { modality: ' ct ', date_range: 'custom', date_from: '1405-08-22', date_to: '1405-08-22' };
+	const readPaths = [];
+	const options = { readReport: async (path) => { readPaths.push(path); return 'Hepatic hemangioma.'; } };
+	const firstPage = await search(filter, options);
+	const secondPage = await search({ ...filter, page: '2' });
+	assert.equal(firstPage.filters.modality, 'CT');
+	assert.equal(firstPage.total, 23);
+	assert.equal(firstPage.scanned, 23);
+	assert.equal(firstPage.unavailable, 0);
+	assert.equal(readPaths.length, 23);
+	assert.ok(!readPaths.includes(mr.path) && !readPaths.includes(old.path) && !readPaths.includes(unreadable.path));
+	assert.equal(secondPage.totalPages, 2);
+	assert.equal(secondPage.rows.length, 3);
+	assert.equal(new Set([...firstPage.rows, ...secondPage.rows].map((row) => row.recording_id)).size, 23);
+	assert.equal(secondPage.rows.filter((row) => row.study_id === first.studyId).length, 2);
+	assert.ok([...firstPage.rows, ...secondPage.rows].some((row) => row.disabled));
+	assert.ok(secondPage.rows.some((row) => row.attending_checked));
+	assert.ok([...firstPage.rows, ...secondPage.rows].every((row) => row.source_modality === 'CT'));
+	assert.equal((await search({ modality: 'MR' })).total, 1);
+	assert.equal((await search({ modality: 'DX' })).rows[0].study_id, imported.studyId);
+	assert.equal((await search({ modality: 'US' })).scanned, 0);
+	assert.equal((await search({ modality: "CT' OR 1=1 --" })).total, 0);
+	assert.equal((await search()).total, 27);
+	assert.equal(db.prepare('SELECT total_changes() AS count').get().count, changes);
+});
+
+test('modality validation normalizes input and rejects malformed values before database access', async () => {
+	assert.equal(pathologyFilters(params()).filters.modality, '');
+	assert.equal(pathologyFilters(params({ modality: ' mr ' })).filters.modality, 'MR');
+	for (const modality of ['x'.repeat(65), 'CT\u0000MR', 'CT\u200b']) {
+		await assert.rejects(searchPathologyReports({ prepare() { assert.fail('Unexpected database access'); } }, admin, params({ q: 'HCC', modality })), { status: 400 });
+	}
 });
 
 test('search reflects report edits and deletions immediately without a stale text index', async (t) => {

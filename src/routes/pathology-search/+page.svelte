@@ -22,6 +22,13 @@
 			<input name="q" type="search" required maxlength="160" value={data.filters.q || ''} placeholder="e.g. hemangioma, HCC, liver hemangioma" />
 		</label>
 		<div class="search-filters">
+			<label>Examination modality
+				<select name="modality" value={data.filters.modality || ''}>
+					<option value="">All modalities</option>
+					{#if data.filters.modality && !(data.modalities || []).includes(data.filters.modality)}<option value={data.filters.modality}>{data.filters.modality}</option>{/if}
+					{#each data.modalities || [] as modality (modality)}<option value={modality}>{modality}</option>{/each}
+				</select>
+			</label>
 			<label>Examination date
 				<select name="date_range" value={data.filters.date_range || 'all'}>
 					<option value="all">All dates</option>
@@ -33,7 +40,7 @@
 			<label>To (Jalali)<input name="date_to" value={data.filters.date_to || ''} placeholder="1405-12-29" oninput={customDates} /></label>
 		</div>
 		<div class="form-actions"><button class="btn btn-sm btn-primary" type="submit">Search reports</button><a class="btn btn-sm btn-ghost" href={resolve('/pathology-search')}>Reset</a></div>
-		<p class="help-text">Dates are inclusive examination dates, not report creation dates. All available recording reports are searched, including unsigned drafts and disabled studies. Older recordings appear later.</p>
+		<p class="help-text">Modality uses the examination source modality (or the study modality when absent), not the recording/report template modality. Dates are inclusive examination dates, not report creation dates. All available recording reports are searched, including unsigned drafts and disabled studies. Older recordings appear later.</p>
 	</form>
 	<aside class="search-notice">
 		<strong>Text search, not a diagnosis.</strong> Results include all matching wording, including negated, uncertain and historical mentions. Read the complete sentence and source report before using a result.
@@ -80,7 +87,7 @@
 	input, select { width: 100%; min-width: 0; height: 2.5rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; padding: 0 0.625rem; background-color: #fff; font-size: 0.8125rem; font-weight: 400; }
 	input:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible, button:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
 	.query-field { max-width: 44rem; }
-	.search-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.875rem; margin-top: 1rem; }
+	.search-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.875rem; margin-top: 1rem; }
 	.form-actions, .report-state, .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 	.form-actions { margin-top: 1rem; }
 	.search-notice { margin: 0 1.5rem; padding: 0.875rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.75rem; color: #475569; line-height: 1.6; }

@@ -7,7 +7,6 @@
 	import StudyDescription from './StudyDescription.svelte';
 	import PacsViewer from './PacsViewer.svelte';
 	import DeleteStudyModal from './DeleteStudyModal.svelte';
-	import FavoriteCategories from './FavoriteCategories.svelte';
 	import StudyFavorite from './StudyFavorite.svelte';
 	import FavoriteStudyModal from './FavoriteStudyModal.svelte';
 	import { canImportStudies } from '$lib/study-permissions.js';
@@ -48,7 +47,6 @@
 	});
 	const isAdmin = $derived(data.user?.role === 'admin');
 	const readOnly = $derived(data.user?.role === 'typist');
-	const hasFilters = $derived(Object.entries(data.filters).some(([key, value]) => key !== 'status' && value != null && value !== '' && value !== 0 && value !== '0'));
 	const headers = [
 		{ label: 'Patient', columns: [{ key: 's.patient_code', label: 'Code' }, { key: 's.patient_fullname', label: 'Full name' }, { key: 's.patient_age', label: 'Age' }] },
 		{ label: 'Examination', columns: [{ key: 's.exam_date_jalali', label: 'Date / time' }, { key: 'source_modality', label: 'Source modality' }, { key: 'source_description', label: 'Source description' }] },
@@ -88,15 +86,11 @@
 			<p class="toolbar-caption">Patient, examination and reporting progress at a glance.</p>
 		</div>
 		<div class="toolbar-actions">
+			<a class="btn btn-sm btn-ghost" href={resolve('/studies/favorites')}>My study favorites</a>
 			{#if canImportStudies(data.user)}<a class="btn btn-sm btn-outline" href={resolve('/studies/import')}>Import studies</a>{/if}
 			{#if !readOnly}<button class="btn btn-sm btn-primary" onclick={() => (showNewModal = true)}>+ New Study</button>{/if}
 		</div>
 	</header>
-	<details class="worklist-section worklist-filters">
-		<summary>Filters & sorting <span class="filter-caption">{hasFilters ? 'Filtered view' : 'All studies'} · Search, dates and reviewers</span></summary>
-		<div class="worklist-section-content filter-content"><Filters {data} /></div>
-	</details>
-	<div class="worklist-favorites"><FavoriteCategories {data} /></div>
 	<nav class="status-navigation" aria-label="Study status filters">
 		<ul>
 			{#each [{ key: '', label: 'All studies' }, ...studyRowStatuses] as status (status.key)}
@@ -110,7 +104,7 @@
 			{/each}
 		</ul>
 	</nav>
-	<StudyPagination paging={data.paging} position="above table" />
+	<Filters {data} />
 	{#if tableOverflows}
 		<div class="table-scroll-controls">
 			<p>Scroll horizontally to see all columns</p>
@@ -265,7 +259,6 @@
 	}
 
 	.toolbar-caption,
-	.filter-caption,
 	.secondary-text {
 		font-size: 0.75rem;
 		color: #64748b;
@@ -273,11 +266,6 @@
 
 	.toolbar-caption { margin-top: 0.25rem; }
 	.toolbar-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-	.study-workspace :global(.worklist-section) { border-top: 1px solid #e2e8f0; }
-	.study-workspace :global(.worklist-section > summary) { padding: 0.875rem 1.5rem; font-size: 0.8125rem; font-weight: 600; cursor: pointer; }
-	.study-workspace :global(.worklist-section > summary:focus-visible) { outline: 2px solid #4f46e5; outline-offset: -2px; }
-	.study-workspace :global(.worklist-section-content) { display: grid; gap: 1rem; padding: 0.5rem 1.5rem 1.5rem; }
-	.filter-caption { margin-left: 0.75rem; font-weight: 400; }
 
 	summary { cursor: pointer; }
 	summary:focus-visible,
@@ -363,9 +351,6 @@
 
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }
-		.study-workspace :global(.worklist-section > summary) { padding: 0.875rem 1rem; }
-		.study-workspace :global(.worklist-section-content) { padding: 0.5rem 1rem 1rem; }
-		.filter-caption { display: block; margin: 0.25rem 0 0; }
 		.status-navigation { padding: 0.75rem 1rem; }
 		.toolbar-caption { max-width: 17rem; }
 	}

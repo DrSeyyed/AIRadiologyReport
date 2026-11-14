@@ -21,7 +21,7 @@
 	function positionMenu() {
 		if (!input) return;
 		const bounds = input.getBoundingClientRect();
-		const modal = input.closest('[role="dialog"]')?.getBoundingClientRect();
+		const modal = input.closest('.modal-box, dialog, [role="dialog"]')?.getBoundingClientRect();
 		const viewportTop = window.visualViewport?.offsetTop ?? 0;
 		const viewportBottom = viewportTop + (window.visualViewport?.height ?? window.innerHeight);
 		const below = Math.min(viewportBottom, modal?.bottom ?? viewportBottom) - bounds.bottom;

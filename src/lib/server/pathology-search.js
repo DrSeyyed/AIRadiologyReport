@@ -6,19 +6,28 @@ import { pathologyQuery, matchPathologyReport } from '../pathology-search.js';
 
 const pageSize = 20;
 const maxReportBytes = 1024 * 1024;
+const sourceModality = "upper(trim(COALESCE(NULLIF(trim(s.source_modality), ''), m.code, '')))";
+
+export function pathologyModalities(db) {
+	return db.prepare(`SELECT DISTINCT ${sourceModality} AS modality
+		FROM studies s LEFT JOIN modalities m ON m.id = s.modality_id
+		WHERE ${sourceModality} != '' ORDER BY modality`).all().map((row) => row.modality);
+}
 function failure(message, status = 400) {
 	return Object.assign(new Error(message), { status });
 }
 
 export function pathologyFilters(params, now = new Date()) {
-	for (const key of ['q', 'date_range', 'date_from', 'date_to', 'page']) {
+	for (const key of ['q', 'modality', 'date_range', 'date_from', 'date_to', 'page']) {
 		if (params.getAll(key).length > 1) throw failure('Select each search filter only once.');
 	}
 	const filters = {
 		q: (params.get('q') || '').trim(),
+		modality: (params.get('modality') || '').trim().toUpperCase(),
 		date_range: params.get('date_range') || 'all',
 		date_from: params.get('date_from') || '', date_to: params.get('date_to') || ''
 	};
+	if (filters.modality.length > 64 || /[\p{Cc}\p{Cf}]/u.test(filters.modality)) throw failure('Select a valid examination modality.');
 	if (filters.date_range === 'all') {
 		filters.date_from = '';
 		filters.date_to = '';
@@ -70,15 +79,17 @@ export async function searchPathologyReports(db, user, params, { now = new Date(
 	// The existing worklist and report endpoints allow these signed-in roles to read all studies.
 	// Keyset batches avoid holding a database iterator open across asynchronous file reads.
 	const values = [];
-	let dates = '';
-	if (filters.date_from) { dates += ' AND s.exam_date_jalali >= ?'; values.push(filters.date_from); }
-	if (filters.date_to) { dates += ' AND s.exam_date_jalali <= ?'; values.push(filters.date_to); }
+	let conditions = '';
+	if (filters.date_from) { conditions += ' AND s.exam_date_jalali >= ?'; values.push(filters.date_from); }
+	if (filters.date_to) { conditions += ' AND s.exam_date_jalali <= ?'; values.push(filters.date_to); }
+	if (filters.modality) { conditions += ` AND ${sourceModality} = ?`; values.push(filters.modality); }
 	const statement = db.prepare(`SELECT r.id AS recording_id, r.text_report_path, r.attending_checked,
 		r.resident_checked, r.typist_checked, s.id AS study_id, s.patient_code,
 		COALESCE(NULLIF(trim(s.patient_fullname), ''), trim(s.patient_firstname || ' ' || s.patient_lastname)) AS patient_fullname,
-		s.exam_date_jalali, s.exam_time, s.source_modality, s.disabled
+		s.exam_date_jalali, s.exam_time, ${sourceModality} AS source_modality, s.disabled
 		FROM study_recordings r JOIN studies s ON s.id = r.study_id
-		WHERE r.id < ? AND trim(COALESCE(r.text_report_path, '')) != ''${dates}
+		LEFT JOIN modalities m ON m.id = s.modality_id
+		WHERE r.id < ? AND trim(COALESCE(r.text_report_path, '')) != ''${conditions}
 		ORDER BY r.id DESC LIMIT 20`);
 	let cursor = Number.MAX_SAFE_INTEGER;
 	while (true) {

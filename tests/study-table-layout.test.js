@@ -16,8 +16,9 @@ async function component(name, search = '') {
 	}
 	const children = {};
 	if (name === 'StudyTable.svelte') {
-		for (const child of ['StudyDescription.svelte', 'StudyFavorite.svelte', 'StudyAttention.svelte', 'PacsViewer.svelte', 'StudyPagination.svelte']) children[`./${child}`] = await component(child);
+		for (const child of ['StudyDescription.svelte', 'StudyFavorite.svelte', 'StudyAttention.svelte', 'PacsViewer.svelte', 'StudyPagination.svelte', 'Filters.svelte']) children[`./${child}`] = await component(child, search);
 	}
+	if (name === 'Filters.svelte') children['./StudyPagination.svelte'] = await component('StudyPagination.svelte', search);
 	const code = compile(source, { filename: name, generate: 'server' }).js.code.replace(/from (['"])([^'"]+)\1/g, (_statement, _quote, specifier) => {
 		let target;
 		if (children[specifier]) target = children[specifier].url;
@@ -35,11 +36,13 @@ async function component(name, search = '') {
 
 test('pagination is above and below the table, outside filters, with query-preserving native forms', async () => {
 	const source = read('StudyTable.svelte');
-	assert.match(source, /<StudyPagination paging=\{data.paging\} position="above table" \/>[\s\S]*<table[\s\S]*<\/table>[\s\S]*<StudyPagination paging=\{data.paging\} position="below table" \/>/);
+	assert.match(source, /<Filters \{data\} \/>[\s\S]*<table[\s\S]*<\/table>[\s\S]*<StudyPagination paging=\{data.paging\} position="below table" \/>/);
+	assert.match(read('Filters.svelte'), /<StudyPagination paging=\{data.paging\} position="above table" inline \/>/);
 	const filters = read('Filters.svelte');
 	assert.doesNotMatch(filters, /<select\s+name="(?:page|rowcount)"/);
 	assert.match(filters, /type="hidden" name="rowcount"/);
-	assert.match(filters, /params.set\('page', '1'\)/);
+	assert.match(filters, /type="hidden" name="page" value="1"/);
+	assert.match(filters, /method="GET" action=\{resolve\('\/studies'\)\}/);
 	const { Component } = await component('StudyPagination.svelte', '?page=3&rowcount=10&status=unsigned&resident_checked=0&orderedby=report_count&orderdir=ASC&patient_fullname=Synthetic');
 	for (const position of ['above table', 'below table']) {
 		const { body } = render(Component, { props: { position, paging: { page: 3, rowcount: 10, totalPages: 5 } } });
@@ -182,25 +185,34 @@ test('row actions share compact button sizing and the reports button fits its la
 	assert.doesNotMatch(source, /\.delete-action|\.action-button:hover|\.action-button:disabled/);
 });
 
-test('filter fields have visible borders including searchable selectors, with favorites managed outside the filter disclosure', async () => {
-	await component('Filters.svelte');
+test('quick filters share the pagination row and more filters retains the full bordered form', async () => {
+	const { Component } = await component('Filters.svelte');
 	const filters = read('Filters.svelte');
-	assert.match(filters, /class="study-filters flex flex-wrap items-end gap-3"/);
 	assert.match(filters, /\.study-filters :global\(\.input\),\s*\.study-filters :global\(\.select\)\s*\{\s*border: 1px solid #cbd5e1;/);
 	assert.match(filters, /\.study-filters :global\(\.input:focus\),\s*\.study-filters :global\(\.select:focus\)\s*\{\s*border-color: #6366f1;/);
-	assert.match(read('StudyTable.svelte'), /class="worklist-section-content filter-content"><Filters \{data\} \/><\/div>\s*<\/details>\s*<div class="worklist-favorites"><FavoriteCategories \{data\} \/><\/div>/);
+	assert.match(filters, /aria-expanded=\{showMore\} aria-controls="advanced-study-filters"/);
+	assert.match(filters, /id="advanced-study-filters" class="advanced-filters" hidden=\{!showMore\}/);
+	assert.match(filters, /\.advanced-filters\[hidden\] \{ display: none; \}/);
+	assert.match(filters, /grid-template-columns: minmax\(0, 1fr\) auto/);
+	assert.match(filters, /@media \(max-width: 54rem\)/);
+	const { body } = render(Component, { props: { data: { filters: { patient_code: 'SYNTHETIC', patient_fullname: 'Synthetic name', resident_checked: '0', favorites: '3' }, paging: { page: 3, rowcount: 50 }, favorites: { total: 1, categories: [{ id: 3, name: 'Synthetic category', total: 1 }] } } } });
+	const quick = body.slice(body.indexOf('class="quick-filters'), body.indexOf('id="advanced-study-filters'));
+	for (const name of ['patient_code', 'patient_fullname', 'date_range']) assert.ok(quick.includes(`name="${name}"`));
+	assert.ok(quick.includes('SYNTHETIC'));
+	assert.ok(quick.includes('Synthetic name'));
+	for (const name of ['favorites', 'corresponding_attending_id', 'corresponding_resident_id', 'resident_checked', 'orderedby', 'orderdir', 'rowcount']) assert.ok(body.includes(`name="${name}"`));
+	assert.match(body, /More filters •/);
+	assert.match(body, /aria-label="Study pagination above table"/);
+	assert.match(body, /name="rowcount" value="50"/);
+	assert.equal((body.match(/<form\b/g) || []).length, 2);
+	assert.equal((body.match(/<\/form>/g) || []).length, 2);
 });
 
-test('filters and favorite management use the same disclosure typography, borders and spacing', () => {
+test('favorites management is a separate linked page rather than an embedded worklist section', () => {
 	const table = read('StudyTable.svelte');
-	const favorites = read('FavoriteCategories.svelte');
-	assert.match(table, /<details class="worklist-section worklist-filters">/);
-	assert.match(favorites, /<details class="worklist-section">\s*<summary>/);
-	for (const source of [table, favorites]) assert.match(source, /class="worklist-section-content\b/);
-	assert.match(table, /:global\(\.worklist-section\)\s*\{ border-top: 1px solid #e2e8f0;/);
-	assert.match(table, /:global\(\.worklist-section > summary\)\s*\{ padding: 0\.875rem 1\.5rem; font-size: 0\.8125rem; font-weight: 600;/);
-	assert.doesNotMatch(favorites, /rounded-box border p-3|cursor-pointer font-semibold/);
-	for (const generate of ['client', 'server']) assert.deepEqual(compile(favorites, { filename: 'FavoriteCategories.svelte', generate }).warnings, []);
+	assert.match(table, /href=\{resolve\('\/studies\/favorites'\)\}>My study favorites/);
+	assert.doesNotMatch(table, /FavoriteCategories|worklist-favorites/);
+	assert.match(table, /<FavoriteStudyModal study=\{favoriteForStudy\} categories=\{data.favorites.categories\}/);
 });
 
 test('table preserves study information, sorting, workflow buttons, and role restrictions', async () => {

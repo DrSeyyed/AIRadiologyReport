@@ -14,7 +14,7 @@ async function fixture(t) {
 	globalThis[key] = state;
 	t.after(() => delete globalThis[key]);
 	const db = moduleUrl(`export function getDb(){const s=globalThis[${JSON.stringify(key)}];s.dbCalls++;return 'db';}`);
-	const search = moduleUrl(`export async function searchPathologyReports(...args){const s=globalThis[${JSON.stringify(key)}];s.calls.push(args);if(s.failure)throw s.failure;return s.result;}`);
+	const search = moduleUrl(`export function pathologyModalities(){return ['CT','MR'];} export async function searchPathologyReports(...args){const s=globalThis[${JSON.stringify(key)}];s.calls.push(args);if(s.failure)throw s.failure;return s.result;}`);
 	const code = read('+page.server.js').replace(/from (['"])([^'"]+)\1/g, (_statement, _quote, specifier) => {
 		const target = specifier === '$lib/server/db' ? db : specifier === '$lib/server/pathology-search.js' ? search : import.meta.resolve(specifier);
 		return `from ${JSON.stringify(target)}`;
@@ -32,7 +32,7 @@ test('pathology page authorizes before touching the database and forwards the re
 	assert.equal(state.dbCalls, 0);
 	for (const role of ['admin', 'resident', 'attending', 'typist']) {
 		const request = event({ id: 1, role });
-		assert.deepEqual(await page.load(request), { search: state.result, filters: state.result.filters, validationError: null });
+		assert.deepEqual(await page.load(request), { search: state.result, filters: state.result.filters, modalities: ['CT', 'MR'], validationError: null });
 		assert.deepEqual(state.calls.at(-1), ['db', request.locals.user, request.url.searchParams, { signal: request.request.signal }]);
 		assert.deepEqual(state.headers, { 'cache-control': 'private, no-store' });
 	}
@@ -42,10 +42,12 @@ test('pathology page authorizes before touching the database and forwards the re
 test('invalid search filters stay inline and authorization/server errors are not swallowed', async (t) => {
 	const { page, state, event } = await fixture(t);
 	state.failure = Object.assign(new Error('Enter valid Jalali dates.'), { status: 400 });
-	const result = await page.load(event(undefined, '?q=liver+hemangioma&date_range=custom&date_from=invalid&context=absent'));
+	const result = await page.load(event(undefined, '?q=liver+hemangioma&modality=CT&date_range=custom&date_from=invalid&context=absent'));
 	assert.equal(result.search, null);
 	assert.equal(result.filters.q, 'liver hemangioma');
 	assert.equal(result.filters.date_from, 'invalid');
+	assert.equal(result.filters.modality, 'CT');
+	assert.deepEqual(result.modalities, ['CT', 'MR']);
 	assert.equal(Object.hasOwn(result.filters, 'context'), false);
 	assert.equal(result.validationError, 'Enter valid Jalali dates.');
 	for (const status of [401, 403]) {
@@ -69,8 +71,8 @@ async function compiledPage() {
 
 test('search page renders escaped excerpts, report signature states, warnings and filter-preserving pagination', async () => {
 	const Page = await compiledPage();
-	const filters = { q: 'liver hemangioma', date_range: 'custom', date_from: '1405-08-01', date_to: '1405-08-22' };
-	const data = { filters, validationError: null, search: {
+	const filters = { q: 'liver hemangioma', date_range: 'custom', date_from: '1405-08-01', date_to: '1405-08-22', modality: 'CT' };
+		const data = { filters, modalities: ['CT', 'MR'], validationError: null, search: {
 		searched: true, scanned: 25, unavailable: 2, total: 21, totalPages: 2, page: 1, expansions: [['hemangioma', 'haemangioma']],
 		rows: [0, 1].map((signed) => ({ recording_id: signed + 1, study_id: 1, patient_code: 'SYNTHETIC & CODE', patient_fullname: '<Synthetic patient>', exam_date_jalali: '1405-08-22', attending_checked: signed, disabled: signed, mentionCount: 4,
 			mentions: [{ excerpt: 'No hepatic hemangioma. <script>not executable</script>' }] }))
@@ -86,10 +88,30 @@ test('search page renders escaped excerpts, report signature states, warnings an
 	assert.match(body, /Results may be incomplete/);
 	assert.match(body, /Showing 1 of 4 matching sentences/);
 	assert.ok(body.includes('/studies?patient_code=SYNTHETIC+%26+CODE'));
-	assert.ok(body.includes('q=liver+hemangioma&amp;date_range=custom&amp;date_from=1405-08-01&amp;date_to=1405-08-22&amp;page=2'));
+	assert.ok(body.includes('q=liver+hemangioma&amp;date_range=custom&amp;date_from=1405-08-01&amp;date_to=1405-08-22&amp;modality=CT&amp;page=2'));
+	assert.match(body, /name="modality"/);
+	assert.match(body, /<option value="">All modalities<\/option>/);
+	assert.match(body, /<option value="CT" selected(?:="")?>CT<\/option>/);
+	assert.match(body, /not the recording\/report template modality/);
 	assert.doesNotMatch(body, /[?&](?:amp;)?context=/);
 	assert.match(body, /type="search" required(?:="")? maxlength="160"/);
 	assert.match(body, /value="1405-08-01"/);
+});
+
+test('modality selection survives validation, unknown values and previous-page navigation safely', async () => {
+	const Page = await compiledPage();
+	const unknown = '<Synthetic modality>';
+	const invalid = render(Page, { props: { data: { filters: { q: 'HCC', modality: unknown }, modalities: ['CT'], search: null, validationError: 'Enter valid dates.' } } }).body;
+	assert.match(invalid, /&lt;Synthetic modality(?:>|&gt;)/);
+	assert.doesNotMatch(invalid, /<Synthetic modality>/);
+	assert.match(invalid, /value="CT"/);
+	const body = render(Page, { props: { data: {
+		filters: { q: 'HCC', modality: 'MR', date_range: 'all' }, modalities: ['CT', 'MR'], validationError: null,
+		search: { searched: true, scanned: 21, unavailable: 0, total: 21, totalPages: 2, page: 2, expansions: [], rows: [] }
+	} } }).body;
+	assert.ok(body.includes('q=HCC&amp;modality=MR&amp;date_range=all&amp;page=1'));
+	assert.doesNotMatch(body, /name="page"/);
+	assert.match(body, /href="\/pathology-search"[^>]*>Reset/);
 });
 
 test('initial, empty and validation-error page states remain useful without report data', async () => {

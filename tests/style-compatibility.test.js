@@ -100,7 +100,7 @@ test('disabled study badges stay intact instead of wrapping into mobile table co
 });
 
 test('favorite category containers and fields can shrink within narrow mobile boxes', () => {
-	for (const element of ['details', 'form', 'label', 'input']) {
+	for (const element of ['section', 'form', 'label', 'input']) {
 		const styles = componentDeclarations('FavoriteCategories.svelte', element);
 		assert.equal(styles.get('min-width'), '0');
 		assert.equal(styles.get('max-width'), '100%');

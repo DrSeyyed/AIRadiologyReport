@@ -1,6 +1,5 @@
 <script>
-	import { goto, invalidateAll } from '$app/navigation';
-	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	let { data } = $props();
 	let name = $state('');
@@ -20,20 +19,16 @@
 			const result = await response.json();
 			if (!response.ok) throw new Error(result.error || 'Unable to update favorite categories.');
 			if (method === 'POST') name = '';
-			if (method === 'DELETE' && data.filters.favorites === String(id)) {
-				const url = new URL(page.url);
-				url.searchParams.set('favorites', 'all');
-				url.searchParams.delete('page');
-				await goto(resolve(`/studies${url.search}`), { invalidateAll: true });
-			} else await invalidateAll();
+			await invalidateAll();
 		} catch (caught) { error = caught.message || 'Unable to update favorite categories.'; }
 		finally { busy = false; }
 	}
 </script>
 
-<details class="worklist-section">
-	<summary>My study favorites ({data.favorites.total}) — manage categories</summary>
-	<div class="worklist-section-content">
+<section class="space-y-4" aria-labelledby="favorite-categories-title">
+	<h2 id="favorite-categories-title" class="text-xl font-semibold">Manage categories</h2>
+	<a class="link" href={resolve('/studies?favorites=all')}>View all favorite studies ({data.favorites.total})</a>
+	<div class="space-y-4">
 		<p class="text-sm">Favorites and categories are private to your account. A study can belong to multiple categories. Names are optional; deleting a category keeps its studies in Favorites.</p>
 		<form class="flex flex-wrap items-end gap-2" onsubmit={(event) => { event.preventDefault(); change('POST', null, name); }}>
 			<label class="form-control"><span class="label-text">New category name (optional)</span><input class="input input-bordered input-sm" maxlength="100" bind:value={name} disabled={busy} /></label>
@@ -44,14 +39,15 @@
 				<label class="form-control"><span class="label-text">{category.name || `Unnamed category #${category.id}`} ({category.total})</span><input class="input input-bordered input-sm" name="name" aria-label={`Name for category ${category.id}`} maxlength="100" value={category.name} disabled={busy} /></label>
 				<button class="btn btn-sm btn-outline" disabled={busy}>Rename</button>
 				<button type="button" class="btn btn-sm btn-outline btn-error" disabled={busy} onclick={() => change('DELETE', category.id)}>Delete category</button>
+				<a class="link text-sm" href={resolve(`/studies?favorites=${category.id}`)}>View studies in {category.name || `Unnamed category #${category.id}`}</a>
 			</form>
 		{:else}<p class="text-sm">No categories yet. Studies can be saved directly to Favorites.</p>{/each}
 		{#if error}<p role="alert" class="text-error">{error}</p>{/if}
 	</div>
-</details>
+</section>
 
 <style>
-	details,
+	section,
 	form {
 		min-width: 0;
 		max-width: 100%;

@@ -3,8 +3,11 @@
 	import { examinationDateRange, studyDatePresets } from '$lib/study-date-ranges.js';
 	import { studySortOptions } from '$lib/study-sorting.js';
 	import SearchableSelect from '$lib/components/SearchableSelect.svelte';
+	import { resolve } from '$app/paths';
+	import StudyPagination from './StudyPagination.svelte';
 
 	let { data } = $props();
+	let showMore = $state(false);
 	let dateRange = $state('');
 	let dateFrom = $state('');
 	let dateTo = $state('');
@@ -21,58 +24,44 @@
 		dateTo = range?.date_to || '';
 	}
 
-	function applyFilters(e) {
-		const fd = new FormData(e.currentTarget);
-		const params = new URLSearchParams();
-		for (const [k, v] of fd.entries()) {
-			if (v) params.set(k, v);
-		}
-		params.set('page', '1');
-		const url = `/studies?${params.toString()}`;
-		window.location.href = url; // server-side load to refetch
-	}
+	const hasAdvancedFilters = $derived(['favorites', 'modality_id', 'exam_type_id', 'corresponding_attending_id', 'corresponding_resident_id', 'resident_checked', 'attending_checked', 'typist_checked'].some(key => data.filters[key] != null && data.filters[key] !== ''));
 </script>
 
-<div class="min-w-0 w-full">
-	<form
-		class="study-filters flex flex-wrap items-end gap-3"
-		onsubmit={(e) => {
-			e.preventDefault();
-			applyFilters(e); // your existing function that reads FormData and updates the URL
-		}}
-	>
+<div class="worklist-controls min-w-0 w-full">
+	<form class="study-filters" method="GET" action={resolve('/studies')}>
+		<div class="quick-filters">
+			<label class="form-control code-filter">
+				<span class="label-text">Patient code</span>
+				<input name="patient_code" class="input-bordered input input-sm" value={data.filters.patient_code} placeholder="Patient code" />
+			</label>
+			<label class="form-control name-filter">
+				<span class="label-text">Full name</span>
+				<input name="patient_fullname" class="input-bordered input input-sm" value={patientName(data.filters)} placeholder="Patient name" />
+			</label>
+			<label class="form-control date-filter">
+				<span class="label-text">Examination date</span>
+				<select name="date_range" class="select select-sm" value={dateRange} onchange={selectDateRange}>
+					<option value="">{dateFrom || dateTo ? 'Custom range' : 'All dates'}</option>
+					{#each studyDatePresets as preset (preset.value)}<option value={preset.value}>{preset.label}</option>{/each}
+				</select>
+			</label>
+			<button class="btn btn-sm btn-primary" type="submit">Search</button>
+			<button class="btn btn-sm btn-ghost" type="button" aria-expanded={showMore} aria-controls="advanced-study-filters" onclick={() => (showMore = !showMore)}>More filters{hasAdvancedFilters ? ' •' : ''}</button>
+		</div>
+		<div id="advanced-study-filters" class="advanced-filters" hidden={!showMore}>
+			<h3>Filters &amp; sorting</h3>
 		<label class="form-control w-56">
 			<span class="label-text mb-1 text-sm">My favorites</span>
 			<select name="favorites" class="select select-sm h-9" value={data.filters.favorites ?? ''}>
 				<option value="">All studies</option>
-				<option value="all">All favorites ({data.favorites.total})</option>
-				{#each data.favorites.categories as category (category.id)}
+				<option value="all">All favorites ({data.favorites?.total ?? 0})</option>
+				{#each data.favorites?.categories ?? [] as category (category.id)}
 					<option value={String(category.id)}>{category.name || `Unnamed category #${category.id}`} ({category.total})</option>
 				{/each}
 			</select>
 		</label>
 		<input type="hidden" name="status" value={data.filters.status || ''} />
-		<!-- Patient Code -->
-		<label class="form-control w-48">
-			<span class="label-text mb-1 text-sm">Patient Code</span>
-			<input
-				name="patient_code"
-				class="input-bordered input input-sm h-9"
-				value={data.filters.patient_code}
-				placeholder="e.g., 157626"
-			/>
-		</label>
-
-		<!-- Patient Full Name -->
-		<label class="form-control w-48">
-			<span class="label-text mb-1 text-sm">Full name</span>
-			<input
-				name="patient_fullname"
-				class="input-bordered input input-sm h-9"
-				value={patientName(data.filters)}
-				placeholder="e.g., Ali Ahmadi"
-			/>
-		</label>
+		<input type="hidden" name="page" value="1" />
 
 		<div class="w-48 max-w-full">
 			<SearchableSelect label="Modality" name="modality_id" options={data.modalities} value={String(data.filters.modality_id || '')} compact />
@@ -81,16 +70,6 @@
 		<div class="w-48 max-w-full">
 			<SearchableSelect label="Exam Type" name="exam_type_id" options={data.exam_types} value={String(data.filters.exam_type_id || '')} compact />
 		</div>
-
-		<label class="form-control w-56">
-			<span class="label-text mb-1 text-sm">Examination date</span>
-			<select name="date_range" class="select select-sm h-9" value={dateRange} onchange={selectDateRange}>
-				<option value="">All dates / custom range</option>
-				{#each studyDatePresets as preset (preset.value)}
-					<option value={preset.value}>{preset.label}</option>
-				{/each}
-			</select>
-		</label>
 
 		<!-- Date From -->
 		<label class="form-control w-32">
@@ -175,23 +154,33 @@
 			</select>
 		</label>
 
-		<button class="btn btn-sm btn-primary  h-9" type="submit">Filter</button>
-		<button
-			class="btn btn-sm btn-accent  h-9"
-			type="button"
-			onclick={() => {
-				// optional convenience: clear all filters quickly
-				const url = new URL(location.href);
-				url.search = '';
-				location.href = url.toString();
-			}}
-		>
-			Reset
-		</button>
+		<button class="btn btn-sm btn-primary h-9" type="submit">Apply filters</button>
+		<a class="btn btn-sm btn-accent h-9" href={resolve('/studies')}>Reset</a>
+		</div>
 	</form>
+	<div class="top-pagination"><StudyPagination paging={data.paging} position="above table" inline /></div>
 </div>
 
 <style>
+	.worklist-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 0.75rem; padding: 0.75rem 1rem; border-top: 1px solid #e2e8f0; }
+	.study-filters { display: contents; }
+	.quick-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 0.375rem; grid-column: 1; grid-row: 1; min-width: 0; }
+	.quick-filters .label-text { margin-bottom: 0.25rem; font-size: 0.6875rem; }
+	.code-filter { width: 6rem; }
+	.name-filter { width: 7.5rem; }
+	.date-filter { width: 9rem; }
+	.quick-filters input, .quick-filters select { height: 2rem; font-size: 0.75rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+	.quick-filters .btn { padding-left: 0.5rem; padding-right: 0.5rem; font-size: 0.6875rem; }
+	.top-pagination { grid-column: 2; grid-row: 1; min-width: 0; }
+	.advanced-filters { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; min-width: 0; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; }
+	.advanced-filters[hidden] { display: none; }
+	h3 { width: 100%; font-size: 0.8125rem; font-weight: 600; }
+	@media (max-width: 54rem) {
+		.worklist-controls { grid-template-columns: minmax(0, 1fr); }
+		.top-pagination { grid-column: 1; grid-row: 2; }
+		.advanced-filters { grid-row: 3; }
+	}
+
 	.study-filters :global(.input),
 	.study-filters :global(.select) {
 		border: 1px solid #cbd5e1;
