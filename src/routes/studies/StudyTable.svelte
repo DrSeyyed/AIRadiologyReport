@@ -20,6 +20,7 @@
 	let warning = $state('');
 	let notice = $state('');
 	let restoringId = $state(null);
+	let refreshingTelegramId = $state(null);
 	let deleteForStudy = $state(null);
 	let favoriteForStudy = $state(null);
 	let tableScroll = $state();
@@ -80,6 +81,21 @@
 			await invalidateAll();
 		} catch (error) { warning = error.message || 'Restore failed'; }
 		finally { restoringId = null; }
+	}
+
+	async function refreshTelegram(study) {
+		if (refreshingTelegramId !== null) return;
+		refreshingTelegramId = study.id;
+		warning = '';
+		notice = '';
+		try {
+			const response = await fetch(resolve(`/api/studies/${study.id}/telegram-refresh`), { method: 'POST' });
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error || 'Unable to queue Telegram refresh.');
+			notice = result.already_running ? 'Telegram refresh is already queued for this study.'
+				: 'Telegram refresh queued. The message will be updated or recreated with the current study status. Track progress in Admin → Study message refresh.';
+		} catch (error) { warning = error.message || 'Unable to queue Telegram refresh.'; }
+		finally { refreshingTelegramId = null; }
 	}
 
 	async function deleted(result) {
@@ -207,6 +223,9 @@
 									<summary class="btn btn-xs btn-ghost" aria-label={`More actions for study ${study.patient_code}`}>More actions</summary>
 									<div class="action-list">
 										<button class="btn btn-xs btn-ghost action-button" onclick={() => (favoriteForStudy = study)}>Favorite categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
+										{#if isAdmin}
+											<button class="btn btn-xs btn-ghost action-button" disabled={refreshingTelegramId !== null} onclick={() => refreshTelegram(study)}>{refreshingTelegramId === study.id ? 'Queuing Telegram refresh…' : 'Refresh Telegram message'}</button>
+										{/if}
 										{#if !readOnly}
 											{#if study.disabled && canRestoreStudy(data.user)}
 												<button class="btn btn-xs btn-primary action-button" disabled={restoringId !== null} onclick={() => restore(study)}>{restoringId === study.id ? 'Restoring…' : 'Restore study'}</button>

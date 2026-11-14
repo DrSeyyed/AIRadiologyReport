@@ -70,7 +70,7 @@ test('refresh controls live only on the dedicated admin page and compile for ser
 	assert.match(page, /<header class="space-y-1">/);
 	assert.match(page, /<h1[^>]*>Telegram study message refresh<\/h1>/);
 	assert.match(page, /<p class="text-sm text-base-content\/70">/);
-	assert.match(page, /No new messages are sent, and reports and signatures are unchanged/);
+	assert.match(page, /recreate missing messages.*Disabled studies stay marked disabled; reports and signatures are unchanged/);
 	assert.match(page, /<TelegramStudyRefresh\s*\/>/);
 	for (const path of ['../src/routes/studies/+page.svelte', '../src/routes/studies/StudyTable.svelte']) {
 		assert.doesNotMatch(read(path), /TelegramStudyRefresh|\/api\/telegram\/study-refresh/);
@@ -94,14 +94,14 @@ test('refresh retains global-scope confirmation, base-aware API requests and bac
 	await ui.mount();
 	assert.equal(ui.timers.size, 0);
 	await ui.refresh();
-	assert.match(ui.confirmations[0], /including disabled studies.*ignores current filters.*No new messages.*reports and signatures will not change/);
+	assert.match(ui.confirmations[0], /including disabled studies.*ignores current filters.*Missing messages will be recreated.*reports and signatures will not change/);
 	assert.deepEqual(requests[1], {
 		url: '/base/api/telegram/study-refresh',
 		options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
 	});
 	assert.match(ui.snapshot().message, /Queued 2 study messages.*continues if you leave this page/);
 	await ui.refresh();
-	assert.equal(requests.length, 2, 'pending jobs cannot be submitted twice');
+	assert.equal(requests.length, 3, 'bulk requests can include studies not covered by pending single-study work');
 	status = { configured: true, total: 2, pending: 1, refreshed: 1, failed: 0, skipped: 0 };
 	await ui.poll();
 	assert.deepEqual(ui.snapshot().status, status);
@@ -146,7 +146,7 @@ test('running work resumes polling on entry, survives transient status errors an
 test('queue outcomes and errors remain visible without duplicate submissions', async () => {
 	for (const [result, ok, expected] of [
 		[{ configured: true, pending: 1, already_running: true }, true, /already running/],
-		[{ configured: true, pending: 0, queued: 0 }, true, /No linked Telegram study messages/],
+		[{ configured: true, pending: 0, queued: 0 }, true, /No studies found/],
 		[{ error: 'Temporarily unavailable' }, false, /Temporarily unavailable/]
 	]) {
 		let finish;
@@ -180,13 +180,13 @@ test('unmounted status requests cannot update state or restart polling', async (
 	assert.equal(ui.timers.size, 0);
 });
 
-test('refresh panel renders configuration guidance, progress counts, retry advice and pending disablement', async () => {
+test('refresh panel renders configuration guidance, progress counts, retry advice and allows extending pending work', async () => {
 	assert.match(await renderComponent({ configured: false }), /Configure the Telegram bot token and study group first/);
 	const pending = await renderComponent({ configured: true, total: 4, pending: 1, refreshed: 1, failed: 1, skipped: 1 });
-	assert.match(pending, /disabled/);
-	assert.match(pending, /Pending: 1 · Refreshed: 1 · Failed: 1 · Skipped: 1/);
+	assert.doesNotMatch(pending, /<button[^>]*disabled/);
+	assert.match(pending, /Pending: 1 · Refreshed \/ recovered: 1 · Failed: 1 · Skipped: 1/);
 	assert.match(pending, /including disabled; ignores current filters/);
 	const done = await renderComponent({ configured: true, total: 4, pending: 0, refreshed: 2, failed: 1, skipped: 1 });
 	assert.doesNotMatch(done, /disabled(?:[\s=>])/);
-	assert.match(done, /Check bot permissions or missing messages, then refresh again to retry/);
+	assert.match(done, /Check bot permissions and Telegram configuration, then refresh again to retry/);
 });

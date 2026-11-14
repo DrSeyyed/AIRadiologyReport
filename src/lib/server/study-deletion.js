@@ -5,6 +5,10 @@ import { processTelegramVoiceDeletion } from './telegram-voice-deletion.js';
 
 const deleting = new Set();
 
+export function isStudyDeleting(studyId) {
+	return deleting.has(studyId);
+}
+
 export function restoreStudy(db, studyId, { queueTelegram = false } = {}) {
 	if (deleting.has(studyId))
 		throw Object.assign(new Error('Study deletion is still in progress. Try again later.'), { status: 409 });

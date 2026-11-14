@@ -31,8 +31,8 @@
 	}
 
 	async function refresh() {
-		if (sending || status?.pending || !status?.configured) return;
-		if (!window.confirm('Refresh all existing linked Telegram study messages, including disabled studies? This ignores current filters. No new messages will be sent, and reports and signatures will not change.')) return;
+		if (sending || !status?.configured) return;
+		if (!window.confirm('Refresh all Telegram study messages, including disabled studies? This ignores current filters. Missing messages will be recreated with the current status; reports and signatures will not change. Deleted voices and replies will not be reposted.')) return;
 		sending = true;
 		error = '';
 		message = '';
@@ -46,7 +46,7 @@
 				status = result;
 				message = result.already_running ? 'A Telegram refresh is already running.'
 					: result.queued ? `Queued ${result.queued} study messages. Refresh continues if you leave this page.`
-						: 'No linked Telegram study messages found.';
+						: 'No studies found.';
 			}
 		} catch (caught) {
 			if (mounted) error = caught.message || 'Unable to queue Telegram refresh.';
@@ -65,15 +65,15 @@
 
 <div class="min-w-0 max-w-full space-y-3">
 	<button type="button" class="btn btn-outline h-auto min-h-10 max-w-full whitespace-normal" onclick={refresh}
-		disabled={sending || !status?.configured || Boolean(status?.pending)}>
-		{sending ? 'Queuing Telegram refresh…' : 'Refresh all Telegram study messages'}
+		disabled={sending || !status?.configured}>
+		{sending ? 'Queuing Telegram refresh…' : 'Refresh & recover all Telegram study messages'}
 	</button>
-	<p class="text-xs">All linked studies, including disabled; ignores current filters.</p>
+	<p class="text-xs">All studies, including disabled; ignores current filters. Missing messages are recreated with current details and status. Voices and replies are not reposted.</p>
 	{#if status && !status.configured}<p class="text-xs">Configure the Telegram bot token and study group first.</p>{/if}
 	{#if message}<p class="text-xs" role="status">{message}</p>{/if}
 	{#if status?.total}
-		<p class="text-xs" role="status">Pending: {status.pending} · Refreshed: {status.refreshed} · Failed: {status.failed} · Skipped: {status.skipped}</p>
-		{#if !status.pending && status.failed}<p class="text-xs">Check bot permissions or missing messages, then refresh again to retry.</p>{/if}
+		<p class="text-xs" role="status">Pending: {status.pending} · Refreshed / recovered: {status.refreshed} · Failed: {status.failed} · Skipped: {status.skipped}</p>
+		{#if !status.pending && status.failed}<p class="text-xs">Check bot permissions and Telegram configuration, then refresh again to retry.</p>{/if}
 	{/if}
 	{#if error}<p class="text-error text-xs" role="alert">{error}</p>{/if}
 </div>

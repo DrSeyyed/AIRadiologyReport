@@ -18,7 +18,8 @@ export async function processStudyNotification(
 	}
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db.prepare(`UPDATE studies SET telegram_send_started_at = ? WHERE id = ? AND disabled = 0
-		AND (telegram_send_started_at IS NULL OR telegram_send_started_at < ?)`)
+			AND (telegram_message_id IS NULL OR trim(telegram_message_id) = '')
+			AND (telegram_send_started_at IS NULL OR telegram_send_started_at < ?)`)
 		.run(started, study.id, started - 60);
 	if (!claimed.changes) return false;
 	try {

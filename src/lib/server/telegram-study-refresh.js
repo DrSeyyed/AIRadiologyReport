@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { runBackgroundTask } from './restore-activation-runtime.js';
 import { getStudyDetail } from './studies.js';
-import { editStudyMessage } from './telegram.js';
+import { editStudyMessage, sendStudyMessage } from './telegram.js';
+import { isStudyDeleting } from './study-deletion.js';
 
 export function telegramRefreshStatus(db) {
 	const counts = { pending: 0, refreshed: 0, failed: 0, skipped: 0 };
@@ -10,22 +11,27 @@ export function telegramRefreshStatus(db) {
 	return { ...counts, total: Object.values(counts).reduce((sum, count) => sum + count, 0), configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) };
 }
 
-export function queueTelegramStudyRefresh(db) {
+export function queueTelegramStudyRefresh(db, studyId = null) {
 	if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID)
 		throw Object.assign(new Error('Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.'), { status: 503 });
 	return db.transaction(() => {
+		if (studyId !== null && !db.prepare('SELECT 1 FROM studies WHERE id = ?').get(studyId))
+			throw Object.assign(new Error('Study not found'), { status: 404 });
 		const current = telegramRefreshStatus(db);
-		if (current.pending) return { ...current, queued: 0, already_running: true };
-		db.prepare('DELETE FROM telegram_study_refresh').run();
+		if (studyId !== null && db.prepare("SELECT 1 FROM telegram_study_refresh WHERE study_id = ? AND status = 'pending'").get(studyId))
+			return { ...current, queued: 0, already_running: true };
+		if (studyId === null && !current.pending) db.prepare('DELETE FROM telegram_study_refresh').run();
+		else if (studyId !== null) db.prepare('DELETE FROM telegram_study_refresh WHERE study_id = ?').run(studyId);
 		const queued = db.prepare(`INSERT INTO telegram_study_refresh(study_id, chat_id, message_id)
-			SELECT id, ?, telegram_message_id FROM studies
-			WHERE telegram_message_id IS NOT NULL AND trim(telegram_message_id) != ''`)
-			.run(process.env.TELEGRAM_CHAT_ID).changes;
-		return { ...telegramRefreshStatus(db), queued, already_running: false };
+			SELECT id, ?, coalesce(telegram_message_id, '') FROM studies
+			${studyId !== null ? 'WHERE id = ?' : `WHERE NOT EXISTS
+				(SELECT 1 FROM telegram_study_refresh r WHERE r.study_id = studies.id)`}`)
+			.run(...(studyId === null ? [process.env.TELEGRAM_CHAT_ID] : [process.env.TELEGRAM_CHAT_ID, studyId])).changes;
+		return { ...telegramRefreshStatus(db), queued, already_running: !queued && Boolean(current.pending) };
 	})();
 }
 
-export async function processTelegramStudyRefresh(db, edit = editStudyMessage, now = Math.floor(Date.now() / 1000)) {
+export async function processTelegramStudyRefresh(db, edit = editStudyMessage, now = Math.floor(Date.now() / 1000), send = sendStudyMessage) {
 	if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return false;
 	const token = randomUUID();
 	const job = db.transaction(() => {
@@ -45,12 +51,45 @@ export async function processTelegramStudyRefresh(db, edit = editStudyMessage, n
 		.run(status, message, job.study_id, token);
 	try {
 		const study = getStudyDetail(db, job.study_id);
-		if (!study || String(study.telegram_message_id) !== job.message_id || process.env.TELEGRAM_CHAT_ID !== job.chat_id) {
+		if (!study || (study.telegram_message_id ?? '') !== job.message_id || process.env.TELEGRAM_CHAT_ID !== job.chat_id) {
 			finish('skipped', 'Study message or configured group changed.');
 			return true;
 		}
-		await edit(study, job.chat_id);
-		finish('refreshed');
+		if (isStudyDeleting(study.id)) throw new Error('Study deletion is in progress.');
+		if (study.telegram_message_id?.trim()) {
+			try {
+				await edit(study, job.chat_id);
+				finish('refreshed');
+				return true;
+			} catch (error) {
+				if (error.telegram_error_code !== 400 || !/message to edit not found/i.test(error.message)) throw error;
+			}
+		}
+		// Share the notification send lease so imports and recovery cannot post duplicate roots.
+		const started = Math.floor(Date.now() / 1000);
+		const claimed = db.transaction(() => {
+			if (isStudyDeleting(study.id) || process.env.TELEGRAM_CHAT_ID !== job.chat_id ||
+				!db.prepare('SELECT 1 FROM telegram_study_refresh WHERE study_id = ? AND lease_token = ?').get(study.id, token)) return false;
+			return db.prepare(`UPDATE studies SET telegram_send_started_at = ? WHERE id = ?
+				AND coalesce(telegram_message_id, '') = ?
+				AND (telegram_send_started_at IS NULL OR telegram_send_started_at < ?)`)
+				.run(started, study.id, job.message_id, started - 60).changes > 0;
+		})();
+		if (!claimed) throw new Error('Study message changed or a Telegram notification is in progress.');
+		try {
+			const result = await send(getStudyDetail(db, study.id), job.chat_id);
+			if (!Number.isSafeInteger(Number(result.message_id)) || Number(result.message_id) <= 0)
+				throw new Error('Invalid Telegram message ID.');
+			db.transaction(() => {
+				db.prepare('UPDATE studies SET telegram_message_id = ? WHERE id = ? AND telegram_send_started_at = ?')
+					.run(String(result.message_id), study.id, started);
+				db.prepare('DELETE FROM pending_telegram WHERE study_id = ?').run(study.id);
+				finish('refreshed');
+			})();
+		} finally {
+			db.prepare('UPDATE studies SET telegram_send_started_at = NULL WHERE id = ? AND telegram_send_started_at = ?')
+				.run(study.id, started);
+		}
 	} catch (error) {
 		const attempts = job.attempts + 1;
 		const limited = error.telegram_error_code === 429;

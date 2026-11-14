@@ -288,6 +288,35 @@ test('restore action is available to clinicians only and never in read-only tabl
 			paging: { orderedby: 's.exam_date_jalali', orderdir: 'DESC' }
 		} } });
 		assert.equal(body.includes('Restore study'), role !== 'typist');
+		assert.equal(body.includes('Refresh Telegram message'), role === 'admin');
+	}
+});
+
+test('single-study Telegram refresh uses the base path, prevents duplicate submissions and reports errors', async () => {
+	const source = read('StudyTable.svelte').match(/async function refreshTelegram\(study\) \{([\s\S]*?)\n\t\}/)[1];
+	for (const [result, ok, expected] of [
+		[{ queued: 1 }, true, /Telegram refresh queued.*current study status/],
+		[{ already_running: true }, true, /already queued/],
+		[{ error: 'Telegram is not configured' }, false, /Telegram is not configured/]
+	]) {
+		let finish;
+		const calls = [];
+		const api = new Function('fetch', 'resolve', `
+			let refreshingTelegramId = null, warning = '', notice = '';
+			async function refreshTelegram(study) { ${source} }
+			return { refreshTelegram, snapshot: () => ({ refreshingTelegramId, warning, notice }) };
+		`)((url, options) => {
+			calls.push({ url, options });
+			return new Promise((resolve) => { finish = () => resolve({ ok, json: async () => result }); });
+		}, (path) => `/base${path}`);
+		const pending = api.refreshTelegram({ id: 12 });
+		assert.equal(api.snapshot().refreshingTelegramId, 12);
+		await api.refreshTelegram({ id: 13 });
+		assert.deepEqual(calls, [{ url: '/base/api/studies/12/telegram-refresh', options: { method: 'POST' } }]);
+		finish();
+		await pending;
+		assert.equal(api.snapshot().refreshingTelegramId, null);
+		assert.match(ok ? api.snapshot().notice : api.snapshot().warning, expected);
 	}
 });
 

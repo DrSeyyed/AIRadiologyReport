@@ -71,7 +71,7 @@ test('admin overview renders grouped tool descriptions and dedicated Telegram re
 	const { body } = render(Page, { props: { data: { user: { role: 'admin' } } } });
 	assert.match(body, /<h1[^>]*>Administration<\/h1>/);
 	for (const link of linksFor({ role: 'admin' })) assert.ok(body.includes(`href="${link.href}"`), link.href);
-	assert.match(body, /Refresh existing Telegram study messages and monitor progress/);
+	assert.match(body, /Refresh Telegram study messages, recover missing posts and monitor progress/);
 });
 
 test('shared admin navigation highlights current page and shows only its category links', async () => {

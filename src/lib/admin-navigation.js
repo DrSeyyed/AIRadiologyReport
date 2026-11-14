@@ -19,7 +19,7 @@ const groups = [
 		description: 'Review registrations and maintain study messages.',
 		links: [
 			{ href: '/admin/telegram-registrations', label: 'Telegram registrations', description: 'Verify and approve new account requests.' },
-			{ href: '/admin/telegram-study-refresh', label: 'Study message refresh', description: 'Refresh existing Telegram study messages and monitor progress.' }
+			{ href: '/admin/telegram-study-refresh', label: 'Study message refresh', description: 'Refresh Telegram study messages, recover missing posts and monitor progress.' }
 		]
 	},
 	{
