@@ -78,6 +78,14 @@ test('administrators, attendings and residents can preview and confirm imports w
 		const imported = await request('import', 3, preview);
 		assert.equal(imported.status, 201);
 		assert.equal((await imported.json()).inserted, 1);
+		db.prepare('UPDATE studies SET disabled=1 WHERE source_study_uid=?').run(`synthetic.${index}`);
+		assert.equal((await request('import', 3, preview)).status, 409);
+		const restorePreview = await (await request('preview')).json();
+		assert.equal(restorePreview.rows[0].status, 'restore');
+		const restored = await request('import', null, restorePreview);
+		assert.equal(restored.status, 201);
+		assert.deepEqual(await restored.json(), { inserted: 0, skipped: 0, restored: 1, notification_warning: null });
+		assert.equal((await request('import', null, restorePreview)).status, 409);
 	}
 	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 3);
 	assert.ok(db.prepare('SELECT corresponding_attending_id,corresponding_resident_id FROM studies').all()

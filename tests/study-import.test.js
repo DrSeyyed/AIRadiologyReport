@@ -130,12 +130,41 @@ test('Excel study keys persist on import without changing UID duplicate detectio
 	const parsed = parseStudyWorkbook(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
 	const preview = previewStudyImport(db, parsed);
 	assert.deepEqual(preview.rows.map((item) => [item.status, item.study_key]), [['ready', '000042'], ['ready', '']]);
-	assert.deepEqual(commitStudyImport(db, preview, [2, 3]), { inserted: 2, skipped: 0 });
+	assert.deepEqual(commitStudyImport(db, preview, [2, 3]), { inserted: 2, skipped: 0, restored: 0, restoredStudyIds: [] });
 	assert.deepEqual(db.prepare('SELECT study_key FROM studies ORDER BY id').all(), [{ study_key: '000042' }, { study_key: '' }]);
 	const repeated = previewStudyImport(db, parsed.map((row) => ({ ...row, study_key: 'Different metadata' })));
 	assert.ok(repeated.rows.every((row) => row.status === 'duplicate'));
-	assert.deepEqual(commitStudyImport(db, repeated, [2, 3]), { inserted: 0, skipped: 2 });
+	assert.deepEqual(commitStudyImport(db, repeated, [2, 3]), { inserted: 0, skipped: 2, restored: 0, restoredStudyIds: [] });
 	assert.equal(getStudyDetail(db, 1).study_key, '000042');
+});
+
+test('matching disabled imports restore in place without replacing recordings or assignments', t => {
+	const db = fixture(t);
+	commitStudyImport(db, previewStudyImport(db, [row()]), [2], { corresponding_attending_id: 3 });
+	db.exec("UPDATE studies SET disabled=1; INSERT INTO study_recordings(study_id,audio_report_path,text_report_path,resident_checked) VALUES(1,'synthetic.ogg','synthetic.txt',1)");
+	const before = db.prepare('SELECT * FROM study_recordings').get();
+	const preview = previewStudyImport(db, [row(), row({ row: 3 })]);
+	assert.deepEqual(preview.rows.map(row => row.status), ['restore', 'duplicate']);
+	assert.deepEqual(commitStudyImport(db, preview, [2, 3], { corresponding_attending_id: 1 }), {
+		inserted: 0, skipped: 1, restored: 1, restoredStudyIds: [1]
+	});
+	assert.equal(getStudyDetail(db, 1).disabled, 0);
+	assert.equal(getStudyDetail(db, 1).corresponding_attending_id, 3);
+	assert.deepEqual(db.prepare('SELECT * FROM study_recordings').get(), before);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 1);
+	assert.equal(previewStudyImport(db, [row()]).rows[0].status, 'duplicate');
+	db.exec('UPDATE studies SET disabled=1');
+	assert.equal(previewStudyImport(db, [row({ patient_code: 'DIFFERENT' })]).rows[0].status, 'conflict');
+});
+
+test('mixed import rolls back inserted studies when a selected restoration is busy', t => {
+	const db = fixture(t);
+	commitStudyImport(db, previewStudyImport(db, [row()]), [2]);
+	db.exec('UPDATE studies SET disabled=1; INSERT INTO study_recordings(study_id,processing) VALUES(1,1)');
+	const preview = previewStudyImport(db, [row({ source_study_uid: 'NEW' }), row({ row: 3 })]);
+	assert.throws(() => commitStudyImport(db, preview, [2, 3]), error => error.status === 409);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM studies').get().n, 1);
+	assert.equal(getStudyDetail(db, 1).disabled, 1);
 });
 
 test('preview is read-only and accepts arbitrary descriptions and unknown source modalities', (t) => {
@@ -150,7 +179,7 @@ test('preview is read-only and accepts arbitrary descriptions and unknown source
 		db.prepare("SELECT name FROM sqlite_master WHERE name = 'study_import_mappings'").get(),
 		undefined
 	);
-	assert.deepEqual(commitStudyImport(db, preview, [2]), { inserted: 1, skipped: 0 });
+	assert.deepEqual(commitStudyImport(db, preview, [2]), { inserted: 1, skipped: 0, restored: 0, restoredStudyIds: [] });
 	const study = getStudyDetail(db, 1);
 	assert.equal(study.source_modality, 'CUSTOM');
 	assert.equal(study.source_description, 'Operator-specific free text');
@@ -167,7 +196,9 @@ test('one source UID creates one study and repeated rows/imports are skipped', (
 	);
 	assert.deepEqual(commitStudyImport(db, preview, [2, 3], {}, { queueTelegram: true }), {
 		inserted: 1,
-		skipped: 1
+		skipped: 1,
+		restored: 0,
+		restoredStudyIds: []
 	});
 	const studies = db.prepare('SELECT * FROM studies ORDER BY id').all();
 	assert.equal(studies.length, 1);
@@ -177,7 +208,7 @@ test('one source UID creates one study and repeated rows/imports are skipped', (
 	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 1);
 	const repeated = previewStudyImport(db, [row()]);
 	assert.equal(repeated.rows[0].status, 'duplicate');
-	assert.deepEqual(commitStudyImport(db, repeated, [2]), { inserted: 0, skipped: 1 });
+	assert.deepEqual(commitStudyImport(db, repeated, [2]), { inserted: 0, skipped: 1, restored: 0, restoredStudyIds: [] });
 	assert.notEqual(repeated.token, preview.token);
 });
 
@@ -199,7 +230,7 @@ test('full-name imports match existing split names without false UID conflicts',
 test('selecting only a repeated workbook row still imports its UID once', (t) => {
 	const db = fixture(t);
 	const preview = previewStudyImport(db, [row(), row({ row: 3 })]);
-	assert.deepEqual(commitStudyImport(db, preview, [3]), { inserted: 1, skipped: 0 });
+	assert.deepEqual(commitStudyImport(db, preview, [3]), { inserted: 1, skipped: 0, restored: 0, restoredStudyIds: [] });
 });
 
 test('UID conflicts block every source row and never overwrite an existing study', (t) => {
@@ -272,7 +303,7 @@ test('real workbook creates one study with age from AGE, not birth date', (t) =>
 	assert.deepEqual(parsed[0].errors, []);
 	const preview = previewStudyImport(db, parsed);
 	assert.equal(preview.rows[0].status, 'ready');
-	assert.deepEqual(commitStudyImport(db, preview, [parsed[0].row]), { inserted: 1, skipped: 0 });
+	assert.deepEqual(commitStudyImport(db, preview, [parsed[0].row]), { inserted: 1, skipped: 0, restored: 0, restoredStudyIds: [] });
 	const study = db.prepare('SELECT * FROM studies LIMIT 1').get();
 	assert.equal(study.patient_age, 45);
 	assert.equal(study.patient_gender, 'female');

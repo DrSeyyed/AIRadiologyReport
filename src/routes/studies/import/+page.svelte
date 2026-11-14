@@ -9,10 +9,13 @@
 	let busy = $state(false);
 	let error = $state('');
 	let success = $state('');
+	let warning = $state('');
 	let attending = $state('');
 	let notifyTelegram = $state(true);
 	let visible = $state(200);
-	const ready = $derived(preview?.rows.filter((row) => row.status === 'ready') ?? []);
+	const ready = $derived(preview?.rows.filter((row) => ['ready', 'restore'].includes(row.status)) ?? []);
+	const restoring = $derived(preview?.rows.filter((row) => row.status === 'restore').length ?? 0);
+	const requiresAttending = $derived(ready.some((row) => row.status === 'ready' && selected.has(row.row)));
 	const unresolved = $derived(
 		preview?.rows.filter((row) => ['invalid', 'conflict'].includes(row.status))
 			.length ?? 0
@@ -23,6 +26,7 @@
 		selected.clear();
 		error = '';
 		success = '';
+		warning = '';
 		visible = 200;
 	}
 
@@ -38,13 +42,14 @@
 
 	async function submit(action) {
 		if (!file || busy) return;
-		if (action === 'import' && !attending) {
+		if (action === 'import' && requiresAttending && !attending) {
 			error = 'Select the study attending before confirming import.';
 			return;
 		}
 		busy = true;
 		error = '';
 		success = '';
+		warning = '';
 		try {
 			const form = new FormData();
 			form.append('file', file);
@@ -60,10 +65,11 @@
 			if (!response.ok) throw new Error(result.error || 'Import failed');
 			if (action === 'preview') {
 				preview = result;
-				selectRows(result.rows.filter((row) => row.status === 'ready'));
+				selectRows(result.rows.filter((row) => ['ready', 'restore'].includes(row.status)));
 				visible = 200;
 			} else {
-				success = `${result.inserted} studies imported; ${result.skipped} duplicate rows skipped.`;
+				success = `${result.inserted} studies imported; ${result.restored} restored; ${result.skipped} duplicate rows skipped.`;
+				warning = result.notification_warning || '';
 				preview = null;
 				selected.clear();
 			}
@@ -103,7 +109,7 @@
 			/>
 		</label>
 		<label class="form-control">
-			<span class="label-text">Study attending (required to confirm import; optional for preview)</span>
+			<span class="label-text">Study attending (required for new studies; optional for preview or restore)</span>
 			<select class="select select-bordered" bind:value={attending} disabled={busy}>
 				<option value="">Unassigned</option>
 				{#each data.users.filter((user) => user.role === 'attending') as user (user.id)}<option
@@ -116,22 +122,24 @@
 		>
 	</form>
 	{#if error}<div class="alert alert-error" role="alert">{error}</div>{/if}
+	{#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
 	{#if success}<div class="alert alert-success" role="status">
 			{success} <a class="link" href={resolve('/studies')}>View studies</a>
 		</div>{/if}
 	{#if preview}
 		<div class="flex flex-wrap items-center gap-4">
 			<p>
-				{preview.rows.length} source rows; {ready.length} ready; {unresolved} unresolved.
-				Duplicates skipped.
+				{preview.rows.length} source rows; {ready.length - restoring} ready; {restoring} to restore; {unresolved} unresolved.
+				Active duplicates skipped.
 			</p>
 			<button class="btn btn-sm" disabled={busy} onclick={() => selectRows(ready)}
-				>Select all ready</button
+				>Select all ready / restore</button
 			>
 			<button class="btn btn-sm" disabled={busy} onclick={() => selected.clear()}
 				>Clear selection</button
 			>
 		</div>
+		{#if restoring}<p class="text-sm">Restore re-enables the existing study and keeps its recordings, reports and assignments. The selected attending applies only to new studies.</p>{/if}
 		<div class="overflow-x-auto">
 			<table class="table table-zebra">
 				<thead
@@ -150,7 +158,7 @@
 									type="checkbox"
 									aria-label={`Import row ${row.row}`}
 									checked={selected.has(row.row)}
-									disabled={busy || row.status !== 'ready'}
+									disabled={busy || !['ready', 'restore'].includes(row.status)}
 									onchange={(event) => toggle(row.row, event.currentTarget.checked)}
 								/></td
 							>
@@ -180,7 +188,7 @@
 								<div>{row.exam_time}</div></td
 							>
 							<td
-								><span class:font-bold={row.status === 'ready'}>{row.status}</span
+								><span class:font-bold={['ready', 'restore'].includes(row.status)}>{row.status}</span
 								>{#each row.errors ?? [] as message, index (index)}<div class="text-error">
 										{message}
 									</div>{/each}</td
@@ -205,7 +213,7 @@
 		{/if}
 		<button
 			class="btn btn-success"
-			disabled={busy || !selected.size || !attending}
+			disabled={busy || !selected.size || (requiresAttending && !attending)}
 			onclick={() => submit('import')}>Confirm import of {selected.size} selected rows</button
 		>
 	{/if}

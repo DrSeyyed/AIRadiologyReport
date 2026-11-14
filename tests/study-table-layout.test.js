@@ -275,7 +275,19 @@ test('zero-recording and disabled states retain accurate badges, signatures and 
 		assert.match(body, /Synthetic retained note/);
 		assert.equal(/<button[^>]*disabled[^>]*>Edit study/.test(body), Boolean(disabled));
 		assert.match(body, disabled ? /Retry deletion/ : />Delete</);
+		assert.equal(body.includes('Restore study'), Boolean(disabled));
 		assert.doesNotMatch(body, /<details[^>]*\bopen\b/);
+	}
+});
+
+test('restore action is available to clinicians only and never in read-only tables', async () => {
+	const { Component } = await component('StudyTable.svelte');
+	for (const role of ['admin', 'attending', 'resident', 'typist']) {
+		const { body } = render(Component, { props: { data: {
+			user: { id: 2, role }, studies: [{ id: 1, disabled: 1, patient_code: 'SYNTHETIC', residents: [] }], filters: {},
+			paging: { orderedby: 's.exam_date_jalali', orderdir: 'DESC' }
+		} } });
+		assert.equal(body.includes('Restore study'), role !== 'typist');
 	}
 });
 

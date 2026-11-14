@@ -4,6 +4,7 @@ function normalizeDescription(value = '') {
 	return value.trim().replace(/\s+/g, ' ').toUpperCase();
 }
 import { insertStudy, normalizeStudyInput } from './studies.js';
+import { restoreStudy } from './study-deletion.js';
 
 function fingerprint(row) {
 	return JSON.stringify([
@@ -67,7 +68,9 @@ export function previewStudyImport(db, rows) {
 			result.errors.push(error.message);
 			return result;
 		}
-		result.status = existing.length || seen.has(row.source_study_uid) ? 'duplicate' : 'ready';
+		result.status = seen.has(row.source_study_uid) ? 'duplicate'
+			: existing.length ? existing.every((study) => study.disabled) ? 'restore' : 'duplicate'
+				: 'ready';
 		seen.add(row.source_study_uid);
 		return result;
 	});
@@ -93,7 +96,7 @@ export function commitStudyImport(
 	const rows = preview.rows.filter((row) => selected.has(row.row));
 	if (
 		rows.length !== selected.size ||
-		rows.some((row) => !['ready', 'duplicate'].includes(row.status))
+		rows.some((row) => !['ready', 'restore', 'duplicate'].includes(row.status))
 	)
 		throw new Error(
 			'Selected rows contain unresolved errors. Preview and review them before importing.'
@@ -101,11 +104,15 @@ export function commitStudyImport(
 	return db.transaction(() => {
 		let inserted = 0,
 			skipped = 0;
+		const restoredStudyIds = [];
 		for (const row of rows) {
-			if (
-				db.prepare('SELECT id FROM studies WHERE source_study_uid = ?').get(row.source_study_uid)
-			) {
-				skipped++;
+			const existing = db.prepare('SELECT id, disabled FROM studies WHERE source_study_uid = ?').all(row.source_study_uid);
+			if (existing.length) {
+				if (row.status === 'restore' && existing.every((study) => study.disabled)) {
+					for (const study of existing) {
+						if (restoreStudy(db, study.id, { queueTelegram }).restored) restoredStudyIds.push(study.id);
+					}
+				} else skipped++;
 				continue;
 			}
 			const id = insertStudy(
@@ -126,6 +133,6 @@ export function commitStudyImport(
 			if (queueTelegram) db.prepare('INSERT INTO pending_telegram (study_id) VALUES (?)').run(id);
 			inserted++;
 		}
-		return { inserted, skipped };
+		return { inserted, skipped, restored: restoredStudyIds.length, restoredStudyIds };
 	})();
 }

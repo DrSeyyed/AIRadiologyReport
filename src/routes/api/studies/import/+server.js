@@ -3,6 +3,7 @@ import { canImportStudies } from '$lib/study-permissions.js';
 import { getDb } from '$lib/server/db';
 import { parseStudyWorkbook } from '$lib/server/excel-studies.js';
 import { previewStudyImport, commitStudyImport } from '$lib/server/study-import.js';
+import { refreshRestoredStudies } from '$lib/server/study-deletion.js';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -46,13 +47,14 @@ export async function POST({ request, locals }) {
 			const preview = previewStudyImport(db, parsed);
 			return json({ ...preview, telegramConfigured });
 		}
-		if (!assignments.corresponding_attending_id)
-			return json({ error: 'Select an attending before importing studies.' }, { status: 400 });
 		assignments.corresponding_resident_id = null;
 		const selected = JSON.parse(String(form.get('selected_rows') || '[]'));
 		const result = db.transaction(() => {
 			const preview = previewStudyImport(db, parsed);
 			if (form.get('token') !== preview.token) return null;
+			if (!assignments.corresponding_attending_id && Array.isArray(selected) &&
+				preview.rows.some((row) => selected.includes(row.row) && row.status === 'ready'))
+				throw new Error('Select an attending before importing new studies.');
 			return commitStudyImport(db, preview, selected, assignments, {
 				queueTelegram: telegramConfigured && form.get('notify_telegram') === 'true'
 			});
@@ -64,8 +66,10 @@ export async function POST({ request, locals }) {
 				},
 				{ status: 409 }
 			);
-		return json(result, { status: 201 });
+		const { restoredStudyIds, ...counts } = result;
+		const notification_warning = await refreshRestoredStudies(db, restoredStudyIds);
+		return json({ ...counts, notification_warning }, { status: 201 });
 	} catch (error) {
-		return json({ error: error.message || 'Could not import workbook' }, { status: 400 });
+		return json({ error: error.message || 'Could not import workbook' }, { status: error.status || 400 });
 	}
 }

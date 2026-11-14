@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
-import { deleteStudy } from '../src/lib/server/study-deletion.js';
+import { deleteStudy, restoreStudy, refreshRestoredStudies } from '../src/lib/server/study-deletion.js';
 import { getStudyDetail } from '../src/lib/server/studies.js';
 import { appendRecording, configureRecording, signRecording } from '../src/lib/server/recordings.js';
 import { processRecording, saveRecordingReport } from '../src/lib/server/recording-processing.js';
@@ -54,6 +54,66 @@ function telegramMock(t, callback) {
 	}
 	t.mock.method(globalThis, 'fetch', async (url, options) => callback(String(url).split('/').at(-1), JSON.parse(options.body)));
 }
+
+test('restoration keeps records, signatures, assignments and stopped voice jobs after partial Telegram deletion', async t => {
+	const { db, audio, report } = fixture(t); voices(db);
+	db.exec('UPDATE study_recordings SET resident_checked=1,attending_checked=1,typist_checked=1');
+	const before = db.prepare('SELECT * FROM study_recordings').get();
+	await deleteStudy(db, 1, confirm(2), async id => { if (id === 43) throw new Error('Too old'); }, async () => {});
+	assert.deepEqual(restoreStudy(db, 1, { queueTelegram: true }), { restored: true });
+	assert.equal(getStudyDetail(db, 1).disabled, 0);
+	assert.equal(getStudyDetail(db, 1).corresponding_attending_id, 3);
+	assert.deepEqual(db.prepare('SELECT * FROM study_recordings').get(), before);
+	assert.ok(existsSync(audio) && existsSync(report));
+	assert.equal(db.prepare('SELECT min(done) AS done FROM pending_voice').get().done, 1);
+	assert.equal(db.prepare('SELECT deleted FROM study_telegram_voices WHERE message_id=44').get().deleted, 1);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 0);
+	assert.deepEqual(restoreStudy(db, 1), { restored: false });
+	assert.match(await refreshRestoredStudies(db, [1], async study => {
+		assert.equal(study.disabled, 0); throw new Error('Cannot edit');
+	}), /website is active/);
+	assert.equal(getStudyDetail(db, 1).disabled, 0);
+});
+
+test('restore guards missing, processing and deleting studies and queues a missing root only once', async t => {
+	const { db } = fixture(t);
+	assert.throws(() => restoreStudy(db, 999), error => error.status === 404);
+	let release;
+	const pending = deleteStudy(db, 1, {}, async () => new Promise(resolve => { release = resolve; }), noEdit);
+	assert.throws(() => restoreStudy(db, 1), error => error.status === 409);
+	release(); await pending;
+	assert.equal(getStudyDetail(db, 1), undefined);
+	db.exec("INSERT INTO studies(id,patient_code,disabled,exam_date_jalali,exam_time) VALUES(2,'RESTORE',1,'1405-07-24','10:00:00'); INSERT INTO study_recordings(study_id,processing) VALUES(2,1)");
+	assert.throws(() => restoreStudy(db, 2), error => error.status === 409);
+	db.exec('UPDATE study_recordings SET processing=0; UPDATE studies SET telegram_send_started_at=unixepoch()');
+	assert.throws(() => restoreStudy(db, 2), error => error.status === 409);
+	db.exec('UPDATE studies SET telegram_send_started_at=NULL');
+	restoreStudy(db, 2);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 0);
+	db.exec('UPDATE studies SET disabled=1');
+	restoreStudy(db, 2, { queueTelegram: true }); restoreStudy(db, 2, { queueTelegram: true });
+	assert.equal(db.prepare('SELECT count(*) AS n FROM pending_telegram').get().n, 1);
+	assert.equal(await refreshRestoredStudies(db, [2], noEdit), null);
+});
+
+test('restore API authorizes clinicians, validates IDs and retains active state if Telegram refresh fails', async t => {
+	const { db } = fixture(t);
+	const key = `restore_${randomUUID()}`; globalThis[key] = db; t.after(() => { delete globalThis[key]; });
+	const { POST } = await loadModule('../src/routes/api/studies/[id]/restore/+server.js', key);
+	const event = (role, id = '1') => ({ locals: { user: role ? { id: 2, role } : null }, params: { id } });
+	assert.equal((await POST(event(null))).status, 401);
+	assert.equal((await POST(event('typist'))).status, 403);
+	for (const id of ['0', '-1', '1x', '9007199254740992']) assert.equal((await POST(event('resident', id))).status, 400);
+	assert.equal((await POST(event('resident', '999'))).status, 404);
+	telegramMock(t, async () => ({ json: async () => ({ ok: false, description: 'Cannot edit' }) }));
+	for (const role of ['admin', 'attending', 'resident']) {
+		db.exec('UPDATE studies SET disabled=1');
+		const response = await POST(event(role));
+		assert.equal(response.status, 200);
+		assert.match((await response.json()).notification_warning, /website is active/);
+		assert.equal(getStudyDetail(db, 1).disabled, 0);
+	}
+});
 
 test('migration preserves existing studies and voice mappings, defaults active and is idempotent', t => {
 	const oldSchema = schema.replace(/,\r?\n {4}disabled INTEGER[^\n]*\r?\n {4}telegram_send_started_at INTEGER/, '')
@@ -172,6 +232,19 @@ test('in-flight voice downloads cannot attach audio or recreate a study after de
 		assert.equal(db.prepare('SELECT count(*) AS n FROM study_recordings').get().n, disable ? 1 : 0);
 		if (disable) assert.equal(getStudyDetail(db, 1).disabled, 1);
 	});
+});
+
+test('restoring during an old voice download never attaches the canceled voice', async t => {
+	const { db, directory } = fixture(t); queueVoiceReply(db, message(43), 0);
+	let saved;
+	await processVoiceJob(db, async (_, destination) => {
+		await deleteStudy(db, 1, confirm(1), async () => { throw new Error('Too old'); }, async () => {});
+		restoreStudy(db, 1);
+		saved = destination; writeFileSync(saved, 'Canceled voice'); return saved;
+	}, async () => assert.fail('No notification'), directory, 0, async () => {});
+	assert.equal(existsSync(saved), false);
+	assert.equal(getStudyDetail(db, 1).disabled, 0);
+	assert.equal(db.prepare('SELECT count(*) AS n FROM study_recordings').get().n, 1);
 });
 
 test('disabled studies never send queued Telegram notifications, and an in-flight notification must finish before deletion', async t => {

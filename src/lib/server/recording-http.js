@@ -11,16 +11,18 @@ import {
 	assertRecordingReviewers,
 	recordingError
 } from './recordings.js';
-import { processRecording, saveRecordingReport } from './recording-processing.js';
+import { processRecording, saveRecordingReport, transcribeRecording } from './recording-processing.js';
 import { readStoredAudio } from './storage-audio.js';
 import { syncStudyMessage } from './telegram.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-function handler(action, requireRecording = true, allowTypist = false) {
+function handler(action, requireRecording = true, allowTypist = false, adminOnly = false) {
 	return async (event) => {
 		if (!event.locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+		if (adminOnly && event.locals.user.role !== 'admin')
+			return json({ error: 'Forbidden' }, { status: 403 });
 		if (event.locals.user.role === 'typist' && !allowTypist)
 			return json(
 				{ error: 'Typists may only view reports and change the typist signature.' },
@@ -184,6 +186,15 @@ export const generate = handler(async ({ db, studyId, recordingId }) => {
 	await syncStudyMessage(getStudyDetail(db, studyId));
 	return json(result);
 });
+
+export const transcribeOnly = handler(
+	async ({ db, studyId, recordingId }) => json(await transcribeRecording(db, studyId, recordingId), {
+		headers: { 'Cache-Control': 'private, no-store' }
+	}),
+	true,
+	false,
+	true
+);
 
 export const readReport = handler(
 	({ recording }) => {

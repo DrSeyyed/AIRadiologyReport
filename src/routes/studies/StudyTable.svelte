@@ -9,7 +9,7 @@
 	import DeleteStudyModal from './DeleteStudyModal.svelte';
 	import StudyFavorite from './StudyFavorite.svelte';
 	import FavoriteStudyModal from './FavoriteStudyModal.svelte';
-	import { canImportStudies } from '$lib/study-permissions.js';
+	import { canImportStudies, canRestoreStudy } from '$lib/study-permissions.js';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -18,6 +18,8 @@
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
+	let notice = $state('');
+	let restoringId = $state(null);
 	let deleteForStudy = $state(null);
 	let favoriteForStudy = $state(null);
 	let tableScroll = $state();
@@ -64,7 +66,24 @@
 		return isAdmin || !study.attending_checked_count || (data.user?.role === 'attending' && data.user.id === study.corresponding_attending_id);
 	}
 
+	async function restore(study) {
+		if (restoringId !== null) return;
+		restoringId = study.id;
+		warning = '';
+		notice = '';
+		try {
+			const response = await fetch(`/api/studies/${study.id}/restore`, { method: 'POST' });
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error || 'Restore failed');
+			warning = result.notification_warning || '';
+			notice = 'Study restored. Existing recordings and reports were kept.';
+			await invalidateAll();
+		} catch (error) { warning = error.message || 'Restore failed'; }
+		finally { restoringId = null; }
+	}
+
 	async function deleted(result) {
+		notice = '';
 		deleteForStudy = null;
 		warning = result.notification_warning || '';
 		await invalidateAll();
@@ -76,6 +95,7 @@
 		<FavoriteStudyModal study={favoriteForStudy} categories={data.favorites.categories} onClose={() => (favoriteForStudy = null)} onSaved={async () => { favoriteForStudy = null; await invalidateAll(); }} />
 	{/key}
 {/if}
+{#if notice}<div class="alert alert-success" role="status">{notice}</div>{/if}
 {#if warning}<div class="alert alert-warning" role="status">{warning}</div>{/if}
 {#if deleteForStudy}<DeleteStudyModal study={deleteForStudy} onClose={() => (deleteForStudy = null)} onDeleted={deleted} />{/if}
 <section class="study-workspace" aria-label="Study worklist">
@@ -188,6 +208,9 @@
 									<div class="action-list">
 										<button class="btn btn-xs btn-ghost action-button" onclick={() => (favoriteForStudy = study)}>Favorite categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
 										{#if !readOnly}
+											{#if study.disabled && canRestoreStudy(data.user)}
+												<button class="btn btn-xs btn-primary action-button" disabled={restoringId !== null} onclick={() => restore(study)}>{restoringId === study.id ? 'Restoring…' : 'Restore study'}</button>
+											{/if}
 											<button class="btn btn-xs btn-ghost action-button" disabled={Boolean(study.disabled)} onclick={() => (showEditModal = study)}>Edit study</button>
 											<button class="btn btn-xs btn-error action-button" disabled={!canDelete(study)} onclick={() => { warning = ''; deleteForStudy = study; }}>{study.disabled ? 'Retry deletion' : 'Delete'}</button>
 										{/if}

@@ -5,6 +5,33 @@ import { processTelegramVoiceDeletion } from './telegram-voice-deletion.js';
 
 const deleting = new Set();
 
+export function restoreStudy(db, studyId, { queueTelegram = false } = {}) {
+	if (deleting.has(studyId))
+		throw Object.assign(new Error('Study deletion is still in progress. Try again later.'), { status: 409 });
+	return db.transaction(() => {
+		const study = db.prepare('SELECT id, disabled, telegram_message_id, telegram_send_started_at FROM studies WHERE id = ?').get(studyId);
+		if (!study) throw Object.assign(new Error('Study not found'), { status: 404 });
+		if (!study.disabled) return { restored: false };
+		if (db.prepare('SELECT 1 FROM study_recordings WHERE study_id = ? AND processing = 1').get(studyId) ||
+			study.telegram_send_started_at > Math.floor(Date.now() / 1000) - 60)
+			throw Object.assign(new Error('A recording or Telegram notification is being processed. Try again later.'), { status: 409 });
+		db.prepare('UPDATE studies SET disabled = 0 WHERE id = ?').run(studyId);
+		if (queueTelegram && !study.telegram_message_id)
+			db.prepare('INSERT OR IGNORE INTO pending_telegram (study_id) VALUES (?)').run(studyId);
+		return { restored: true };
+	})();
+}
+
+export async function refreshRestoredStudies(db, studyIds, edit = editStudyMessage) {
+	let failed = false;
+	for (const id of studyIds) {
+		const study = getStudyDetail(db, id);
+		if (!study || study.disabled || !study.telegram_message_id) continue;
+		try { await edit(study); } catch { failed = true; }
+	}
+	return failed ? 'Studies restored, but Telegram could not update all study messages. The website is active; some Telegram messages may still look disabled.' : null;
+}
+
 export async function deleteStudy(db, studyId, confirmation = {}, remove = deleteMessage, edit = editStudyMessage) {
 	if (deleting.has(studyId))
 		throw Object.assign(new Error('Study deletion is already in progress.'), { status: 409 });
@@ -52,7 +79,7 @@ export async function deleteStudy(db, studyId, confirmation = {}, remove = delet
 			db.prepare('DELETE FROM studies WHERE id = ?').run(studyId);
 			return { ok: true, disabled: false, notification_warning: null };
 		}
-		let notification_warning = 'Telegram could not remove all messages (for example, its deletion time limit or missing permissions). The study is retained as disabled; new replies are ignored. Retry deletion later if permissions change.';
+		let notification_warning = 'Telegram could not remove all messages (for example, its deletion time limit or missing permissions). The study is retained as disabled; new replies are ignored. Use Restore study to re-enable it, or retry deletion later if permissions change.';
 		if (detail.telegram_message_id) {
 			try { await edit(getStudyDetail(db, studyId)); }
 			catch { notification_warning += ' Telegram also could not update the study message; it may still look active.'; }

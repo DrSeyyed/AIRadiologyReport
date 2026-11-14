@@ -1,5 +1,6 @@
 <script>
 	import TypistSignature from './TypistSignature.svelte';
+	import TranscriptionPreview from './TranscriptionPreview.svelte';
 	import { canManageTemplates } from '$lib/template-permissions.js';
 	import { isResidentAttendingDelegate } from '$lib/signature-permissions.js';
 	import { recordingExaminations } from '$lib/recording-examinations.js';
@@ -11,6 +12,7 @@
 	let resident = $state('');
 	let busy = $state(false);
 	let generating = $state(false);
+	let transcribing = $state(false);
 	let error = $state('');
 
 	function savedExaminations(value) {
@@ -33,7 +35,7 @@
 	const signed = $derived(residentSigned || attendingSigned || Boolean(recording.typist_checked));
 	const readOnly = $derived(user?.role === 'typist' || Boolean(study.disabled));
 	const assignmentLocked = $derived(Boolean(recording.resident_assignment_locked));
-	const working = $derived(busy || Boolean(recording.processing));
+	const working = $derived(busy || transcribing || Boolean(recording.processing));
 	const admin = $derived(user?.role === 'admin');
 	const matchingAttending = $derived(user?.role === 'attending' && hasAttending && Number(user.id) === Number(study.corresponding_attending_id));
 	const assignedResident = $derived(user?.role === 'resident' && assigned && Number(user.id) === Number(recording.corresponding_resident_id));
@@ -258,6 +260,7 @@
 			<input type="checkbox" class="checkbox checkbox-sm" checked={attendingSigned} disabled={working || (!attendingSigned && (dirty || !ready || !recording.text_report_path || !residentSigned)) || !canAttending} onchange={(event) => sign('attending', event.currentTarget.checked, event.currentTarget)} />Attending signed
 		</label>
 	</div>
+	<TranscriptionPreview {study} {recording} {user} disabled={busy} bind:busy={transcribing} />
 	<TypistSignature {study} {recording} {user} {onChanged} disabled={working} />
 	{#if residentSigned}<p class="text-sm">Resident signature by {recording.resident_signer_fullname || 'Unknown signer'}{#if residentOverride} (on behalf of {recording.resident_fullname || 'assigned resident'}){/if}{#if recording.resident_signed_at} · {recording.resident_signed_at}{/if}</p>{/if}
 	{#if attendingSigned}<p class="text-sm">Attending signature by {recording.attending_signer_fullname || 'Unknown signer'}{#if recording.attending_signed_at} · {recording.attending_signed_at}{/if}</p>{/if}

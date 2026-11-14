@@ -164,7 +164,7 @@ ${transcription === undefined ? 'Listen to the attached audio. It contains every
 Patient gender: ${s.patient_gender}`;
 }
 
-async function prepareRecordingAudio(s, { transcription = false, sampleRate = 16000 } = {}) {
+async function prepareRecordingAudio(s, { transcription = false, sampleRate = 16000, requireReportKey = true } = {}) {
 	const policy = normalizeGptAudioSettings(s.gpt_audio_settings ?? DEFAULT_GPT_AUDIO_SETTINGS);
 	const parts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	try {
@@ -173,26 +173,31 @@ async function prepareRecordingAudio(s, { transcription = false, sampleRate = 16
 	} catch (error) {
 		if (!(error instanceof AudioDurationLimitError) || !policy.substitute) throw error;
 		const key = policy.substitute.provider === 'elevenlabs' ? 'ELEVENLABS_API_KEY' : 'OPENAI_API_KEY';
-		if (!process.env.OPENAI_API_KEY) throw new Error('Set OPENAI_API_KEY to generate a report with the over-limit transcription substitute.');
+		if (requireReportKey && !process.env.OPENAI_API_KEY) throw new Error('Set OPENAI_API_KEY to generate a report with the over-limit transcription substitute.');
 		if (!process.env[key]) throw new Error(`Set ${key} to use the audio-model substitute transcription model.`);
 		return { substitute: policy.substitute };
 	}
 }
 
-export async function generateRecordingReport(s, template, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
+export async function transcribeRecordingAudio(s, value = DEFAULT_TRANSCRIPTION_SETTINGS, { requireReportKey = false } = {}) {
 	const settings = normalizeTranscriptionSettings(value);
-	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
 	const audioParts = s.audio_parts?.length ? s.audio_parts : [{ audio_report_path: s.audio_report_path }];
 	let preparedAudio;
 	if (isAudioModel(settings)) {
-		const prepared = await prepareRecordingAudio(s, { transcription: true, sampleRate: audioModelSampleRate(settings) });
-		if (prepared.substitute) return generateRecordingReport(s, template, prepared.substitute);
+		const prepared = await prepareRecordingAudio(s, { transcription: true, sampleRate: audioModelSampleRate(settings), requireReportKey });
+		if (prepared.substitute) return transcribeRecordingAudio(s, prepared.substitute, { requireReportKey });
 		preparedAudio = prepared.audio;
 	}
 	const transcriptions = [];
 	for (const [index, part] of audioParts.entries())
 		transcriptions.push(await transcribeAudio(part.audio_report_path, basename(part.audio_report_path), settings, preparedAudio?.[index]));
-	return openaiGenerateReport(reportPrompt(s, template, transcriptions.join('\n'), englishInstruction));
+	return transcriptions.join('\n');
+}
+
+export async function generateRecordingReport(s, template, value = DEFAULT_TRANSCRIPTION_SETTINGS) {
+	const englishInstruction = reportEnglishInstruction(s.report_english_variant ?? 'british');
+	const transcription = await transcribeRecordingAudio(s, value, { requireReportKey: true });
+	return openaiGenerateReport(reportPrompt(s, template, transcription, englishInstruction));
 }
 
 async function requestDirectAudioReport(s, template, data) {

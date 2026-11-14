@@ -48,7 +48,7 @@
 	<div role="dialog" aria-modal="true" aria-labelledby="delete-study-title" class="modal-box space-y-4">
 		<h3 id="delete-study-title" class="text-lg font-bold">Delete study — {studyLabel(study)}</h3>
 		<p>Delete this study and all its recordings and reports? This cannot be undone.</p>
-		<p class="text-sm">The linked Telegram study message and voices will also be removed. If Telegram cannot delete any message (for example, its time limit or missing permissions), the study stays on the website as disabled and read-only. The remaining study message is marked disabled where possible, and new voice replies are not processed.</p>
+		<p class="text-sm">The linked Telegram study message and voices will also be removed. If Telegram cannot delete any message (for example, its time limit or missing permissions), the study stays on the website as disabled and read-only. Use Restore study to re-enable a retained study; already-deleted Telegram messages cannot be recovered.</p>
 		{#if loading}<p role="status">Checking linked Telegram voices…</p>
 		{:else if detail}
 			<p>{detail.recording_count} recordings · {detail.telegram_voice_count} linked Telegram voice/audio messages remaining.</p>

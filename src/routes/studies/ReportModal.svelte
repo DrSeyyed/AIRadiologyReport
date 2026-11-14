@@ -6,6 +6,7 @@
   import DOMPurify from 'dompurify';
   import { studyLabel } from '$lib/study-label.js';
   import TypistSignature from './TypistSignature.svelte';
+  import TranscriptionPreview from './TranscriptionPreview.svelte';
   import { DEFAULT_REPORT_TYPOGRAPHY, reportFonts, reportTypography, validReportSize, formattedReport, copyFormattedReport } from '$lib/report-copy.js';
   import { reportTypographyStorage } from '$lib/report-typography-client.js';
 
@@ -36,6 +37,7 @@
   let typographyError = $state('');
   let typographyRevision = 0;
   let copying = $state(false);
+  let transcribing = $state(false);
   let copyMessage = $state('');
   let copyError = $state('');
   const canExport = $derived(!state.loading && !typographyLoading && !state.error && Boolean(state.text.trim()) && validReportSize(fontSize));
@@ -155,7 +157,7 @@
   const formatted = $derived(!state.loading && typeof document !== 'undefined' ? formattedReport(reportContent) : { html: '', text: '' });
 
   async function save() {
-    if (!editable || state.saving || state.loading || state.error || !state.text.trim()) return;
+    if (!editable || state.saving || transcribing || state.loading || state.error || !state.text.trim()) return;
     state.saving = true;
     state.savedMsg = '';
     try {
@@ -204,7 +206,7 @@
     <div class="text-sm mb-3">
       <p>{residentSignature}</p>
       <p>{attendingSignature}</p>
-      <TypistSignature {study} {recording} {user} onChanged={onSaved ?? invalidateAll} disabled={state.loading || state.saving || !!state.error} />
+      <TypistSignature {study} {recording} {user} onChanged={onSaved ?? invalidateAll} disabled={state.loading || state.saving || transcribing || !!state.error} />
     </div>
     <div class="flex flex-wrap items-end gap-3 mb-3">
       <label class="form-control w-56 max-w-full">
@@ -284,6 +286,8 @@
       {/if}
     {/if}
 
+    <TranscriptionPreview {study} {recording} {user} disabled={state.saving || state.loading} bind:busy={transcribing} />
+
     <div class="modal-action flex-wrap gap-y-2">
       <button class="btn btn-outline" type="button" disabled={!canExport || copying} onclick={copyReport}>{copying ? 'Copying…' : 'Copy report'}</button>
       <button class="btn btn-outline" type="button" disabled={!canExport} onclick={printReport}>Print / Save PDF</button>
@@ -293,7 +297,7 @@
       <button
         class="btn btn-outline disabled:opacity-50"
         type="button"
-        disabled={!editable || state.saving || state.loading || !!state.error || !state.text.trim()}
+        disabled={!editable || state.saving || transcribing || state.loading || !!state.error || !state.text.trim()}
         onclick={save}
       >
         {#if state.saving}Saving…{:else}Save (Ctrl/⌘+S){/if}

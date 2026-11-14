@@ -9,7 +9,7 @@ import {
 } from './recordings.js';
 import { getStudyDetail } from './studies.js';
 import { assertStudyActive } from './study-state.js';
-import { generateRecordingReport, generateDirectAudioReport } from './recording-generation.js';
+import { generateRecordingReport, generateDirectAudioReport, transcribeRecordingAudio } from './recording-generation.js';
 import { recordingTemplate } from './recording-templates.js';
 import { getTranscriptionSettings } from './transcription-settings.js';
 import { getAttendingReportPreferences } from './report-preferences.js';
@@ -82,6 +82,37 @@ export async function processRecording(
 			throw recordingError('Set GEMINI_API_KEY to use Gemini audio models.', 501);
 		if (direct || isAudioModel(transcriptionSettings)) gptAudioSettings = getGptAudioSettings(db);
 	}
+	return withRecordingLease(db, recordingId, async (assertLease) => {
+		const text = await withRecordingAudio(db, recording, (hydrated) => runGeneration({ ...study, ...hydrated, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings, report_generation_settings: reportingSettings }, template, transcriptionSettings));
+		if (typeof text !== 'string' || !text.trim())
+			throw recordingError('Report generation returned no text.', 502);
+		assertLease();
+		const path = saveRecordingReport(db, recordingId, text, directory);
+		return { ok: true, path, text };
+	});
+}
+
+export async function transcribeRecording(db, studyId, recordingId, transcribe = transcribeRecordingAudio) {
+	assertStudyActive(db, studyId);
+	const recording = getRecording(db, studyId, recordingId);
+	if (!recording) throw recordingError('Recording not found', 404);
+	if (recording.processing) throw recordingError('Recording is already being processed.', 409);
+	if (!recording.audio_parts.length) throw recordingError('Audio file not found on server', 404);
+	const settings = getTranscriptionSettings(db);
+	if (transcribe === transcribeRecordingAudio) {
+		const key = { openai: 'OPENAI_API_KEY', elevenlabs: 'ELEVENLABS_API_KEY', gemini: 'GEMINI_API_KEY' }[settings.provider];
+		if (!process.env[key]) throw recordingError(`Set ${key} to enable transcription.`, 501);
+	}
+	const gptAudioSettings = isAudioModel(settings) ? getGptAudioSettings(db) : undefined;
+	return withRecordingLease(db, recordingId, async (assertLease) => {
+		const text = await withRecordingAudio(db, recording, (hydrated) => transcribe({ ...hydrated, gpt_audio_settings: gptAudioSettings }, settings));
+		if (typeof text !== 'string' || !text.trim()) throw recordingError('Transcription returned no text.', 502);
+		assertLease();
+		return { ok: true, text };
+	});
+}
+
+async function withRecordingLease(db, recordingId, action) {
 	const started = Math.floor(Date.now() / 1000);
 	const claimed = db
 		.prepare(
@@ -99,13 +130,10 @@ export async function processRecording(
 	}, 60_000);
 	heartbeat.unref();
 	try {
-		const text = await withRecordingAudio(db, recording, (hydrated) => runGeneration({ ...study, ...hydrated, report_english_variant: reportEnglishVariant, gpt_audio_settings: gptAudioSettings, report_generation_settings: reportingSettings }, template, transcriptionSettings));
-		if (typeof text !== 'string' || !text.trim())
-			throw recordingError('Report generation returned no text.', 502);
-		if (!db.prepare('SELECT 1 FROM study_recordings WHERE id = ? AND processing = 1 AND processing_started_at = ?').get(recordingId, leaseTimestamp))
-			throw recordingError('Recording processing lease expired. The previous report has been preserved.', 409);
-		const path = saveRecordingReport(db, recordingId, text, directory);
-		return { ok: true, path, text };
+		return await action(() => {
+			if (!db.prepare('SELECT 1 FROM study_recordings WHERE id = ? AND processing = 1 AND processing_started_at = ?').get(recordingId, leaseTimestamp))
+				throw recordingError('Recording processing lease expired. The previous report has been preserved.', 409);
+		});
 	} finally {
 		clearInterval(heartbeat);
 		db.prepare(
