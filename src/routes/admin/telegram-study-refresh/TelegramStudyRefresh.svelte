@@ -4,6 +4,8 @@
 
 	let status = $state(null);
 	let sending = $state(false);
+	let stopping = $state(false);
+	let statusVersion = 0;
 	let error = $state('');
 	let message = $state('');
 	let mounted = false;
@@ -11,29 +13,31 @@
 
 	function schedulePoll() {
 		clearTimeout(timer);
-		if (mounted && status?.pending) timer = setTimeout(loadStatus, 3000);
+		if (mounted && !stopping && status?.pending) timer = setTimeout(loadStatus, 3000);
 	}
 
 	async function loadStatus() {
+		const version = statusVersion;
 		try {
 			const response = await fetch(resolve('/api/telegram/study-refresh'));
 			const result = await response.json();
 			if (!response.ok) throw new Error(result.error || 'Unable to load Telegram refresh status.');
-			if (mounted) {
+			if (mounted && version === statusVersion) {
 				status = result;
 				error = '';
 			}
 		} catch (caught) {
-			if (mounted) error = caught.message || 'Unable to load Telegram refresh status.';
+			if (mounted && version === statusVersion) error = caught.message || 'Unable to load Telegram refresh status.';
 		} finally {
 			schedulePoll();
 		}
 	}
 
 	async function refresh() {
-		if (sending || !status?.configured) return;
+		if (sending || stopping || !status?.configured) return;
 		if (!window.confirm('Refresh all Telegram study messages, including disabled studies? This ignores current filters. Missing messages will be recreated with the current status; reports and signatures will not change. Deleted voices and replies will not be reposted.')) return;
 		sending = true;
+		statusVersion++;
 		error = '';
 		message = '';
 		try {
@@ -56,6 +60,31 @@
 		}
 	}
 
+	async function stop() {
+		if (stopping || sending || !status?.pending) return;
+		if (!window.confirm('Cancel all pending Telegram study refreshes, including individually queued studies? Requests already sent may finish. Completed changes will be kept.')) return;
+		stopping = true;
+		statusVersion++;
+		clearTimeout(timer);
+		error = '';
+		message = '';
+		try {
+			const response = await fetch(resolve('/api/telegram/study-refresh'), { method: 'DELETE' });
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error || 'Unable to cancel Telegram refresh.');
+			if (mounted) {
+				status = result;
+				message = result.cancelled ? `Cancelled ${result.cancelled} queued refreshes (counted as skipped). Requests already sent may finish; completed changes are kept.`
+					: 'No pending Telegram refreshes to cancel.';
+			}
+		} catch (caught) {
+			if (mounted) error = caught.message || 'Unable to cancel Telegram refresh.';
+		} finally {
+			stopping = false;
+			schedulePoll();
+		}
+	}
+
 	onMount(() => {
 		mounted = true;
 		loadStatus();
@@ -64,10 +93,16 @@
 </script>
 
 <div class="min-w-0 max-w-full space-y-3">
-	<button type="button" class="btn btn-outline h-auto min-h-10 max-w-full whitespace-normal" onclick={refresh}
-		disabled={sending || !status?.configured}>
-		{sending ? 'Queuing Telegram refresh…' : 'Refresh & recover all Telegram study messages'}
-	</button>
+	<div class="flex flex-wrap gap-2">
+		<button type="button" class="btn btn-outline h-auto min-h-10 max-w-full whitespace-normal" onclick={refresh}
+			disabled={sending || stopping || !status?.configured}>
+			{sending ? 'Queuing Telegram refresh…' : 'Refresh & recover all Telegram study messages'}
+		</button>
+		{#if status?.pending}
+			<button type="button" class="btn btn-outline btn-error h-auto min-h-10 max-w-full whitespace-normal" onclick={stop}
+				disabled={sending || stopping}>{stopping ? 'Cancelling…' : 'Stop & cancel refresh'}</button>
+		{/if}
+	</div>
 	<p class="text-xs">All studies, including disabled; ignores current filters. Missing messages are recreated with current details and status. Voices and replies are not reposted.</p>
 	{#if status && !status.configured}<p class="text-xs">Configure the Telegram bot token and study group first.</p>{/if}
 	{#if message}<p class="text-xs" role="status">{message}</p>{/if}

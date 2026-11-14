@@ -19,7 +19,7 @@ function controller(fetch, confirmed = true) {
 	const confirmations = [];
 	const api = new Function('onMount', '$state', 'resolve', 'fetch', 'window', 'setTimeout', 'clearTimeout', `
 		${script}
-		return { refresh, loadStatus, snapshot: () => ({ status, sending, error, message }) };
+		return { refresh, stop, loadStatus, snapshot: () => ({ status, sending, stopping, error, message }) };
 	`)(
 		(callback) => { mount = callback; },
 		(value) => value,
@@ -169,6 +169,79 @@ test('queue outcomes and errors remain visible without duplicate submissions', a
 	}
 });
 
+test('stop cancels through the base-aware API, blocks duplicate actions and stops polling', async () => {
+	let finish;
+	const requests = [];
+	const ui = controller(async (url, options) => {
+		requests.push({ url, options });
+		if (!options) return reply({ configured: true, pending: 3 });
+		return new Promise((resolve) => { finish = () => resolve(reply({ configured: true, pending: 0, skipped: 3, cancelled: 3 })); });
+	});
+	await ui.mount();
+	const pending = ui.stop();
+	assert.equal(ui.snapshot().stopping, true);
+	assert.equal(ui.timers.size, 0);
+	await ui.stop();
+	await ui.refresh();
+	assert.equal(requests.length, 2);
+	assert.deepEqual(requests[1], { url: '/base/api/telegram/study-refresh', options: { method: 'DELETE' } });
+	assert.match(ui.confirmations[0], /including individually queued studies.*Requests already sent may finish.*Completed changes will be kept/);
+	finish();
+	await pending;
+	assert.equal(ui.snapshot().stopping, false);
+	assert.equal(ui.snapshot().status.pending, 0);
+	assert.match(ui.snapshot().message, /Cancelled 3 queued refreshes.*counted as skipped/);
+	assert.equal(ui.timers.size, 0);
+	ui.unmount();
+});
+
+test('stop is guarded while loading or idle and respects declined confirmation', async () => {
+	for (const pending of [0, 2]) {
+		let requests = 0;
+		const ui = controller(async () => { requests++; return reply({ configured: true, pending }); }, false);
+		await ui.stop();
+		assert.equal(requests, 0);
+		await ui.mount();
+		await ui.stop();
+		assert.equal(requests, 1);
+		assert.equal(ui.confirmations.length, pending ? 1 : 0);
+		ui.unmount();
+	}
+});
+
+test('cancellation errors retain pending work and resume polling; empty cancellation is harmless', async () => {
+	for (const [result, ok, expected] of [
+		[{ error: 'Unable to cancel' }, false, /Unable to cancel/],
+		[{ configured: true, pending: 0, cancelled: 0 }, true, /No pending Telegram refreshes to cancel/]
+	]) {
+		const ui = controller(async (_url, options) => options ? reply(result, ok) : reply({ configured: true, pending: 1 }));
+		await ui.mount();
+		await ui.stop();
+		assert.equal(ui.snapshot().stopping, false);
+		assert.match(ok ? ui.snapshot().message : ui.snapshot().error, expected);
+		assert.equal(ui.timers.size, ok ? 0 : 1);
+		ui.unmount();
+	}
+});
+
+test('a status poll started before cancellation cannot restore stale pending counts', async () => {
+	let finish;
+	let reads = 0;
+	const ui = controller(async (_url, options) => {
+		if (options) return reply({ configured: true, pending: 0, cancelled: 2 });
+		if (++reads === 1) return reply({ configured: true, pending: 2 });
+		return new Promise((resolve) => { finish = resolve; });
+	});
+	await ui.mount();
+	const poll = ui.poll();
+	await ui.stop();
+	finish(reply({ configured: true, pending: 2 }));
+	await poll;
+	assert.equal(ui.snapshot().status.pending, 0);
+	assert.equal(ui.timers.size, 0);
+	ui.unmount();
+});
+
 test('unmounted status requests cannot update state or restart polling', async () => {
 	let finish;
 	const ui = controller(() => new Promise((resolve) => { finish = resolve; }));
@@ -186,7 +259,9 @@ test('refresh panel renders configuration guidance, progress counts, retry advic
 	assert.doesNotMatch(pending, /<button[^>]*disabled/);
 	assert.match(pending, /Pending: 1 · Refreshed \/ recovered: 1 · Failed: 1 · Skipped: 1/);
 	assert.match(pending, /including disabled; ignores current filters/);
+	assert.match(pending, /Stop &amp; cancel refresh/);
 	const done = await renderComponent({ configured: true, total: 4, pending: 0, refreshed: 2, failed: 1, skipped: 1 });
 	assert.doesNotMatch(done, /disabled(?:[\s=>])/);
+	assert.doesNotMatch(done, /Stop &amp; cancel refresh/);
 	assert.match(done, /Check bot permissions and Telegram configuration, then refresh again to retry/);
 });

@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
-import { queueTelegramStudyRefresh, telegramRefreshStatus } from '$lib/server/telegram-study-refresh.js';
+import { queueTelegramStudyRefresh, telegramRefreshStatus, cancelTelegramStudyRefresh } from '$lib/server/telegram-study-refresh.js';
 
 function forbidden(user) {
 	if (!user) return json({ error: 'Unauthorized' }, { status: 401 });
@@ -11,6 +11,16 @@ export function GET({ locals }) {
 	const denied = forbidden(locals.user);
 	if (denied) return denied;
 	return json(telegramRefreshStatus(getDb()));
+}
+
+export function DELETE({ locals }) {
+	const denied = forbidden(locals.user);
+	if (denied) return denied;
+	try {
+		return json(cancelTelegramStudyRefresh(getDb()));
+	} catch {
+		return json({ error: 'Unable to cancel Telegram study refresh.' }, { status: 500 });
+	}
 }
 
 export function POST({ locals }) {

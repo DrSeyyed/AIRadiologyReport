@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { initializeSchema } from '../scripts/initialize-schema.mjs';
-import { queueTelegramStudyRefresh, telegramRefreshStatus, processTelegramStudyRefresh } from '../src/lib/server/telegram-study-refresh.js';
+import { queueTelegramStudyRefresh, telegramRefreshStatus, processTelegramStudyRefresh, cancelTelegramStudyRefresh } from '../src/lib/server/telegram-study-refresh.js';
 
 const schema = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
 const chatId = '-1001234567890';
@@ -194,6 +194,75 @@ test('stale rate-limit failures cannot delay a recovered or new refresh run', as
 	assert.equal(telegramRefreshStatus(db).refreshed, 1);
 });
 
+test('cancellation persists across restarts, preserves completed work and clinical data, and is idempotent without configuration', async (t) => {
+	const db = fixture(t, true);
+	db.exec('INSERT INTO pending_telegram(study_id) VALUES(3)');
+	queueTelegramStudyRefresh(db);
+	await processTelegramStudyRefresh(db, async () => {}, 100);
+	const before = clinicalSnapshot(db);
+	const pacing = db.prepare("SELECT value FROM application_settings WHERE key='telegram_refresh_next_at'").get();
+	delete process.env.TELEGRAM_BOT_TOKEN;
+	const result = cancelTelegramStudyRefresh(db);
+	assert.equal(result.cancelled, 3);
+	assert.equal(result.pending, 0);
+	assert.equal(result.skipped, 3);
+	assert.equal(result.refreshed, 1);
+	assert.equal(cancelTelegramStudyRefresh(db).cancelled, 0);
+	assert.deepEqual(clinicalSnapshot(db), before);
+	assert.deepEqual(db.prepare("SELECT value FROM application_settings WHERE key='telegram_refresh_next_at'").get(), pacing);
+	const restarted = new Database(db.serialize());
+	t.after(() => restarted.close());
+	process.env.TELEGRAM_BOT_TOKEN = 'synthetic-refresh-token';
+	assert.equal(await processTelegramStudyRefresh(restarted, async () => assert.fail('Cancelled jobs cannot resume'), 1000), false);
+	assert.equal(queueTelegramStudyRefresh(restarted).queued, 4, 'a new explicit refresh is allowed');
+});
+
+test('cancelling during an edit prevents a missing-message replacement or failure retry', async (t) => {
+	for (const code of [400, 429, undefined]) {
+		await t.test(`failure ${code}`, async (t) => {
+			const db = fixture(t);
+			queueTelegramStudyRefresh(db);
+			let fail;
+			const work = processTelegramStudyRefresh(db, () => new Promise((_resolve, reject) => { fail = reject; }), 100,
+				async () => assert.fail('Cancelled edit must not send a replacement'));
+			assert.equal(cancelTelegramStudyRefresh(db).cancelled, 2);
+			fail(Object.assign(new Error('message to edit not found'), { telegram_error_code: code, retry_after: 3600 }));
+			await work;
+			assert.equal(telegramRefreshStatus(db).pending, 0);
+			assert.equal(telegramRefreshStatus(db).skipped, 2);
+			assert.equal(await processTelegramStudyRefresh(db, async () => assert.fail('Cancelled retry'), 5000), false);
+		});
+	}
+});
+
+test('an already-sent edit may complete after cancellation without changing cancelled or newly queued jobs', async (t) => {
+	const db = fixture(t);
+	queueTelegramStudyRefresh(db);
+	let finish;
+	const work = processTelegramStudyRefresh(db, () => new Promise((resolve) => { finish = resolve; }), 100);
+	cancelTelegramStudyRefresh(db);
+	assert.equal(queueTelegramStudyRefresh(db).queued, 2);
+	finish();
+	await work;
+	assert.equal(telegramRefreshStatus(db).pending, 2);
+	assert.equal(telegramRefreshStatus(db).refreshed, 0);
+	assert.equal(await processTelegramStudyRefresh(db, async () => assert.fail('Pacing is preserved'), 102), false);
+});
+
+test('cancelling during a replacement send still saves the returned message ID and releases the notification lease', async (t) => {
+	const db = fixture(t, true);
+	queueTelegramStudyRefresh(db, 3);
+	let finish;
+	const work = processTelegramStudyRefresh(db, undefined, 100, () => new Promise((resolve) => { finish = resolve; }));
+	assert.equal(cancelTelegramStudyRefresh(db).cancelled, 1);
+	finish({ message_id: 401 });
+	await work;
+	assert.deepEqual(db.prepare('SELECT telegram_message_id,telegram_send_started_at FROM studies WHERE id=3').get(),
+		{ telegram_message_id: '401', telegram_send_started_at: null });
+	assert.equal(telegramRefreshStatus(db).pending, 0);
+	assert.equal(telegramRefreshStatus(db).skipped, 1);
+});
+
 test('missing Telegram configuration cannot queue edits or start work', async (t) => {
 	const db = fixture(t);
 	delete process.env.TELEGRAM_BOT_TOKEN;
@@ -368,9 +437,9 @@ test('refresh API denies anonymous and all non-admin roles before accessing the 
 				: specifier.startsWith('$lib/') ? new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href : import.meta.resolve(specifier);
 			return `from ${JSON.stringify(resolved)}`;
 		});
-	const { GET, POST } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+	const { GET, POST, DELETE } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 	delete globalThis[key];
-	for (const handler of [GET, POST]) {
+	for (const handler of [GET, POST, DELETE]) {
 		assert.equal(handler({ locals: {} }).status, 401);
 		for (const role of ['resident', 'attending', 'typist']) assert.equal(handler({ locals: { user: { role } } }).status, 403);
 	}
@@ -382,4 +451,11 @@ test('refresh API denies anonymous and all non-admin roles before accessing the 
 	assert.equal((await GET(admin).json()).pending, 2);
 	delete process.env.TELEGRAM_BOT_TOKEN;
 	assert.equal(POST(admin).status, 503);
+	const cancelled = await DELETE(admin).json();
+	assert.equal(cancelled.cancelled, 2);
+	assert.equal(cancelled.pending, 0);
+	assert.equal((await DELETE(admin).json()).cancelled, 0);
+	delete globalThis[key];
+	assert.equal(DELETE(admin).status, 500);
+	assert.equal((await DELETE(admin).json()).error, 'Unable to cancel Telegram study refresh.');
 });

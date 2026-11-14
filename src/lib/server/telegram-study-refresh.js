@@ -31,6 +31,15 @@ export function queueTelegramStudyRefresh(db, studyId = null) {
 	})();
 }
 
+export function cancelTelegramStudyRefresh(db) {
+	return db.transaction(() => {
+		const cancelled = db.prepare(`UPDATE telegram_study_refresh SET status = 'skipped',
+			lease_until = 0, lease_token = NULL, last_error = 'Cancelled by administrator.'
+			WHERE status = 'pending'`).run().changes;
+		return { ...telegramRefreshStatus(db), cancelled };
+	})();
+}
+
 export async function processTelegramStudyRefresh(db, edit = editStudyMessage, now = Math.floor(Date.now() / 1000), send = sendStudyMessage) {
 	if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return false;
 	const token = randomUUID();
