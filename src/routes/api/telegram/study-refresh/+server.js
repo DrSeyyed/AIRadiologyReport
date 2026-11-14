@@ -23,11 +23,17 @@ export function DELETE({ locals }) {
 	}
 }
 
-export function POST({ locals }) {
+export async function POST({ locals, request }) {
 	const denied = forbidden(locals.user);
 	if (denied) return denied;
+	let filters;
 	try {
-		return json(queueTelegramStudyRefresh(getDb()));
+		filters = await request.json();
+	} catch {
+		return json({ error: 'Invalid refresh request. Send a JSON object with examination date filters.' }, { status: 400 });
+	}
+	try {
+		return json(queueTelegramStudyRefresh(getDb(), null, filters));
 	} catch (error) {
 		return json({ error: error.status ? error.message : 'Unable to queue Telegram study refresh.' }, { status: error.status || 500 });
 	}

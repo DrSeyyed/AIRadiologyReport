@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
+import { telegramRefreshDateRange } from '../src/lib/telegram-refresh-date-range.js';
 
 const route = '../src/routes/admin/telegram-study-refresh/';
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -17,9 +18,11 @@ function controller(fetch, confirmed = true) {
 	let nextTimer = 0;
 	const timers = new Map();
 	const confirmations = [];
-	const api = new Function('onMount', '$state', 'resolve', 'fetch', 'window', 'setTimeout', 'clearTimeout', `
+	const api = new Function('onMount', '$state', 'resolve', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'telegramRefreshDateRange', `
 		${script}
-		return { refresh, stop, loadStatus, snapshot: () => ({ status, sending, stopping, error, message }) };
+			return { refresh, stop, loadStatus,
+				setRange: (preset, from = '', to = '') => { dateRange = preset; dateFrom = from; dateTo = to; },
+				snapshot: () => ({ status, sending, stopping, error, message }) };
 	`)(
 		(callback) => { mount = callback; },
 		(value) => value,
@@ -27,7 +30,8 @@ function controller(fetch, confirmed = true) {
 		fetch,
 		{ confirm: (message) => { confirmations.push(message); return confirmed; } },
 		(callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
-		(id) => timers.delete(id)
+		(id) => timers.delete(id),
+		telegramRefreshDateRange
 	);
 	return {
 		...api, timers, confirmations,
@@ -43,12 +47,14 @@ function controller(fetch, confirmed = true) {
 	};
 }
 
-async function renderComponent(status) {
-	const source = component.replace('let status = $state(null);', `let status = $state(${JSON.stringify(status)});`);
+async function renderComponent(status, preset = 'all') {
+	const source = component.replace('let status = $state(null);', `let status = $state(${JSON.stringify(status)});`)
+		.replace("let dateRange = $state('all');", `let dateRange = $state(${JSON.stringify(preset)});`);
 	const compiled = compile(source, { filename: 'TelegramStudyRefresh.svelte', generate: 'server' }).js.code
 		.replace(/from (['"])([^'"]+)\1/g, (_statement, _quote, specifier) => {
 			const target = specifier === '$app/paths'
-				? moduleUrl('export const resolve = (path) => path;') : import.meta.resolve(specifier);
+				? moduleUrl('export const resolve = (path) => path;')
+				: specifier.startsWith('$lib/') ? new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href : import.meta.resolve(specifier);
 			return `from ${JSON.stringify(target)}`;
 		});
 	const { default: Component } = await import(moduleUrl(compiled));
@@ -97,7 +103,7 @@ test('refresh retains global-scope confirmation, base-aware API requests and bac
 	assert.match(ui.confirmations[0], /including disabled studies.*ignores current filters.*Missing messages will be recreated.*reports and signatures will not change/);
 	assert.deepEqual(requests[1], {
 		url: '/base/api/telegram/study-refresh',
-		options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+		options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date_range: 'all' }) }
 	});
 	assert.match(ui.snapshot().message, /Queued 2 study messages.*continues if you leave this page/);
 	await ui.refresh();
@@ -111,6 +117,44 @@ test('refresh retains global-scope confirmation, base-aware API requests and bac
 	assert.equal(ui.snapshot().status.refreshed, 2);
 	assert.ok(requests.every(({ url }) => url === '/base/api/telegram/study-refresh'));
 	ui.unmount();
+});
+
+test('date selection submits preset or inclusive custom Jalali bounds and rejects invalid custom input', async () => {
+	const requests = [];
+	const ui = controller(async (_url, options) => {
+		if (options) requests.push(options);
+		return reply({ configured: true, pending: 0, queued: 1 });
+	});
+	await ui.mount();
+	ui.setRange('3-days');
+	await ui.refresh();
+	assert.deepEqual(JSON.parse(requests[0].body), { date_range: '3-days' });
+	assert.match(ui.confirmations[0], /Within 3 days: \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2} \(Jalali, inclusive\)/);
+	ui.setRange('custom', '1405-01-01', '1405-01-03');
+	await ui.refresh();
+	assert.deepEqual(JSON.parse(requests[1].body), { date_range: 'custom', date_from: '1405-01-01', date_to: '1405-01-03' });
+	assert.match(ui.confirmations[1], /1405-01-01 to 1405-01-03/);
+	assert.match(ui.confirmations[1], /Already queued work remains unchanged/);
+	for (const [from, to] of [['', ''], ['1404-12-30', '1405-01-01'], ['1405-01-03', '1405-01-01']]) {
+		ui.setRange('custom', from, to);
+		await ui.refresh();
+		assert.ok(ui.snapshot().error);
+		assert.equal(requests.length, 2);
+		assert.equal(ui.confirmations.length, 2);
+	}
+	ui.unmount();
+});
+
+test('rendered range selector offers presets and shows Jalali fields only for custom', async () => {
+	const standard = await renderComponent({ configured: true, pending: 0 });
+	assert.match(standard, /Examination date range/);
+	for (const label of ['All examination dates', 'Today', 'Within 3 days', 'Within 1 week', 'Within 1 month', 'Within 1 year', 'Custom range']) assert.ok(standard.includes(label));
+	assert.doesNotMatch(standard, /From \(Jalali\)/);
+	const custom = await renderComponent({ configured: true, pending: 0 }, 'custom');
+	assert.match(custom, /From \(Jalali\)/);
+	assert.match(custom, /To \(Jalali\)/);
+	assert.match(custom, /YYYY-MM-DD/);
+	assert.match(custom, /Presets use Tehran calendar days/);
 });
 
 test('unconfigured, loading and cancelled refreshes never submit a job', async () => {
@@ -258,10 +302,10 @@ test('refresh panel renders configuration guidance, progress counts, retry advic
 	const pending = await renderComponent({ configured: true, total: 4, pending: 1, refreshed: 1, failed: 1, skipped: 1 });
 	assert.doesNotMatch(pending, /<button[^>]*disabled/);
 	assert.match(pending, /Pending: 1 · Refreshed \/ recovered: 1 · Failed: 1 · Skipped: 1/);
-	assert.match(pending, /including disabled; ignores current filters/);
+	assert.match(pending, /Includes disabled studies; worklist filters do not apply/);
 	assert.match(pending, /Stop &amp; cancel refresh/);
 	const done = await renderComponent({ configured: true, total: 4, pending: 0, refreshed: 2, failed: 1, skipped: 1 });
-	assert.doesNotMatch(done, /disabled(?:[\s=>])/);
+	assert.doesNotMatch(done, /<button[^>]*disabled/);
 	assert.doesNotMatch(done, /Stop &amp; cancel refresh/);
 	assert.match(done, /Check bot permissions and Telegram configuration, then refresh again to retry/);
 });

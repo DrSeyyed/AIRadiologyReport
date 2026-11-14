@@ -52,6 +52,42 @@ test('queue includes linked and unlinked studies including disabled, and dedupli
 	assert.deepEqual(clinicalSnapshot(db), before);
 });
 
+test('custom examination bounds queue only matching studies, including disabled studies and both endpoints', (t) => {
+	const db = fixture(t, true);
+	db.exec("UPDATE studies SET exam_date_jalali=CASE id WHEN 1 THEN '1405-01-01' WHEN 2 THEN '1405-01-02' WHEN 3 THEN '1405-01-03' ELSE '1404-12-29' END");
+	const before = clinicalSnapshot(db);
+	const result = queueTelegramStudyRefresh(db, null, { date_range: 'custom', date_from: '1405-01-01', date_to: '1405-01-02' });
+	assert.equal(result.queued, 2);
+	assert.deepEqual(db.prepare('SELECT study_id FROM telegram_study_refresh ORDER BY study_id').all(), [{ study_id: 1 }, { study_id: 2 }]);
+	assert.equal(result.range.date_from, '1405-01-01');
+	assert.equal(result.range.date_to, '1405-01-02');
+	assert.deepEqual(clinicalSnapshot(db), before);
+});
+
+test('preset queue ranges use Tehran today and retain existing queued jobs outside the new range', (t) => {
+	const db = fixture(t, true);
+	db.exec("UPDATE studies SET exam_date_jalali=CASE id WHEN 1 THEN '1405-07-24' WHEN 2 THEN '1405-07-25' WHEN 3 THEN '1405-07-26' ELSE '1405-07-23' END");
+	const now = new Date('2026-10-18T12:00:00Z');
+	assert.equal(queueTelegramStudyRefresh(db, null, { date_range: 'today' }, now).queued, 1);
+	assert.deepEqual(db.prepare('SELECT study_id FROM telegram_study_refresh').all(), [{ study_id: 3 }]);
+	assert.equal(queueTelegramStudyRefresh(db, 4).queued, 1, 'individual refresh is not restricted by the bulk range');
+	assert.equal(queueTelegramStudyRefresh(db, null, { date_range: '3-days' }, now).queued, 2);
+	assert.deepEqual(db.prepare('SELECT study_id FROM telegram_study_refresh ORDER BY study_id').all(), [{ study_id: 1 }, { study_id: 2 }, { study_id: 3 }, { study_id: 4 }]);
+	assert.equal(queueTelegramStudyRefresh(db, null, { date_range: '3-days' }, now).queued, 0);
+});
+
+test('invalid ranges leave queued work untouched; valid ranges with no matches queue nothing', (t) => {
+	const db = fixture(t);
+	queueTelegramStudyRefresh(db);
+	const before = db.prepare('SELECT * FROM telegram_study_refresh').all();
+	assert.throws(() => queueTelegramStudyRefresh(db, null, { date_range: 'custom', date_from: '1405-01-02', date_to: '1405-01-01' }), { status: 400 });
+	assert.deepEqual(db.prepare('SELECT * FROM telegram_study_refresh').all(), before);
+	cancelTelegramStudyRefresh(db);
+	const result = queueTelegramStudyRefresh(db, null, { date_range: 'custom', date_from: '1405-02-01', date_to: '1405-02-02' });
+	assert.equal(result.queued, 0);
+	assert.equal(result.pending, 0);
+});
+
 test('worker edits originals with fresh reply links and disabled markup, never sends messages or changes clinical data', async (t) => {
 	const db = fixture(t);
 	queueTelegramStudyRefresh(db);
@@ -440,21 +476,32 @@ test('refresh API denies anonymous and all non-admin roles before accessing the 
 	const { GET, POST, DELETE } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 	delete globalThis[key];
 	for (const handler of [GET, POST, DELETE]) {
-		assert.equal(handler({ locals: {} }).status, 401);
-		for (const role of ['resident', 'attending', 'typist']) assert.equal(handler({ locals: { user: { role } } }).status, 403);
+		assert.equal((await handler({ locals: {} })).status, 401);
+		for (const role of ['resident', 'attending', 'typist']) assert.equal((await handler({ locals: { user: { role } } })).status, 403);
 	}
 	globalThis[key] = db;
-	const admin = { locals: { user: { role: 'admin' } } };
+	const admin = { locals: { user: { role: 'admin' } }, request: { json: async () => ({}) } };
 	assert.equal((await GET(admin).json()).total, 0);
-	assert.equal((await POST(admin).json()).queued, 2);
-	assert.equal((await POST(admin).json()).already_running, true);
+	assert.equal((await (await POST(admin)).json()).queued, 2);
+	assert.equal((await (await POST(admin)).json()).already_running, true);
 	assert.equal((await GET(admin).json()).pending, 2);
+	for (const filters of [null, [], { date_range: 'bad' }, { date_range: 'custom' }]) {
+		assert.equal((await POST({ ...admin, request: { json: async () => filters } })).status, 400);
+		assert.equal(telegramRefreshStatus(db).pending, 2);
+	}
+	assert.equal((await POST({ ...admin, request: { json: async () => { throw new SyntaxError('Bad JSON'); } } })).status, 400);
 	delete process.env.TELEGRAM_BOT_TOKEN;
-	assert.equal(POST(admin).status, 503);
+	assert.equal((await POST(admin)).status, 503);
 	const cancelled = await DELETE(admin).json();
 	assert.equal(cancelled.cancelled, 2);
 	assert.equal(cancelled.pending, 0);
 	assert.equal((await DELETE(admin).json()).cancelled, 0);
+	process.env.TELEGRAM_BOT_TOKEN = 'synthetic-refresh-token';
+	db.exec("UPDATE studies SET exam_date_jalali='1405-01-02' WHERE id=2");
+	const filtered = await POST({ ...admin, request: { json: async () => ({ date_range: 'custom', date_from: '1405-01-01', date_to: '1405-01-01' }) } });
+	assert.equal(filtered.status, 200);
+	assert.equal((await filtered.json()).queued, 1);
+	assert.deepEqual(db.prepare('SELECT study_id FROM telegram_study_refresh').all(), [{ study_id: 1 }]);
 	delete globalThis[key];
 	assert.equal(DELETE(admin).status, 500);
 	assert.equal((await DELETE(admin).json()).error, 'Unable to cancel Telegram study refresh.');

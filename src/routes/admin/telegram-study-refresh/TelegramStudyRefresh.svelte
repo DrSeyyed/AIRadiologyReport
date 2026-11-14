@@ -1,7 +1,11 @@
 <script>
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
+	import { telegramRefreshDatePresets, telegramRefreshDateRange } from '$lib/telegram-refresh-date-range.js';
 
+	let dateRange = $state('all');
+	let dateFrom = $state('');
+	let dateTo = $state('');
 	let status = $state(null);
 	let sending = $state(false);
 	let stopping = $state(false);
@@ -35,14 +39,21 @@
 
 	async function refresh() {
 		if (sending || stopping || !status?.configured) return;
-		if (!window.confirm('Refresh all Telegram study messages, including disabled studies? This ignores current filters. Missing messages will be recreated with the current status; reports and signatures will not change. Deleted voices and replies will not be reposted.')) return;
+		const filters = { date_range: dateRange };
+		if (dateRange === 'custom') Object.assign(filters, { date_from: dateFrom, date_to: dateTo });
+		let range;
+		try { range = telegramRefreshDateRange(filters); }
+		catch (caught) { error = caught.message; return; }
+		const scope = range.preset === 'all' ? 'all examination dates'
+			: `${range.label}: ${range.date_from} to ${range.date_to} (Jalali, inclusive)`;
+		if (!window.confirm(`Refresh Telegram study messages for ${scope}, including disabled studies? This ignores current filters. Already queued work remains unchanged. Missing messages will be recreated with the current status; reports and signatures will not change. Deleted voices and replies will not be reposted.`)) return;
 		sending = true;
 		statusVersion++;
 		error = '';
 		message = '';
 		try {
 			const response = await fetch(resolve('/api/telegram/study-refresh'), {
-				method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+				method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(filters)
 			});
 			const result = await response.json();
 			if (!response.ok) throw new Error(result.error || 'Unable to queue Telegram refresh.');
@@ -50,7 +61,7 @@
 				status = result;
 				message = result.already_running ? 'A Telegram refresh is already running.'
 					: result.queued ? `Queued ${result.queued} study messages. Refresh continues if you leave this page.`
-						: 'No studies found.';
+						: 'No studies found in the selected examination date range.';
 			}
 		} catch (caught) {
 			if (mounted) error = caught.message || 'Unable to queue Telegram refresh.';
@@ -93,17 +104,36 @@
 </script>
 
 <div class="min-w-0 max-w-full space-y-3">
+	<div class="grid gap-3 sm:grid-cols-3">
+		<label class="form-control min-w-0">
+			<span class="label-text mb-1">Examination date range</span>
+			<select class="select select-bordered w-full" bind:value={dateRange} disabled={sending || stopping} aria-describedby="refresh-dates-help">
+				{#each telegramRefreshDatePresets as preset (preset.value)}<option value={preset.value}>{preset.label}</option>{/each}
+			</select>
+		</label>
+		{#if dateRange === 'custom'}
+			<label class="form-control min-w-0">
+				<span class="label-text mb-1">From (Jalali)</span>
+				<input class="input input-bordered w-full" type="text" bind:value={dateFrom} disabled={sending || stopping} placeholder="YYYY-MM-DD" dir="ltr" aria-describedby="refresh-dates-help" />
+			</label>
+			<label class="form-control min-w-0">
+				<span class="label-text mb-1">To (Jalali)</span>
+				<input class="input input-bordered w-full" type="text" bind:value={dateTo} disabled={sending || stopping} placeholder="YYYY-MM-DD" dir="ltr" aria-describedby="refresh-dates-help" />
+			</label>
+		{/if}
+	</div>
+	<p id="refresh-dates-help" class="text-xs">Uses examination dates (Jalali, inclusive). Presets use Tehran calendar days. Includes disabled studies; worklist filters do not apply. Already queued work remains unchanged.</p>
 	<div class="flex flex-wrap gap-2">
 		<button type="button" class="btn btn-outline h-auto min-h-10 max-w-full whitespace-normal" onclick={refresh}
 			disabled={sending || stopping || !status?.configured}>
-			{sending ? 'Queuing Telegram refresh…' : 'Refresh & recover all Telegram study messages'}
+			{sending ? 'Queuing Telegram refresh…' : 'Refresh & recover Telegram study messages'}
 		</button>
 		{#if status?.pending}
 			<button type="button" class="btn btn-outline btn-error h-auto min-h-10 max-w-full whitespace-normal" onclick={stop}
 				disabled={sending || stopping}>{stopping ? 'Cancelling…' : 'Stop & cancel refresh'}</button>
 		{/if}
 	</div>
-	<p class="text-xs">All studies, including disabled; ignores current filters. Missing messages are recreated with current details and status. Voices and replies are not reposted.</p>
+	<p class="text-xs">Missing messages are recreated with current details and status. Voices and replies are not reposted.</p>
 	{#if status && !status.configured}<p class="text-xs">Configure the Telegram bot token and study group first.</p>{/if}
 	{#if message}<p class="text-xs" role="status">{message}</p>{/if}
 	{#if status?.total}

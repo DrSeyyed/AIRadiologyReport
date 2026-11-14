@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { telegramRefreshDateRange } from '../telegram-refresh-date-range.js';
 import { runBackgroundTask } from './restore-activation-runtime.js';
 import { getStudyDetail } from './studies.js';
 import { editStudyMessage, sendStudyMessage } from './telegram.js';
@@ -11,9 +12,10 @@ export function telegramRefreshStatus(db) {
 	return { ...counts, total: Object.values(counts).reduce((sum, count) => sum + count, 0), configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) };
 }
 
-export function queueTelegramStudyRefresh(db, studyId = null) {
+export function queueTelegramStudyRefresh(db, studyId = null, filters = {}, now = new Date()) {
 	if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID)
 		throw Object.assign(new Error('Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.'), { status: 503 });
+	const range = studyId === null ? telegramRefreshDateRange(filters, now) : null;
 	return db.transaction(() => {
 		if (studyId !== null && !db.prepare('SELECT 1 FROM studies WHERE id = ?').get(studyId))
 			throw Object.assign(new Error('Study not found'), { status: 404 });
@@ -22,12 +24,22 @@ export function queueTelegramStudyRefresh(db, studyId = null) {
 			return { ...current, queued: 0, already_running: true };
 		if (studyId === null && !current.pending) db.prepare('DELETE FROM telegram_study_refresh').run();
 		else if (studyId !== null) db.prepare('DELETE FROM telegram_study_refresh WHERE study_id = ?').run(studyId);
+		const conditions = [];
+		const values = [process.env.TELEGRAM_CHAT_ID];
+		if (studyId !== null) {
+			conditions.push('id = ?');
+			values.push(studyId);
+		} else {
+			conditions.push('NOT EXISTS (SELECT 1 FROM telegram_study_refresh r WHERE r.study_id = studies.id)');
+			if (range.date_from) {
+				conditions.push('exam_date_jalali >= ? AND exam_date_jalali <= ?');
+				values.push(range.date_from, range.date_to);
+			}
+		}
 		const queued = db.prepare(`INSERT INTO telegram_study_refresh(study_id, chat_id, message_id)
-			SELECT id, ?, coalesce(telegram_message_id, '') FROM studies
-			${studyId !== null ? 'WHERE id = ?' : `WHERE NOT EXISTS
-				(SELECT 1 FROM telegram_study_refresh r WHERE r.study_id = studies.id)`}`)
-			.run(...(studyId === null ? [process.env.TELEGRAM_CHAT_ID] : [process.env.TELEGRAM_CHAT_ID, studyId])).changes;
-		return { ...telegramRefreshStatus(db), queued, already_running: !queued && Boolean(current.pending) };
+			SELECT id, ?, coalesce(telegram_message_id, '') FROM studies WHERE ${conditions.join(' AND ')}`)
+			.run(...values).changes;
+		return { ...telegramRefreshStatus(db), queued, already_running: !queued && Boolean(current.pending), range };
 	})();
 }
 
