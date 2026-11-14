@@ -69,7 +69,7 @@ test('modal retains the study/categories contract and exposes searchable additiv
 	assert.match(body, /Create and select category/);
 	assert.match(body, /Save favorite/);
 	assert.match(body, /\/studies\/favorites/);
-	assert.match(body, /private to your account/);
+	assert.doesNotMatch(body, /This study will be saved|Type a few letters|Selected categories stay visible|New categories are created immediately|Save favorite to apply/);
 	assert.match(body, /role="status"/);
 });
 
@@ -77,8 +77,8 @@ test('empty favorites states allow saving without categories and creating the fi
 	const body = await markup('routes/studies/FavoriteStudyModal.svelte', {
 		study: { id: 1 }, categories: [], onClose() {}, onSaved() {}
 	});
-	assert.match(body, /No categories selected/);
-	assert.match(body, /No categories yet/);
+	assert.match(body, /No categories selected\./);
+	assert.doesNotMatch(body, /No categories yet|The study will still be saved/);
 	assert.match(body, /New category name \(optional\)/);
 	assert.match(body, /Save favorite/);
 	const management = await markup('routes/studies/FavoriteCategories.svelte', { data: { favorites: { total: 0, categories: [] } } });
