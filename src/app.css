@@ -136,12 +136,12 @@
 	html,
 	html[data-theme='light'] {
 		min-height: 100%;
-		@apply bg-green-100;
+		@apply bg-slate-50;
 	}
 
 	body {
 		min-height: 100vh;
-		@apply bg-green-100;
+		@apply bg-slate-50;
 	}
 
 	main {

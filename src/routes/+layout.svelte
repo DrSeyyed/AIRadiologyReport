@@ -36,7 +36,7 @@
 	}
 }} />
 
-<div class="drawer min-h-screen w-full min-w-0 bg-green-100">
+<div class="drawer min-h-screen w-full min-w-0 bg-slate-50">
 	<input id="main-drawer" type="checkbox" class="drawer-toggle" aria-label="Open navigation" bind:checked={drawerOpen} />
 	<div class="drawer-content flex min-h-screen min-w-0 flex-col">
 		<header class="sticky top-0 z-30 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-blue-100 px-4 py-2">

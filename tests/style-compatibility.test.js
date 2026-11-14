@@ -23,7 +23,7 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 					.map((node) => node.value)
 			);
 	assert.ok(
-		declarations('.bg-green-100', 'background-color').some((value) => value.startsWith('rgb('))
+		declarations('.bg-slate-50', 'background-color').some((value) => value.startsWith('rgb(248 250 252'))
 	);
 	assert.ok(declarations('html', 'background-color').some((value) => value.startsWith('rgb(')));
 	assert.ok(
@@ -32,6 +32,12 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 		)
 	);
 	assert.ok(declarations('body', 'background-color').some((value) => value.startsWith('rgb(')));
+	for (const selector of ['html', "html[data-theme='light']", 'body']) {
+		assert.ok(declarations(selector, 'background-color').some((value) => value.startsWith('rgb(248 250 252')));
+	}
+	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
+	assert.match(layout, /class="drawer [^"]*bg-slate-50"/);
+	assert.doesNotMatch(layout + source, /bg-green-100/);
 	assert.ok(declarations('.min-w-0', 'min-width').includes('0px'));
 	assert.ok(declarations('.overflow-x-auto', 'overflow-x').includes('auto'));
 	assert.ok(declarations('main', 'overflow-wrap').includes('anywhere'));
@@ -53,6 +59,17 @@ test('stylesheet generates legacy-compatible colors and contained page layout ut
 			`Uncompiled or unsupported CSS rule: @${rule.name}`
 		)
 	);
+});
+
+test('favorites and statistics align to the shared content edge without extra page padding', () => {
+	for (const path of ['../src/routes/favorites/+page.svelte', '../src/lib/components/StudyStatistics.svelte']) {
+		const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+		const section = source.match(/<section class="([^"]+)"/)?.[1];
+		assert.ok(section);
+		assert.match(section, /\bw-full\b/);
+		assert.match(section, /\bmin-w-0\b/);
+		assert.doesNotMatch(section, /\bmx-auto\b|\bp-\d+\b/);
+	}
 });
 
 function componentDeclarations(filename, element) {

@@ -10,7 +10,7 @@
 	};
 </script>
 
-<section class="mx-auto w-full min-w-0 max-w-screen-xl space-y-6" aria-labelledby="statistics-heading">
+<section class="w-full min-w-0 max-w-screen-xl space-y-6" aria-labelledby="statistics-heading">
 	<header class="space-y-2">
 		<h1 id="statistics-heading" class="text-2xl font-bold">Study statistics</h1>
 		<p class="text-sm opacity-80">Aggregate study counts only; no patient details are shown.</p>

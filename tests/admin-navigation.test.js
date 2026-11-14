@@ -90,7 +90,7 @@ test('shared admin navigation highlights current page and shows only its categor
 	const Layout = await component('../src/routes/admin/+layout.svelte', '/admin/templates');
 	for (const role of ['resident', 'attending']) {
 		const { body } = render(Layout, { props: { data: { user: { role } } } });
-		assert.match(body, /Report templates/);
+		assert.doesNotMatch(body, /aria-label="Administration"|Clinical workflow|Report templates/);
 		assert.doesNotMatch(body, /Admin overview|Telegram registrations|Storage &amp; Backups|href="\/admin\/users"/);
 	}
 });
