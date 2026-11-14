@@ -151,6 +151,18 @@ export async function sendBotMessage(chat_id, text, reply_to_message_id, reply_m
 	});
 }
 
+export async function answerBotCallback(callback_query_id) {
+	return tgRequest('answerCallbackQuery', { callback_query_id });
+}
+
+export async function configurePrivateBotMenu(chat_id, commands) {
+	assert(/^[1-9]\d*$/.test(String(chat_id)) && Number.isSafeInteger(Number(chat_id)), 'Private chat ID is required');
+	await Promise.all([
+		tgRequest('setMyCommands', { commands, scope: { type: 'chat', chat_id } }),
+		tgRequest('setChatMenuButton', { chat_id, menu_button: { type: 'commands' } })
+	]);
+}
+
 export async function getStudyGroupInviteLink() {
 	const chat_id = getChatID();
 	const chat = await tgRequest('getChat', { chat_id });

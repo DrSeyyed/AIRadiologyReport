@@ -82,7 +82,7 @@ test('webhook authenticates and gates maintenance before accessing statistics or
 	assert.deepEqual(sends, []);
 });
 
-test('new private statistics route before registration; unknown commands retain registration routing', async (t) => {
+test('private statistics retain permissions and unknown commands show menu guidance without starting registration', async (t) => {
 	const { db, state, sends, invoke, message } = await fixture(t);
 	assert.equal((await invoke({ message: message() })).status, 200);
 	assert.match(sends.at(-1).text, /Study statistics\nScope: All studies/);
@@ -105,6 +105,31 @@ test('new private statistics route before registration; unknown commands retain 
 	assert.match(sends.at(-1).text, /Send \/register to begin/);
 	assert.equal((await invoke({ message: message('/statsx', 303) })).status, 200);
 	assert.match(sends.at(-1).text, /Send \/register to begin/);
+	assert.deepEqual(state.groups, []);
+});
+
+test('private welcome and callback menus route through the authenticated webhook without altering study groups', async (t) => {
+	const { db, state, sends, invoke, message } = await fixture(t);
+	assert.equal((await invoke({ message: message('/start', 202) })).status, 200);
+	assert.match(sends.find(({ text }) => text).text, /Personal Taleghani PACS/);
+	assert.equal(db.prepare("SELECT count(*) AS n FROM telegram_registrations WHERE telegram_user_id='202'").get().n, 0);
+	assert.ok(sends.some(({ scope }) => scope?.type === 'chat' && scope.chat_id === 202));
+	const callback = { callback_query: {
+		id: 'synthetic-query', data: 'pacs:status', from: { id: 101, is_bot: false },
+		message: { ...message('menu'), from: { id: 999, is_bot: true } }
+	} };
+	assert.equal((await invoke(callback, 'wrong')).status, 401);
+	assert.equal((await invoke(callback)).status, 200);
+	assert.ok(sends.some(({ callback_query_id }) => callback_query_id === 'synthetic-query'));
+	assert.match(sends.at(-1).text, /Account approved/);
+	const before = sends.length;
+	assert.equal((await invoke({ callback_query: { ...callback.callback_query, message: { ...message(), chat: { id: -100, type: 'supergroup' } } } })).status, 200);
+	assert.equal(sends.length, before);
+	state.maintenance = true;
+	const dbCalls = state.dbCalls;
+	assert.equal((await invoke(callback)).status, 200);
+	assert.equal(state.dbCalls, dbCalls);
+	assert.equal(state.maintenanceCalls.length, 1);
 	assert.deepEqual(state.groups, []);
 });
 

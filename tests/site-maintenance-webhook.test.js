@@ -22,6 +22,7 @@ test('maintenance webhook authenticates before responding and never processes bo
 			else if (specifier === '$lib/server/db') body = `export function getDb(){${access}.database++;return {};}`;
 			else if (specifier === '$lib/server/telegram-registration.js') body = `export function validateTelegramWebhook(headers){${access}.authenticated++;if(headers.get('x-telegram-bot-api-secret-token')!=='synthetic-secret')throw Object.assign(new Error('Forbidden'),{status:403});}export function handleTelegramRegistration(){${access}.registrations++;}`;
 			else if (specifier === '$lib/server/telegram-group.js') body = `export function handleTelegramGroupMessage(){${access}.groups++;}`;
+			else if (specifier === '$lib/server/telegram-private-menu.js') body = 'export function handleTelegramPrivateMenu(){return false;}export function isTelegramPrivateMessage(){return true;}';
 			else if (specifier === '$lib/server/site-maintenance.js') body = `export function isSiteMaintenanceEnabled(){return ${access}.enabled;}export function maintenanceTelegramContext(){return {chatId:'-100123',permissions:{can_send_messages:true}};}`;
 			else if (specifier === '$lib/server/maintenance-telegram.js') body = `export function createMaintenanceTelegramResponder(){return async(update,snapshot)=>{if(${access}.fail)throw new Error('synthetic-token');${access}.notices.push({update,snapshot});};}`;
 			else throw new Error(`Unexpected import ${specifier}`);

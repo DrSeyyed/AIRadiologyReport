@@ -276,7 +276,7 @@ test('webhook authenticates before moderation and handles edited messages withou
 	assert.equal(calls.at(-1).endpoint, 'deleteMessage');
 	assert.equal(calls.at(-1).message_id, 60);
 	calls.length = 0;
-	const privateMessage = { chat: { id: 999, type: 'private' }, from: { id: 999 }, message_id: 61, text: '/register' };
+	const privateMessage = { chat: { id: 999, type: 'private' }, from: { id: 999, is_bot: false }, message_id: 61, text: '/register' };
 	assert.equal((await invoke({ message: privateMessage })).status, 200);
 	assert.ok(calls.some((call) => call.endpoint === 'sendMessage' && String(call.chat_id) === '999'));
 	assert.ok(calls.every((call) => call.endpoint !== 'deleteMessage'));
