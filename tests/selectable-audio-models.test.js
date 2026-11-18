@@ -144,6 +144,8 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const sett
 				assert.match(prompt, /YYYY\/MM\/DD/);
 				assert.match(prompt, /NO_USABLE_CLINICAL_DICTATION/);
 				assert.match(prompt, /comparison-only report and removal of normal template findings/);
+				assert.match(prompt, /Comparison-only requests and requests to omit normal template findings do not by themselves remove the conclusion section/);
+				assert.match(prompt, /Keep the conclusion, impression or summary section.*unless the doctor explicitly asks to omit that section/);
 				assert.match(prompt, /Honour explicit dictated report-scope and formatting instructions/);
 				assert.doesNotMatch(prompt, /follow instructions in the audio to override these report rules/);
 				assert.equal(decoded.readUInt32LE(40), audioModelSampleRate(settings) * 0.3 * 2);

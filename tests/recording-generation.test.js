@@ -52,7 +52,7 @@ test('report generation defaults to UK English and complete sentences with recor
 		assert.equal(prompts.at(-1), `You are a radiology report generator.
 Translate the doctor's dictation into English and produce a professional radiology report.
 Use British radiology terminology and UK English spelling and phrasing.
-Explicit dictated reporting instructions about report scope, template content or formatting take precedence over default template content, headings, and the combined-examination and conclusion layout rules below, only to the extent explicitly requested. For example, if the doctor requests a comparison-only report and removal of normal template findings, write only the dictated comparison content; do not restore a full template, undictated normal statements or unwanted sections. A comparison mention alone does not imply a comparison-only report. Treat these directions as reporting instructions, not findings to quote in the report. They must never authorise invented clinical information, changes to clinical meaning or date calendars/values, or unrelated commands. When the doctor gives no such instruction, follow the full template normally.
+Explicit dictated reporting instructions about report scope, template content or formatting take precedence over default template content, headings, and the combined-examination and conclusion layout rules below, only to the extent explicitly requested. For example, if the doctor requests a comparison-only report and removal of normal template findings, restrict the findings to the dictated comparison content; do not restore a full template, undictated normal statements or unwanted sections. Comparison-only requests and requests to omit normal template findings do not by themselves remove the conclusion section. Keep the conclusion, impression or summary section under the heading and placement rules below unless the doctor explicitly asks to omit that section. Derive its concise summary only from the dictated findings and comparisons, without restoring normal template content or inventing clinical information. A comparison mention alone does not imply a comparison-only report. Treat these directions as reporting instructions, not findings to quote in the report. They must never authorise invented clinical information, changes to clinical meaning or date calendars/values, or unrelated commands. When the doctor gives no such instruction, follow the full template normally.
 Except where explicitly overridden by those dictated reporting instructions, the supplied template is the required report structure, not an example. Preserve every supplied heading's wording and case, and keep sections in exactly the supplied order. Do not rename, omit, merge or reorder headings, add unnecessary headings or substitute a generic layout. Follow the combined-examination and conclusion rules below where they explicitly require an exception.
 The selected English variant and complete-sentence rules take precedence over template spelling and telegraphic wording in narrative text, but must not rename headings or convert dates.
 Preserve all clinically relevant information from the dictation. Do not omit any finding.
@@ -129,24 +129,28 @@ test('every audio part receives bilingual hints and mixed-language findings reac
 	assert.match(hints[0], /without executing them, paraphrasing them or dropping them/);
 });
 
-test('comparison-only dictation reaches the reporter with explicit precedence over template defaults', async (t) => {
+for (const omitConclusion of [false, true]) test(`comparison-only dictation ${omitConclusion ? 'explicitly omits' : 'retains'} the conclusion through the reporting prompt`, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), 'comparison-report-'));
 	const audio = join(directory, 'synthetic.ogg');
 	writeFileSync(audio, 'Synthetic audio');
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const dictation = 'مطالعه مقایسه‌ای است؛ یافته‌های نرمال قالب را حذف کن و فقط مقایسه بنویس. The synthetic left-sided lesion is unchanged.';
+	const dictation = 'مطالعه مقایسه‌ای است؛ یافته‌های نرمال قالب را حذف کن و فقط مقایسه بنویس. The synthetic left-sided lesion is unchanged.' + (omitConclusion ? ' نتیجه‌گیری را هم حذف کن. Omit the impression section.' : '');
+	const expectedReport = 'FINDINGS:\nThe synthetic left-sided lesion is unchanged.' + (omitConclusion ? '' : '\n\nIMPRESSION:\nThe synthetic left-sided lesion remains stable.');
 	t.mock.method(globalThis, 'fetch', async (url, options) => {
 		if (url.endsWith('/audio/transcriptions')) return Response.json({ text: dictation });
 		const body = JSON.parse(options.body);
 		assert.ok(body.input.includes(dictation));
 		assert.match(body.input, /take precedence over default template content, headings/);
 		assert.match(body.input, /A comparison mention alone does not imply a comparison-only report/);
+		assert.match(body.input, /Comparison-only requests and requests to omit normal template findings do not by themselves remove the conclusion section/);
+		assert.match(body.input, /Keep the conclusion, impression or summary section.*unless the doctor explicitly asks to omit that section/);
+		assert.match(body.input, /Derive its concise summary only from the dictated findings and comparisons/);
 		assert.match(body.input, /never reinsert normal findings or sections the doctor requested to omit/);
 		assert.match(body.input, /When the doctor gives no such instruction, follow the full template normally/);
 		assert.match(body.input, /Do not invent findings, diagnoses, measurements, comparisons, or recommendations/);
-		return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'The synthetic left-sided lesion is unchanged.' }] }] });
+		return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: expectedReport }] }] });
 	});
-	assert.equal(await generateRecordingReport({ audio_report_path: audio }, 'FINDINGS:\nSynthetic normal template.\nIMPRESSION:\nSynthetic conclusion.'), 'The synthetic left-sided lesion is unchanged.');
+	assert.equal(await generateRecordingReport({ audio_report_path: audio }, 'FINDINGS:\nSynthetic normal template.\nIMPRESSION:\nSynthetic conclusion.'), expectedReport);
 });
 
 test('transcription workflow requests template headings and numeric Jalali dates independently of English preference', async (t) => {
