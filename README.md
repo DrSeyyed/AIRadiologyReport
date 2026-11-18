@@ -35,6 +35,8 @@ npm run build
 
 You can preview the production build with `npm run preview`.
 
+Rollup is temporarily pinned through npm `overrides` to **4.68.5** because 4.68.6 can fail on Alpine/musl with “Code is nested too deeply” while parsing ordinary SvelteKit code ([upstream issue](https://github.com/rollup/rollup/issues/6670)). Run `npm install` after updating, or rebuild the Docker image so the override is applied. Revalidate Alpine builds before changing this pin.
+
 ### Browser styling compatibility
 
 The site uses Tailwind CSS 3 and DaisyUI 4, with JavaScript/CSS builds targeting Chrome and Edge 109 (the final versions available on Windows 7). Keep these styling major versions when updating dependencies: Tailwind CSS 4 requires newer browser features. The site has an explicit light theme, including fallback colors for browsers without OKLCH support. Internet Explorer is not supported; prefer a supported operating system and current browser when possible.
