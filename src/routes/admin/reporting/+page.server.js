@@ -4,6 +4,7 @@ import { DEFAULT_REPORT_GENERATION_SETTINGS, REPORT_GENERATION_MODES, normalizeR
 import { getReportGenerationSettings, setReportGenerationSettings } from '$lib/server/report-generation-settings.js';
 import { DEFAULT_GPT_AUDIO_SETTINGS, normalizeGptAudioSettings } from '$lib/gpt-audio-settings.js';
 import { getGptAudioSettings, setGptAudioSettings } from '$lib/server/gpt-audio-settings.js';
+import { reasoningEffortFromForm } from '$lib/reasoning-effort.js';
 
 function requireAdmin(locals) {
 	if (!locals.user) throw redirect(302, '/login');
@@ -76,9 +77,13 @@ export const actions = {
 			if (form.getAll('mode').length !== 1) throw new Error();
 			const legacy = !form.has('provider') && !form.has('model');
 			if (!legacy && (form.getAll('provider').length !== 1 || form.getAll('model').length !== 1)) throw new Error();
-			settings = normalizeReportGenerationSettings(legacy ? { mode } : { mode, provider: form.get('provider'), model: form.get('model') });
+			settings = normalizeReportGenerationSettings({
+				...(legacy ? { mode } : { mode, provider: form.get('provider'), model: form.get('model') }),
+				reasoningEffort: reasoningEffortFromForm(form),
+				textReasoningEffort: reasoningEffortFromForm(form, 'textReasoningEffort')
+			});
 		} catch {
-			return fail(400, { error: 'Select a supported direct audio provider and model.' });
+			return fail(400, { error: 'Select a supported direct audio provider, model and reasoning effort.' });
 		}
 		try {
 			setReportGenerationSettings(getDb(), settings);

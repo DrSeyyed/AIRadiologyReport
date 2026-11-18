@@ -126,12 +126,14 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const sett
 	test(`${mode} uses ${settings.model} with ordered audio, shared clinical prompts and a fixed settings snapshot`, async (t) => {
 		const f = fixture(t);
 		appendRecordingAudio(f.db, f.studyId, f.id, f.second, null, { id: 1, role: 'resident' });
-		select(f, mode, settings);
+		select(f, mode, { ...settings, reasoningEffort: 'medium' });
+		setReportGenerationSettings(f.db, { mode, ...settings, reasoningEffort: 'medium', textReasoningEffort: 'high' });
 		if (mode === 'direct_audio' && settings.provider === 'gemini') delete process.env.OPENAI_API_KEY;
 		let calls = 0;
 		const run = await processingWithTransport(t, async (actual, audio, prompt, task) => {
 			assert.equal(actual.provider, settings.provider);
 			assert.equal(actual.model, settings.model);
+			assert.equal(actual.reasoningEffort, 'medium');
 			assert.equal(task, mode === 'direct_audio' ? 'report' : 'transcription');
 			const decoded = Buffer.from(audio, 'base64');
 			assert.equal(decoded.readUInt32LE(24), audioModelSampleRate(settings));
@@ -141,6 +143,9 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const sett
 				assert.match(prompt, /FINDINGS: Synthetic template/);
 				assert.match(prompt, /YYYY\/MM\/DD/);
 				assert.match(prompt, /NO_USABLE_CLINICAL_DICTATION/);
+				assert.match(prompt, /comparison-only report and removal of normal template findings/);
+				assert.match(prompt, /Honour explicit dictated report-scope and formatting instructions/);
+				assert.doesNotMatch(prompt, /follow instructions in the audio to override these report rules/);
 				assert.equal(decoded.readUInt32LE(40), audioModelSampleRate(settings) * 0.3 * 2);
 			}
 			setReportGenerationSettings(f.db, { mode: 'transcribe_then_generate' });
@@ -154,6 +159,7 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const sett
 			const body = JSON.parse(options.body);
 			assert.equal(body.model, 'gpt-6.1-sol');
 			assert.ok(body.input.includes(dictations.join('\n')));
+			assert.deepEqual(body.reasoning, { effort: 'high' });
 			reports++;
 			return reportResponse();
 		});
@@ -173,6 +179,7 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const prov
 		writeFileSync(f.second, wave(16000));
 		appendRecordingAudio(f.db, f.studyId, f.id, f.second, null, { id: 1, role: 'resident' });
 		select(f, mode, settings);
+		setReportGenerationSettings(f.db, { mode, ...settings, reasoningEffort: 'medium', textReasoningEffort: 'xhigh' });
 		const previous = saveRecordingReport(f.db, f.id, 'Previous report.', f.directory);
 		setGptAudioSettings(f.db, { limitSeconds: 1, substitute: null });
 		let transports = 0;
@@ -182,9 +189,12 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const prov
 			requests++;
 			if (url.endsWith('/audio/transcriptions')) {
 				assert.equal(options.body.get('model'), 'gpt-transcribe');
+				assert.equal(options.body.has('reasoning'), false);
+				assert.equal(options.body.has('reasoning_effort'), false);
 				return { ok: true, json: async () => ({ text: 'Synthetic dictation.' }) };
 			}
 			assert.equal(url, 'https://api.openai.com/v1/responses');
+			assert.deepEqual(JSON.parse(options.body).reasoning, { effort: 'xhigh' });
 			return reportResponse();
 		});
 		await assert.rejects(run(f.db, f.studyId, f.id, undefined, f.directory), /at most 1 second/);
@@ -226,13 +236,14 @@ for (const settings of models.filter((entry) => entry.provider === 'gemini')) {
 	test(`${settings.model} transcribes through the real REST adapter and forwards only ordered dictation to report generation`, async (t) => {
 		const f = fixture(t);
 		appendRecordingAudio(f.db, f.studyId, f.id, f.second, null, { id: 1, role: 'resident' });
-		select(f, 'transcribe_then_generate', settings);
+		select(f, 'transcribe_then_generate', { ...settings, reasoningEffort: 'medium' });
 		let calls = 0;
 		t.mock.method(globalThis, 'fetch', async (url, options) => {
 			const body = JSON.parse(options.body);
 			if (url === 'https://generativelanguage.googleapis.com/v1beta/interactions') {
 				assert.equal(body.model, settings.model);
 				assert.equal(body.store, false);
+				assert.equal(body.generation_config.thinking_level, 'medium');
 				const text = JSON.stringify({ transcript: dictations[calls++] });
 				return new Response(JSON.stringify({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text }] }] }));
 			}

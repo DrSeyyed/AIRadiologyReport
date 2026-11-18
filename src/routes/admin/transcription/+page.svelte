@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { TRANSCRIPTION_PROVIDERS } from '$lib/transcription-models.js';
 	import { isAudioModel } from '$lib/audio-models.js';
+	import { reasoningEfforts } from '$lib/reasoning-effort.js';
 
 	let { data, form } = $props();
 	let selection = $state(null);
@@ -10,6 +11,8 @@
 	let provider = $derived(selection?.provider ?? saved.provider);
 	let model = $derived(selection?.model ?? saved.model);
 	let models = $derived(TRANSCRIPTION_PROVIDERS.find((entry) => entry.id === provider).models);
+	let efforts = $derived(reasoningEfforts({ provider, model }));
+	let effort = $derived((selection ? selection.reasoningEffort : saved.reasoningEffort) ?? 'default');
 
 	function changeProvider(event) {
 		const next = TRANSCRIPTION_PROVIDERS.find((entry) => entry.id === event.currentTarget.value);
@@ -54,6 +57,18 @@
 				{/each}
 			</select>
 		</label>
+		{#if efforts.length}
+			<label class="form-control min-w-0">
+				<span class="label-text">Transcription reasoning effort</span>
+				<select name="reasoningEffort" class="select select-bordered w-full min-w-0" value={effort} aria-describedby="reasoning-help" onchange={(event) => selection = { provider, model, reasoningEffort: event.currentTarget.value }}>
+					<option value="default">Provider default</option>
+					{#each efforts as level (level)}<option value={level}>{level}</option>{/each}
+				</select>
+			</label>
+			<p id="reasoning-help" class="text-sm text-base-content/70">Higher effort can increase processing time and cost; it does not guarantee a complete transcript. Changing models resets this selection to the provider default.</p>
+		{:else}
+			<p class="text-sm text-base-content/70">This model has no configurable reasoning effort.</p>
+		{/if}
 		{#if models.find((entry) => entry.id === model)?.label.includes('(legacy)')}
 			<p class="text-sm text-warning">This model retires on February 26, 2027.</p>
 		{/if}

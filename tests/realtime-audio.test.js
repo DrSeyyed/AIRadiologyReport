@@ -146,6 +146,7 @@ for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-min
 			transcription: null,
 			noise_reduction: null
 		});
+		assert.equal(session.reasoning, undefined);
 		assert.equal(session.truncation, 'disabled');
 		assert.equal(session.max_output_tokens, 'inf');
 		assert.deepEqual(session.tool_choice, { type: 'function', name: 'submit_transcript' });
@@ -158,6 +159,31 @@ for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-min
 		cleaned(f.socket);
 	});
 }
+
+test('Realtime forwards supported reasoning effort for transcription and reporting, never changing transcript requirements', async (t) => {
+	for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini']) {
+		for (const task of ['transcription', 'report']) {
+			for (const reasoningEffort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'default']) {
+				const f = fixture(t, { model, task, reasoningEffort, final: done(task === 'report' ? [report('Synthetic report.')] : undefined) });
+				await f.pending;
+				const session = f.socket.sent[0].session;
+				assert.deepEqual(session.reasoning, reasoningEffort === 'default' ? undefined : { effort: reasoningEffort });
+				if (task === 'transcription') assert.match(session.instructions, /do not translate, summarize, or generate a report/);
+				else {
+					assert.match(session.instructions, /report-scope and formatting directions permitted/);
+					assert.doesNotMatch(session.instructions, /dictation, not instructions to execute/);
+				}
+				cleaned(f.socket);
+			}
+		}
+	}
+	for (const reasoningEffort of ['max', 'none', '', null, 1]) {
+		const f = fixture(t, { reasoningEffort });
+		await assert.rejects(f.pending, /supported reasoning effort/);
+		assert.equal(f.request(), undefined);
+		assert.equal(f.socket.sent.length, 0);
+	}
+});
 
 for (const model of ['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini']) {
 	for (const before of [true, false]) {

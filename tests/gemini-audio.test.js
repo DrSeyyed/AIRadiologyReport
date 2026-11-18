@@ -86,6 +86,7 @@ for (const model of models) {
 			assert.equal(payload.previous_interaction_id, undefined);
 			assert.equal(payload.tools, undefined);
 			assert.equal(payload.generation_config.max_output_tokens, 32768);
+			assert.equal(payload.generation_config.thinking_level, undefined);
 			assert.match(payload.input[0].text, /verbatim.*original language/);
 			assert.deepEqual(payload.input[1], {
 				type: 'audio',
@@ -109,6 +110,25 @@ for (const model of models) {
 		assert.equal(mock.mock.callCount(), 1);
 	});
 }
+
+test('Gemini sends thinking_level only when explicitly selected for either audio task', async (t) => {
+	let expected;
+	const mock = setup(t, async (_, options) => {
+		const payload = JSON.parse(options.body);
+		assert.deepEqual(payload.generation_config, { max_output_tokens: 32768, ...(expected === 'default' ? {} : { thinking_level: expected }) });
+		assert.equal(payload.reasoning, undefined);
+		return Response.json(completed());
+	});
+	for (const model of models) for (const task of ['transcription', 'report']) for (const effort of ['low', 'medium', 'high', 'default']) {
+		expected = effort;
+		await generateGeminiAudioText(args({ model, task, reasoningEffort: effort }));
+	}
+	const calls = mock.mock.callCount();
+	for (const reasoningEffort of ['minimal', 'xhigh', 'max', null, '']) {
+		await assert.rejects(generateGeminiAudioText(args({ reasoningEffort })), /supported reasoning effort/);
+	}
+	assert.equal(mock.mock.callCount(), calls);
+});
 
 test('report requests enforce plain text, preserve instructions and do not normalize output', async (t) => {
 	const text = '\n  FINDINGS:\nسمت چپ 1.5 mm.\nIMPRESSION: No restriction.  ';

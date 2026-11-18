@@ -97,7 +97,7 @@ test('invalid and cross-provider pairs return safe 400 without database access o
 		const result = await submit(...pair);
 		assert.equal(result.status, 400);
 		assert.deepEqual(Object.keys(result.data), ['error']);
-		assert.equal(result.data.error, 'Select a supported transcription provider and model pair.');
+		assert.equal(result.data.error, 'Select a supported transcription provider, model and reasoning effort.');
 		assertNoSecrets(result);
 		assert.equal(state.value, saved);
 	}
@@ -133,8 +133,11 @@ test('page compiles accessibly and uses enhanced forms, dependent model options 
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
-	assert.match(source, /<h1 class="text-2xl font-semibold">/);
-	assert.match(source, /<h2 class="text-lg font-semibold">Provider and model<\/h2>/);
+	assert.match(source, /<h1 class="page-title">/);
+	assert.match(source, /<h2 class="section-title">Provider and model<\/h2>/);
+	assert.match(source, /name="reasoningEffort"/);
+	assert.match(source, /\{#if efforts.length\}/);
+	assert.match(source, /This model has no configurable reasoning effort/);
 	assert.match(source, /<details class="text-sm">/);
 	assert.match(source, /<summary class="cursor-pointer font-medium">Audio-model requirements<\/summary>/);
 	assert.match(source, /use:enhance/);
@@ -180,4 +183,32 @@ test('enhanced save keeps the selected GPT Audio model visible and preserves dra
 		assert.equal(visibleModel, 'gpt-audio-1.5');
 		assert.deepEqual(state.selection, type === 'success' ? null : selected);
 	}
+});
+
+test('reasoning effort persists on save/reload and invalid or duplicate efforts never overwrite settings', async (t) => {
+	const { page, state } = await fixture(t);
+	async function submit(provider, model, effort, duplicate = false) {
+		const form = new FormData();
+		form.set('provider', provider);
+		form.set('model', model);
+		if (effort !== undefined) form.set('reasoningEffort', effort);
+		if (duplicate) form.append('reasoningEffort', effort);
+		return page.actions.default({ locals, request: new Request('http://localhost/admin/transcription', { method: 'POST', body: form }) });
+	}
+	for (const [provider, model] of [['openai', 'gpt-realtime-2.1'], ['gemini', 'gemini-2.5-pro']]) {
+		const settings = { provider, model, reasoningEffort: 'medium' };
+		assert.deepEqual(await submit(provider, model, 'medium'), { success: true, settings });
+		assert.deepEqual(page.load({ locals }).settings, settings);
+		assert.deepEqual((await fixture(t, {}, state.value)).page.load({ locals }).settings, settings);
+	}
+	const saved = state.value;
+	const calls = state.dbCalls;
+	for (const [provider, model, effort, duplicate] of [
+		['openai', 'gpt-transcribe', 'medium'], ['openai', 'gpt-audio-1.5', 'medium'],
+		['openai', 'gpt-realtime-2', 'max'], ['gemini', 'gemini-3.8-flash', 'xhigh'],
+		['gemini', 'gemini-2.5-pro', new Blob(['medium'])], ['openai', 'gpt-realtime-2', 'medium', true]
+	]) assert.equal((await submit(provider, model, effort, duplicate)).status, 400);
+	assert.equal(state.value, saved);
+	assert.equal(state.dbCalls, calls);
+	assert.deepEqual((await submit('openai', 'gpt-realtime-2', 'default')).settings, { provider: 'openai', model: 'gpt-realtime-2' });
 });

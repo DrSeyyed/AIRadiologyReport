@@ -2,10 +2,11 @@ import { audioModel, audioModelSampleRate } from '../audio-models.js';
 import { generateGeminiAudioText } from './gemini-audio.js';
 import { generateRealtimeAudioText } from './realtime-audio.js';
 import { normalizeAudioTranscriptOutput } from './audio-transcript-output.js';
+import { reasoningSettings } from '../reasoning-effort.js';
 
 export async function generateAudioModelText(settings, data, instructions, task) {
 	const model = audioModel(settings);
-	const options = { model: settings.model, audio: { data, format: 'wav', sampleRate: audioModelSampleRate(settings) }, instructions, task };
+	const options = { model: settings.model, audio: { data, format: 'wav', sampleRate: audioModelSampleRate(settings) }, instructions, task, ...reasoningSettings(settings, settings.reasoningEffort) };
 	if (model?.transport === 'gemini') return generateGeminiAudioText(options);
 	if (model?.transport === 'realtime') return generateRealtimeAudioText(options);
 	throw new Error('Select a supported generative audio model.');

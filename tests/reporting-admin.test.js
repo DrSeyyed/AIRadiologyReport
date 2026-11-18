@@ -182,8 +182,11 @@ test('reporting UI stays concise, compiles accessibly and retains essential warn
 	for (const generate of ['server', 'client']) {
 		assert.deepEqual(compile(source, { generate }).warnings, []);
 	}
-	assert.match(source, /<h1 class="text-2xl font-semibold">/);
-	assert.match(source, /<h2 class="text-lg font-semibold">Report generation<\/h2>/);
+	assert.match(source, /<h1 class="page-title">/);
+	assert.match(source, /<h2 class="section-title">Report generation<\/h2>/);
+	assert.match(source, /name="reasoningEffort"/);
+	assert.match(source, /name="textReasoningEffort"/);
+	assert.match(source, /Independent of direct audio reasoning/);
 	assert.match(source, /<details class="text-sm">/);
 	assert.match(source, /<summary class="cursor-pointer font-medium">How over-limit processing works<\/summary>/);
 	for (const pattern of [/use:enhance/, /name="mode"/, /id="reporting-mode"/, /for="reporting-mode"/, /aria-describedby="mode-help"/, /aria-busy=\{saving\}/, /disabled=\{saving\}/, /result\.type === 'success'/, /role="status">Reporting settings saved\./, /role="alert"/, /Save settings/, /max-w-full/, /each REPORT_GENERATION_MODES/, /mode === 'direct_audio'/, /Requires FFmpeg/, /shared audio-model total recording limit/, /OPENAI_API_KEY is missing/, /GEMINI_API_KEY is missing/, /name="provider"/, /name="model"/, /future processing only/, /Existing reports are unchanged/, /Review generated reports before signing/]) {
@@ -293,7 +296,7 @@ test('enhanced forms reset only their own draft after success and keep all draft
 	assert.equal(callbacks.length, 2);
 	for (const [index, callback] of callbacks.entries()) {
 		for (const type of ['success', 'failure']) {
-			const state = { selection: 'direct_audio', modelSelection: { provider: 'gemini', model: 'gemini-3.8-flash' }, audioSelection: 'elevenlabs:scribe_v2', limitSelection: '1800', saving: false, savingAudio: false };
+			const state = { selection: 'direct_audio', modelSelection: { provider: 'gemini', model: 'gemini-3.8-flash' }, textEffortSelection: 'high', audioSelection: 'elevenlabs:scribe_v2', limitSelection: '1800', saving: false, savingAudio: false };
 			const enhance = new Function('state', `with (state) { return (${callback}); }`)(state);
 			const completion = enhance();
 			assert.equal(state[index === 0 ? 'saving' : 'savingAudio'], true);
@@ -307,10 +310,41 @@ test('enhanced forms reset only their own draft after success and keep all draft
 			assert.equal(state.savingAudio, false);
 			assert.equal(state.selection, index === 0 && type === 'success' ? null : 'direct_audio');
 			assert.deepEqual(state.modelSelection, index === 0 && type === 'success' ? null : { provider: 'gemini', model: 'gemini-3.8-flash' });
+			assert.equal(state.textEffortSelection, index === 0 && type === 'success' ? null : 'high');
 			assert.equal(state.audioSelection, index === 1 && type === 'success' ? null : 'elevenlabs:scribe_v2');
 			assert.equal(state.limitSelection, index === 1 && type === 'success' ? null : '1800');
 		}
 	}
 	assert.match(source, /let limitSeconds = \$derived\(limitSelection \?\? audio.limitSeconds\)/);
 	assert.match(source, /oninput=\{\(event\) => limitSelection = event.currentTarget.value\}/);
+});
+
+test('direct and text report reasoning efforts persist independently and reject unsupported or duplicate choices', async (t) => {
+	const { page, state } = await fixture(t);
+	async function submit(settings, duplicate) {
+		const form = new FormData();
+		for (const [key, value] of Object.entries(settings)) form.set(key, value);
+		if (duplicate) form.append(duplicate, settings[duplicate]);
+		return page.actions.default({ locals: admin, request: new Request('http://localhost/admin/reporting', { method: 'POST', body: form }) });
+	}
+	const selected = { mode: 'direct_audio', provider: 'gemini', model: 'gemini-3.8-flash', reasoningEffort: 'medium', textReasoningEffort: 'high' };
+	for (const mode of ['direct_audio', 'transcribe_then_generate']) {
+		const settings = { ...selected, mode };
+		assert.deepEqual(await submit(settings), { success: true, settings });
+		assert.deepEqual(page.load({ locals: admin }).settings, settings);
+		assert.deepEqual((await fixture(t, {}, state.value)).page.load({ locals: admin }).settings, settings);
+	}
+	const saved = state.value;
+	const calls = state.dbCalls;
+	for (const [settings, duplicate] of [
+		[{ ...selected, reasoningEffort: 'xhigh' }],
+		[{ ...selected, provider: 'openai', model: 'gpt-audio-1.5' }],
+		[{ ...selected, textReasoningEffort: 'minimal' }],
+		[{ ...selected, textReasoningEffort: new Blob(['high']) }],
+		[selected, 'reasoningEffort'], [selected, 'textReasoningEffort']
+	]) assert.equal((await submit(settings, duplicate)).status, 400);
+	assert.equal(state.value, saved);
+	assert.equal(state.dbCalls, calls);
+	assert.deepEqual((await submit({ ...selected, reasoningEffort: 'default', textReasoningEffort: 'default' })).settings,
+		{ mode: 'direct_audio', provider: 'gemini', model: 'gemini-3.8-flash' });
 });

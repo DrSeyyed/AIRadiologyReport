@@ -1,4 +1,5 @@
 import { AUDIO_MODEL_PROVIDERS } from './audio-models.js';
+import { reasoningSettings } from './reasoning-effort.js';
 
 export const TRANSCRIPTION_PROVIDERS = [
 	{
@@ -26,5 +27,5 @@ export function normalizeTranscriptionSettings(value) {
 	if (!provider) throw new Error('Select a supported transcription provider.');
 	if (!provider.models.some((entry) => entry.id === value.model))
 		throw new Error('Select a supported model for the transcription provider.');
-	return { provider: provider.id, model: value.model };
+	return { provider: provider.id, model: value.model, ...reasoningSettings(value, value.reasoningEffort) };
 }

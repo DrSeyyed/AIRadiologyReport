@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { REPORT_GENERATION_MODES } from '$lib/report-generation-models.js';
 	import { AUDIO_MODEL_PROVIDERS } from '$lib/audio-models.js';
+	import { reasoningEfforts, TEXT_REPORT_MODEL } from '$lib/reasoning-effort.js';
 	import { GPT_AUDIO_SUBSTITUTES, MAX_GPT_AUDIO_LIMIT_SECONDS } from '$lib/gpt-audio-settings.js';
 
 	let { data, form } = $props();
@@ -11,6 +12,11 @@
 	let provider = $derived(modelSelection?.provider ?? saved.provider);
 	let model = $derived(modelSelection?.model ?? saved.model);
 	let models = $derived(AUDIO_MODEL_PROVIDERS.find((entry) => entry.id === provider).models);
+	let efforts = $derived(reasoningEfforts({ provider, model }));
+	let effort = $derived((modelSelection ? modelSelection.reasoningEffort : saved.reasoningEffort) ?? 'default');
+	let textEffortSelection = $state(null);
+	let textEffort = $derived(textEffortSelection ?? saved.textReasoningEffort ?? 'default');
+	const textEfforts = reasoningEfforts({ provider: 'openai', model: TEXT_REPORT_MODEL });
 	let saving = $state(false);
 	let mode = $derived(selection ?? form?.settings?.mode ?? data.settings.mode);
 	let savingAudio = $state(false);
@@ -44,6 +50,7 @@
 				if (result.type === 'success') {
 					selection = null;
 					modelSelection = null;
+					textEffortSelection = null;
 				}
 			} finally {
 				saving = false;
@@ -75,10 +82,31 @@
 					{#each models as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
 				</select>
 			</label>
+			{#if efforts.length}
+				<label class="form-control min-w-0">
+					<span class="label-text">Direct audio report reasoning effort</span>
+					<select name="reasoningEffort" class="select select-bordered w-full min-w-0" value={effort} disabled={saving} aria-describedby="report-reasoning-help" onchange={(event) => modelSelection = { provider, model, reasoningEffort: event.currentTarget.value }}>
+						<option value="default">Provider default</option>
+						{#each efforts as level (level)}<option value={level}>{level}</option>{/each}
+					</select>
+				</label>
+			{:else}
+				<p class="text-sm text-base-content/70">This audio model has no configurable reasoning effort.</p>
+			{/if}
 		{:else}
 			<input type="hidden" name="provider" value={provider} />
 			<input type="hidden" name="model" value={model} />
+			<input type="hidden" name="reasoningEffort" value={effort} />
 		{/if}
+		<label class="form-control min-w-0">
+			<span class="label-text">Text report reasoning effort ({TEXT_REPORT_MODEL})</span>
+			<select name="textReasoningEffort" class="select select-bordered w-full min-w-0" value={textEffort} disabled={saving} aria-describedby="text-reasoning-help report-reasoning-help" onchange={(event) => textEffortSelection = event.currentTarget.value}>
+				<option value="default">Provider default</option>
+				{#each textEfforts as level (level)}<option value={level}>{level}</option>{/each}
+			</select>
+		</label>
+		<p id="text-reasoning-help" class="text-sm text-base-content/70">Used after transcription, including over-limit substitution. Independent of direct audio reasoning.</p>
+		<p id="report-reasoning-help" class="text-sm text-base-content/70">Higher effort can increase processing time and cost; review every report. Changing audio models resets their effort to the provider default.</p>
 		<button class="btn btn-primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>
 	</form>
 

@@ -1,3 +1,5 @@
+import { normalizeReasoningEffort } from '../reasoning-effort.js';
+
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const MODELS = new Set(['gemini-3.8-flash', 'gemini-2.5-pro', 'gemini-2.5-flash']);
 const MAX_REQUEST_BYTES = 20_000_000;
@@ -205,7 +207,7 @@ async function readResponse(response) {
  * Inline-only: the entire UTF-8 JSON request, including base64 and instructions,
  * must be <= 20,000,000 bytes. No uploads, retries, or model substitution.
  */
-export async function generateGeminiAudioText({ model, audio, instructions, task } = {}) {
+export async function generateGeminiAudioText({ model, audio, instructions, task, reasoningEffort } = {}) {
 	if (!MODELS.has(model))
 		throw failure(
 			'unsupported model; select gemini-3.8-flash, gemini-2.5-pro, or gemini-2.5-flash.'
@@ -214,6 +216,7 @@ export async function generateGeminiAudioText({ model, audio, instructions, task
 		throw failure('task must be transcription or report.');
 	if (typeof instructions !== 'string' || !instructions.trim())
 		throw failure('nonempty task instructions are required.');
+	const effort = normalizeReasoningEffort({ provider: 'gemini', model }, reasoningEffort);
 	validateAudio(audio);
 	const apiKey = process.env.GEMINI_API_KEY?.trim();
 	if (!apiKey) throw failure('GEMINI_API_KEY is not configured on the server.');
@@ -237,7 +240,7 @@ export async function generateGeminiAudioText({ model, audio, instructions, task
 			task === 'transcription'
 				? { type: 'text', mime_type: 'application/json', schema: transcriptSchema }
 				: { type: 'text', mime_type: 'text/plain' },
-		generation_config: { max_output_tokens: 32768 }
+		generation_config: { max_output_tokens: 32768, ...(effort === undefined ? {} : { thinking_level: effort }) }
 	});
 	if (Buffer.byteLength(body, 'utf8') > MAX_REQUEST_BYTES)
 		throw failure(

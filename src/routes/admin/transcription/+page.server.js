@@ -2,6 +2,7 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { DEFAULT_TRANSCRIPTION_SETTINGS, normalizeTranscriptionSettings } from '$lib/transcription-models.js';
 import { getTranscriptionSettings, setTranscriptionSettings } from '$lib/server/transcription-settings.js';
+import { reasoningEffortFromForm } from '$lib/reasoning-effort.js';
 
 function requireAdmin(locals) {
 	if (!locals.user) throw redirect(302, '/login');
@@ -37,9 +38,10 @@ export const actions = {
 		const form = await request.formData();
 		let settings;
 		try {
-			settings = normalizeTranscriptionSettings({ provider: form.get('provider'), model: form.get('model') });
+			if (form.getAll('provider').length !== 1 || form.getAll('model').length !== 1) throw new Error();
+			settings = normalizeTranscriptionSettings({ provider: form.get('provider'), model: form.get('model'), reasoningEffort: reasoningEffortFromForm(form) });
 		} catch {
-			return fail(400, { error: 'Select a supported transcription provider and model pair.' });
+			return fail(400, { error: 'Select a supported transcription provider, model and reasoning effort.' });
 		}
 		try {
 			setTranscriptionSettings(getDb(), settings);

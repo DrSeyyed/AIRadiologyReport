@@ -424,7 +424,8 @@ test('direct audio requests numeric Jalali dates and template headings for UK/US
 					assert.equal(url, 'https://api.openai.com/v1/chat/completions');
 					const payload = JSON.parse(options.body);
 					const system = payload.messages[0].content;
-					assert.match(system, /template headings and section order are mandatory/);
+					assert.match(system, /Honour requests such as comparison-only reporting or omission of normal template findings/);
+					assert.match(system, /template headings and section order are mandatory except where overridden by those explicit dictated reporting instructions/);
 					assert.match(system, /never convert Jalali\/Shamsi\/Solar Hijri dates to Gregorian or vice versa/);
 					assert.match(system, /An English report does not require Gregorian dates/);
 					assert.match(system, /English \(ASCII 0-9\) digits/);
