@@ -39,7 +39,7 @@ async function fixture(t) {
 		'$lib/server/db': `${shared} export function getDb(){state.dbCalls++;return state.db;}`,
 		'$lib/server/site-maintenance.js': `${shared} export function isSiteMaintenanceEnabled(){return state.maintenance;} export function maintenanceTelegramContext(){return {synthetic:true};}`,
 		'$lib/server/maintenance-telegram.js': `${shared} export function createMaintenanceTelegramResponder(){return async(update,context)=>state.maintenanceCalls.push({update,context});}`,
-		'$lib/server/telegram-group.js': `${shared} export async function handleTelegramGroupMessage(db,message,options){state.groups.push({message,options});}`
+		'$lib/server/telegram-group.js': `${shared} export async function handleTelegramGroupMessage(db,message,options){if(state.groupError)throw state.groupError;state.groups.push({message,options});}`
 	};
 	const source = readFileSync(
 		new URL('../src/routes/api/telegram/webhook/+server.js', import.meta.url),
@@ -67,8 +67,36 @@ async function fixture(t) {
 		from: { id, is_bot: false },
 		text
 	});
-	return { db, state, sends, invoke, message };
+	return { db, state, sends, invoke, message, post: POST };
 }
+
+test('webhook diagnostics correlate trusted updates and failures without logging private contents', async (t) => {
+	const { state, invoke, message, post } = await fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (prefix, json) => {
+		assert.equal(prefix, '[telegram]');
+		logs.push(JSON.parse(json));
+	});
+	const sensitive = 'SENSITIVE_PASSWORD_PATIENT_TOKEN';
+	assert.equal((await invoke({ update_id: 91, message: message(sensitive) }, 'wrong')).status, 401);
+	assert.equal(logs.length, 1);
+	assert.equal(logs[0].event, 'webhook_failed');
+	assert.equal(logs[0].stage, 'authenticate');
+	assert.equal(logs[0].updateId, undefined);
+	assert.equal((await invoke({ update_id: 92, message: message(sensitive) })).status, 200);
+	assert.ok(logs.some(row => row.event === 'webhook_received' && row.updateId === 92 && row.messageId === 11));
+	assert.ok(logs.some(row => row.event === 'webhook_completed' && row.updateId === 92 && row.httpStatus === 200));
+	state.groupError = Object.assign(new Error(`https://api.telegram.org/bot${sensitive}`), { cause: { code: 'ECONNRESET' } });
+	assert.equal((await invoke({ update_id: 93, message: { ...message(sensitive), chat: { id: -100, type: 'supergroup' }, voice: { file_id: sensitive }, reply_to_message: { message_id: 42 } } })).status, 500);
+	assert.ok(logs.some(row => row.event === 'webhook_failed' && row.updateId === 93 && row.replyMessageId === 42 && row.stage === 'group' && row.errorCode === 'ECONNRESET'));
+	assert.equal((await post({ request: new Request('http://localhost', {
+		method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'synthetic-secret' }, body: sensitive
+	}) })).status, 200);
+	assert.ok(logs.some(row => row.event === 'webhook_ignored' && row.reason === 'invalid_json'));
+	assert.equal((await invoke({ update_id: 94, poll: { question: sensitive } })).status, 200);
+	assert.ok(logs.some(row => row.event === 'webhook_ignored' && row.updateId === 94 && row.reason === 'unsupported_update'));
+	assert.doesNotMatch(JSON.stringify(logs), /SENSITIVE_PASSWORD_PATIENT_TOKEN|synthetic-secret|synthetic-token/);
+});
 
 test('webhook authenticates and gates maintenance before accessing statistics or database', async (t) => {
 	const { state, sends, invoke, message } = await fixture(t);

@@ -25,6 +25,8 @@ test('maintenance webhook authenticates before responding and never processes bo
 			else if (specifier === '$lib/server/telegram-private-menu.js') body = 'export function handleTelegramPrivateMenu(){return false;}export function isTelegramPrivateMessage(){return true;}';
 			else if (specifier === '$lib/server/site-maintenance.js') body = `export function isSiteMaintenanceEnabled(){return ${access}.enabled;}export function maintenanceTelegramContext(){return {chatId:'-100123',permissions:{can_send_messages:true}};}`;
 			else if (specifier === '$lib/server/maintenance-telegram.js') body = `export function createMaintenanceTelegramResponder(){return async(update,snapshot)=>{if(${access}.fail)throw new Error('synthetic-token');${access}.notices.push({update,snapshot});};}`;
+			else if (['$lib/server/telegram-diagnostics.js', '$lib/server/telegram-replies.js'].includes(specifier))
+				return `from ${JSON.stringify(new URL(`../src/lib/${specifier.slice(5)}`, import.meta.url).href)}`;
 			else throw new Error(`Unexpected import ${specifier}`);
 			return `from ${JSON.stringify(`data:text/javascript,${encodeURIComponent(body)}`)}`;
 		});

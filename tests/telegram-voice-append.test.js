@@ -29,6 +29,86 @@ function fixture(t, source = schema) {
 	return { db, directory, downloads, notices, rejections, download, work };
 }
 
+test('voice diagnostics distinguish queueing, duplicates, download retries and attachment without sensitive data', async t => {
+	const c = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
+	assert.equal(await c.work(), false);
+	assert.equal(logs.length, 0);
+	const msg = { ...message(43), voice: { file_id: 'PRIVATE_FILE_TOKEN' }, caption: 'PRIVATE_CLINICAL_TEXT', from: { id: 200, first_name: 'PRIVATE_NAME' } };
+	assert.equal(queueVoiceReply(c.db, msg, 0), true);
+	assert.equal(queueVoiceReply(c.db, msg, 0), true);
+	const queued = logs.find(row => row.event === 'voice_queued');
+	assert.equal(queued.studyId, 1);
+	assert.equal(queued.messageId, 43);
+	assert.equal(queued.replyMessageId, 42);
+	assert.equal(logs.find(row => row.event === 'voice_duplicate').jobId, queued.jobId);
+	await c.work(0, async () => { throw Object.assign(new Error('PRIVATE_DOWNLOAD_URL'), { cause: { code: 'ECONNRESET' } }); });
+	assert.equal(c.db.prepare('SELECT done,process_at FROM pending_voice').get().done, 0);
+	assert.equal(c.db.prepare('SELECT process_at FROM pending_voice').get().process_at, 30);
+	assert.ok(logs.some(row => row.event === 'voice_retry' && row.stage === 'download' && row.retryAt === 30 && row.errorCode === 'ECONNRESET'));
+	assert.equal(logs.some(row => row.event === 'voice_downloaded' || row.event === 'voice_attached'), false);
+	await c.work(30);
+	assert.equal(c.db.prepare('SELECT done FROM pending_voice').get().done, 1);
+	assert.ok(logs.some(row => row.event === 'voice_downloaded' && row.jobId === queued.jobId));
+	assert.ok(logs.some(row => row.event === 'voice_attached' && row.recordingId > 0));
+	assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_/);
+});
+
+test('Telegram provider error codes are observable but retain download retries rather than application rejection', async t => {
+	const c = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
+	queueVoiceReply(c.db, message(43), 0);
+	for (const [now, details, status] of [[0, { telegram_error_code: 400 }, 400], [30, { telegram_http_status: 403 }, 403]]) {
+		await c.work(now, async () => { throw Object.assign(new Error('PRIVATE_TELEGRAM_RESPONSE'), details); });
+		const row = c.db.prepare('SELECT done,process_at FROM pending_voice').get();
+		assert.equal(row.done, 0);
+		assert.equal(row.process_at, now + 30);
+		assert.ok(logs.some(row => row.event === 'voice_retry' && row.telegramStatus === status && row.retryAt === now + 30));
+	}
+	assert.equal(logs.some(row => row.event === 'voice_rejected'), false);
+	assert.deepEqual(c.rejections, []);
+	assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_TELEGRAM_RESPONSE/);
+});
+
+test('post-attachment Telegram refresh failures are logged without retrying or falsely rejecting saved audio', async t => {
+	const c = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
+	queueVoiceReply(c.db, message(43), 0);
+	await processVoiceJob(c.db, c.download, async () => {
+		throw Object.assign(new Error('PRIVATE_REFRESH_ERROR'), { status: 403, telegram_error_code: 403 });
+	}, c.directory, 0, async (...args) => c.rejections.push(args));
+	const saved = c.db.prepare('SELECT done,recording_id FROM pending_voice').get();
+	assert.equal(saved.done, 1);
+	assert.ok(saved.recording_id);
+	assert.deepEqual(c.rejections, []);
+	const failed = logs.find(row => row.event === 'voice_notification_failed');
+	assert.equal(failed.stage, 'refresh');
+	assert.equal(failed.recordingId, saved.recording_id);
+	assert.equal(failed.telegramStatus, 403);
+	assert.equal(logs.some(row => row.event === 'voice_retry' || row.event === 'voice_rejected'), false);
+	assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_REFRESH_ERROR/);
+	assert.equal(await c.work(30), false);
+});
+
+test('terminal voice rejections and revoked sender approval have explicit non-retry outcomes', async t => {
+	const c = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
+	queueVoiceReply(c.db, message(43), 0);
+	await c.work(0, async () => { throw Object.assign(new Error('PRIVATE_POLICY_REASON'), { status: 403 }); });
+	assert.equal(c.db.prepare('SELECT done FROM pending_voice').get().done, 1);
+	assert.ok(logs.some(row => row.event === 'voice_rejected' && row.stage === 'download' && row.httpStatus === 403));
+	queueVoiceReply(c.db, message(44), 0);
+	c.db.exec("UPDATE telegram_registrations SET step='rejected' WHERE user_id=2");
+	await c.work();
+	assert.ok(logs.some(row => row.event === 'voice_stopped' && row.messageId === 44 && row.reason === 'sender_no_longer_approved'));
+	assert.equal(logs.some(row => row.event === 'voice_retry'), false);
+	assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_POLICY_REASON/);
+});
+
 async function rootVoice(context, sender = 200) {
 	assert.equal(queueVoiceReply(context.db, message(43, 42, sender), 0), true);
 	await context.work();
@@ -142,11 +222,14 @@ test('only sender, assigned resident or study attending may append, and signed o
 
 test('queued replies wait for parent downloads and failed attachment downloads retry safely', async t => {
 	const c = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
 	queueVoiceReply(c.db, message(43), 0); queueVoiceReply(c.db, message(44, 43), 0);
 	await c.work(0, async () => { throw new Error('Synthetic download failure'); });
 	await c.work(0);
 	assert.equal(c.downloads.length, 0);
 	assert.ok(c.db.prepare('SELECT process_at FROM pending_voice').all().every(job => job.process_at === 30));
+	assert.ok(logs.some(row => row.event === 'voice_retry' && row.messageId === 44 && row.reason === 'waiting_for_parent' && row.retryAt === 30));
 	await c.work(30);
 	await c.work(30, async () => { throw new Error('Synthetic attachment failure'); });
 	assert.equal(c.db.prepare('SELECT count(*) AS n FROM recording_audio_parts').get().n, 0);

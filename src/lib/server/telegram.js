@@ -42,7 +42,9 @@ async function tgRequest(endpoint, payload) {
 	try {
 		data = await res.json();
 	} catch {
-		throw new Error(`Telegram ${endpoint} HTTP ${res.status} (non-JSON)`);
+		throw Object.assign(new Error(`Telegram ${endpoint} HTTP ${res.status} (non-JSON)`), {
+			telegram_http_status: res.status
+		});
 	}
 	if (!data.ok) {
 		const description = data.description || `HTTP ${res.status}`;
@@ -268,7 +270,9 @@ export async function getFile(file_id) {
 export async function downloadFile(file_id, destPath) {
 	const { download_url } = await getFile(file_id);
 	const r = await fetch(download_url);
-	if (!r.ok) throw new Error(`Download failed: ${r.status} ${r.statusText}`);
+	if (!r.ok) throw Object.assign(new Error(`Download failed: ${r.status} ${r.statusText}`), {
+		telegram_http_status: r.status
+	});
 	const buf = Buffer.from(await r.arrayBuffer());
 
 	const abs = path.resolve(destPath);

@@ -37,6 +37,24 @@ function fixture(t, source = schema) {
 	return { db, removed, refreshed, notices, dependencies, handle };
 }
 
+test('voice diagnostics explain ignored reply targets and sender rejections without logging content', async (t) => {
+	const { db, handle } = fixture(t);
+	const logs = [];
+	t.mock.method(console, 'info', (_prefix, json) => logs.push(JSON.parse(json)));
+	await handle(message(43, 42, { chat: { id: -999 } }));
+	await handle(message(44, 42, { reply_to_message: undefined }));
+	await handle(message(45, 999, { caption: 'PRIVATE_CLINICAL_TEXT' }));
+	await handle(message(46, 42, { from: { id: 999, first_name: 'PRIVATE_NAME' } }));
+	await handle(message(47, 42, { from: { id: 300 } }));
+	db.exec('UPDATE studies SET disabled=1');
+	await handle(message(48));
+	for (const [messageId, reason] of [[43, 'wrong_group'], [44, 'invalid_reply'], [45, 'unknown_reply'], [46, 'not_approved'], [47, 'typist'], [48, 'policy_rejected']]) {
+		assert.ok(logs.some(row => row.messageId === messageId && row.reason === reason), `missing reason ${reason}`);
+	}
+	assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pending_voice').get().n, 0);
+	assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_|voice-\d+|Resident <One>/);
+});
+
 test('direct replies have separate lines and nested and sibling replies share the root line', async (t) => {
 	const { db, handle, refreshed } = fixture(t);
 	for (const msg of [message(43), message(44, 43), message(45, 44), message(46), message(47, 43)]) await handle(msg);

@@ -347,6 +347,28 @@ Click a study-table data header to sort ascending, then click it again to sort d
 
 Workbook processing is local to the server. Uploaded workbooks and demographic previews are not retained as files. If Telegram is configured, optional notifications are queued persistently and sent gradually, with retry after failure; imports succeed even when Telegram is unavailable. Uncheck this option to keep the imported patient details off Telegram. Notification delivery is at-least-once: a process crash between sending and saving the message ID can cause a repeated message. Preserve `/app/db` to retain queued notifications.
 
+### Telegram delivery diagnostics
+
+Application logs include structured `[telegram]` events with UTC timestamps and numeric update/message/reply/study/job/recording IDs where available. They exclude message text, captions, registration passwords, names, patient codes, Telegram file IDs, tokens, URLs and raw exception messages. Keep request-body logging disabled. Internal IDs can still correlate activity; restrict log access and apply your deployment's log retention policy.
+
+On the Docker Compose host, inspect recent events with:
+
+```bash
+docker compose logs --timestamps --since 30m pacs-app | grep '\[telegram\]'
+```
+
+- `webhook_received` confirms an authenticated update reached the handler; `webhook_completed` means HTTP 200, **not** that audio was attached. `webhook_failed` includes the processing stage and response status. Authentication failures omit untrusted update metadata.
+- `voice_ignored` explains wrong groups, invalid/missing replies, unknown study/voice reply targets, deleted messages or disallowed senders. `voice_rejected` identifies approval/role/policy rejection without logging its private message text.
+- `voice_queued` links the Telegram message/reply to a study and queue job; `voice_duplicate` identifies a replay or an already attached job.
+- `voice_processing`, `voice_download_started`, `voice_downloaded` and `voice_attached` show progress. Match `messageId`/`jobId` across events; `messageId` is the incoming voice's own ID, not its parent. In the database it is named `pending_voice.reply_message_id`.
+- `voice_retry` includes a fixed reason, stage and `retryAt` (Unix seconds). Pending jobs retry after about 30 seconds with no fixed retry limit; waiting for a parent voice is distinguished from download/attachment failure. `voice_stopped` explains a job stopped without a new attachment. Idle worker ticks produce no events.
+- `voice_notification_failed` with reason `attached` means audio was saved but refreshing the Telegram study post failed; the job remains complete and is not falsely reported as a failed attachment. `voice_worker_failed` identifies a queue/background failure outside normal per-job handling.
+- Failure events include an allowlisted `errorCode` when known (for example `ECONNRESET`/`ETIMEDOUT`), application `httpStatus`, and/or provider `telegramStatus`. Unknown error details are deliberately omitted. Telegram HTTP/API failures retain their existing retry behavior.
+
+These diagnostics apply only after deployment; they cannot recover an earlier unlogged update or deleted Telegram message. Telegram controls webhook-delivery retries separately from the application's voice-download retries. No received/queued log alone proves why an older voice was lost, and container recreation/rotation can remove logs.
+
+Unrelated public HTTP 404 probes for `.env`, `.git` or credential/configuration paths are commonly automated scanners. Returning 404 is correct; do not create files/routes to make them succeed. Such responses do not by themselves show exposure or explain a missing Telegram voice. Optional reverse-proxy filtering/rate limits can reduce scanner traffic, but are separate from Telegram diagnostics; do not blanket-block the webhook or suppress genuine application errors.
+
 ## Private Telegram bot menu
 
 In a **private chat**, `/start` welcomes the user and installs Telegram's command menu for that chat only. `/menu` reopens inline navigation: **My account**, **My statistics**, **Registration**, **Help**, **Open website**, and **Main menu**. Statistics include **Today**, **7 days**, and **30 days** shortcut buttons and keep the existing role-based permissions; summaries never include patient details. `/help` explains commands, registration, password safety and support. `/status` shows the current account/approval state or the next registration step, without changing registration progress. The **Registration** button provides guidance; send `/register` explicitly to start or restart a request. `/cancel` keeps its existing unapproved-registration cancellation behavior.

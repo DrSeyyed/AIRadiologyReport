@@ -4,6 +4,7 @@ import { queueVoiceReply } from './voice-worker.js';
 import { getApprovedTelegramUser } from './telegram-registration.js';
 import { trackStudyReply, telegramReplyMessageId } from './telegram-replies.js';
 import { requestTelegramVoiceDeletion, processTelegramVoiceDeletion } from './telegram-voice-deletion.js';
+import { telegramDiagnostic, telegramErrorDetails } from './telegram-diagnostics.js';
 
 export async function handleTelegramGroupMessage(db, message, {
 	remove = deleteMessage,
@@ -11,13 +12,18 @@ export async function handleTelegramGroupMessage(db, message, {
 	notify = sendBotMessage,
 	allowDelete = true
 } = {}) {
-	if (!process.env.TELEGRAM_CHAT_ID || String(message.chat?.id) !== process.env.TELEGRAM_CHAT_ID || !message.message_id)
+	const context = { messageId: message.message_id, replyMessageId: telegramReplyMessageId(message), stage: 'group' };
+	const ignore = (reason) => {
+		if (message.voice || message.audio) telegramDiagnostic('voice_ignored', { ...context, reason });
 		return false;
+	};
+	if (!process.env.TELEGRAM_CHAT_ID || String(message.chat?.id) !== process.env.TELEGRAM_CHAT_ID || !message.message_id)
+		return ignore('wrong_group');
 	if (['forum_topic_created', 'forum_topic_edited', 'forum_topic_closed', 'forum_topic_reopened',
-		'general_forum_topic_hidden', 'general_forum_topic_unhidden'].some((key) => message[key])) return false;
+		'general_forum_topic_hidden', 'general_forum_topic_unhidden'].some((key) => message[key])) return ignore('service_message');
 	const studyPost = db.prepare('SELECT id FROM studies WHERE telegram_message_id IN (?, ?)')
 		.get(String(message.message_id), `${message.message_id}.0`);
-	if (studyPost) return false;
+	if (studyPost) return ignore('study_post');
 	const command = message.entities?.find((entity) => entity.type === 'bot_command' && entity.offset === 0);
 	if (command && /^\/delete(?:@[A-Za-z0-9_]+)?$/.test(message.text?.slice(0, command.length) || '') &&
 		!message.text.slice(command.length).trim()) {
@@ -42,18 +48,23 @@ export async function handleTelegramGroupMessage(db, message, {
 		await remove(message.message_id, message.chat.id);
 		return true;
 	}
-	if (!telegramReplyMessageId(message)) return false;
+	if (!telegramReplyMessageId(message)) return ignore('invalid_reply');
 	const studyId = trackStudyReply(db, message);
+	context.studyId = studyId;
 	const sender = getApprovedTelegramUser(db, message.from?.id);
 	let rejection = '';
-	if (message.from?.is_bot || !sender)
+	if (message.from?.is_bot || !sender) {
 		rejection = 'Audio not attached: account not approved. Register privately with /register.';
-	else if (sender.role === 'typist') rejection = 'Typists cannot attach Telegram audio.';
-	else {
+		telegramDiagnostic('voice_rejected', { ...context, reason: 'not_approved' });
+	} else if (sender.role === 'typist') {
+		rejection = 'Typists cannot attach Telegram audio.';
+		telegramDiagnostic('voice_rejected', { ...context, reason: 'typist' });
+	} else {
 		try {
 			queueVoiceReply(db, message);
 		} catch (error) {
 			if (![400, 403, 404, 409].includes(error.status)) throw error;
+			telegramDiagnostic('voice_rejected', { ...context, stage: 'queue', reason: 'policy_rejected', ...telegramErrorDetails(error) });
 			rejection = `Audio not attached: ${error.message}`;
 		}
 	}
