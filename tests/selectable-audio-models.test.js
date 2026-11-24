@@ -143,7 +143,8 @@ for (const mode of ['direct_audio', 'transcribe_then_generate']) for (const sett
 				assert.match(prompt, /FINDINGS: Synthetic template/);
 				assert.match(prompt, /YYYY\/MM\/DD/);
 				assert.match(prompt, /NO_USABLE_CLINICAL_DICTATION/);
-				assert.match(prompt, /comparison-only report and removal of normal template findings/);
+				assert.match(prompt, /explicit request to remove normal template findings, restricts the findings to the dictated content/);
+				assert.match(prompt, /"just write".*are not requests to remove template content/);
 				assert.match(prompt, /Comparison-only requests and requests to omit normal template findings do not by themselves remove the conclusion section/);
 				assert.match(prompt, /Keep the conclusion, impression or summary section.*unless the doctor explicitly asks to omit that section/);
 				assert.match(prompt, /Honour explicit dictated report-scope and formatting instructions/);
