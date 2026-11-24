@@ -247,10 +247,10 @@
 
 <style>
 	.study-workspace {
-		--worklist-width: 60rem;
-		width: var(--worklist-width);
+		--worklist-min-width: 60rem;
+		width: 100%;
 		min-width: 0;
-		max-width: 100%;
+		max-width: 96rem;
 		overflow: hidden;
 		border: 1px solid #dbe3ed;
 		border-radius: 1rem;
@@ -328,14 +328,14 @@
 	.scroll-buttons { display: flex; gap: 0.375rem; }
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid #e2e8f0; }
-	.study-table { width: 100%; min-width: calc(var(--worklist-width) - 2px); table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
+	.study-table { width: 100%; min-width: calc(var(--worklist-min-width) - 2px); table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
 	.patient-column { width: 22%; }
 	.examination-column { width: 17%; }
 	.team-column { width: 18%; }
 	.reporting-column { width: 20%; }
 	.actions-column { width: 23%; }
-	.study-table th { vertical-align: top; padding: 0.875rem 1rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
-	.study-table td { vertical-align: top; padding: 1.25rem 1rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
+	.study-table th { vertical-align: top; padding: 0.625rem 0.875rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
+	.study-table td { vertical-align: top; padding: 0.75rem 0.875rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
 	.study-table td > * { min-width: 0; max-width: 100%; }
 	.study-table tbody tr:last-child td { border-bottom: 0; }
 	.study-table tbody tr:hover { background: #fafbff; }
@@ -350,17 +350,17 @@
 	.sort-active { color: #4338ca; text-decoration: underline; }
 
 	.patient-name { font-size: 0.8125rem; line-height: 1.5; font-weight: 600; }
-	.patient-meta { display: flex; align-items: baseline; gap: 0.375rem; margin: 0.5rem 0 0.25rem; }
+	.patient-meta { display: flex; align-items: baseline; gap: 0.375rem; margin: 0.25rem 0 0.125rem; }
 	.patient-code { min-width: 0; font-family: ui-monospace, monospace; font-size: 0.75rem; color: #475569; }
-	.status-badge { display: inline-block; max-width: 100%; margin-top: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }
+	.status-badge { display: inline-block; max-width: 100%; margin-top: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }
 	.disabled-badge { width: max-content; white-space: nowrap; overflow-wrap: normal; flex-shrink: 0; }
 	.exam-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.625rem; }
 	.modality-badge { max-width: 100%; padding: 0.25rem 0.5rem; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 0.375rem; color: #4338ca; font-size: 0.75rem; font-weight: 700; }
 	.exam-date { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 	.exam-time { display: block; margin-top: 0.125rem; color: #64748b; font-size: 0.6875rem; font-weight: 400; }
-	.exam-description { margin-top: 0.875rem; line-height: 1.65; color: #475569; }
-	.reviewer { display: grid; gap: 0.125rem; margin-bottom: 0.625rem; }
-	.attention-disclosure { margin-top: 0.875rem; }
+	.exam-description { margin-top: 0.5rem; line-height: 1.5; color: #475569; }
+	.reviewer { display: grid; gap: 0.125rem; margin-bottom: 0.375rem; }
+	.attention-disclosure { margin-top: 0.5rem; }
 	.attention-disclosure > summary { font-size: 0.6875rem; color: #64748b; }
 	.attention-disclosure > .attention-active { color: #854d0e; font-weight: 700; }
 	.attention-editor { margin-top: 0.75rem; }
@@ -368,11 +368,11 @@
 	.report-metrics { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 	.report-metrics > div { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.375rem; background: #fff; }
 	.report-metrics strong { min-width: 0; font-size: 0.875rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
-	.report-metrics span { white-space: nowrap; font-size: 0.625rem; color: #64748b; }
+	.report-metrics span { white-space: nowrap; font-size: 0.6875rem; color: #64748b; }
 	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.625rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: #475569; }
-	.signature-heading > span { font-weight: 400; font-size: 0.5625rem; color: #64748b; }
+	.signature-heading > span { font-weight: 400; font-size: 0.6875rem; color: #64748b; }
 	.signature-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #64748b; font-size: 0.625rem; font-variant-numeric: tabular-nums; }
+	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #475569; font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 	.signature-chip > span { font-weight: 700; }
 	.signature-complete { background: #f0fdf4; color: #166534; }
 	.row-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }

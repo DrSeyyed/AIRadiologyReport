@@ -100,7 +100,7 @@ test('five grouped columns have fixed proportions, wrapped content and keyboard-
 	const source = read('StudyTable.svelte');
 	assert.match(source, /study-table-scroll w-full min-w-0 max-w-full overflow-x-auto/);
 	assert.match(source, /role="region"[^>]*tabindex="0"/);
-	assert.match(source, /\.study-table\s*\{[^}]*min-width: calc\(var\(--worklist-width\) - 2px\);[^}]*table-layout: fixed;/);
+	assert.match(source, /\.study-table\s*\{[^}]*min-width: calc\(var\(--worklist-min-width\) - 2px\);[^}]*table-layout: fixed;/);
 	assert.match(source, /\.study-table td\s*\{[^}]*vertical-align: top;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
 	for (const name of ['patient', 'examination', 'team', 'reporting', 'actions']) assert.match(source, new RegExp(`\\.${name}-column\\s*\\{ width: \\d+%;`));
 	for (const name of ['StudyAttention.svelte', 'PacsViewer.svelte']) {
@@ -133,7 +133,7 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
 });
 
-test('the entire worklist has a compact width cap instead of redistributing spare viewport space to patient names', () => {
+test('the worklist uses wide screens up to a readable cap while keeping a minimum table width', () => {
 	const source = read('StudyTable.svelte');
 	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
 	const rules = [];
@@ -145,11 +145,11 @@ test('the entire worklist has a compact width cap instead of redistributing spar
 	for (const index of [0, 1, 2, 4]) assert.ok(Math.abs(60 * widths[index] / 100 - 57 * [23, 18, 19, 16, 24][index] / 100) < 0.15, 'Other columns keep their compact widths');
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
 	const workspace = styles(/^\.study-workspace\.[^ >]+$/);
-	assert.equal(workspace.get('--worklist-width'), '60rem');
-	assert.equal(workspace.get('width'), 'var(--worklist-width)');
-	assert.equal(workspace.get('max-width'), '100%');
+	assert.equal(workspace.get('--worklist-min-width'), '60rem');
+	assert.equal(workspace.get('width'), '100%');
+	assert.equal(workspace.get('max-width'), '96rem');
 	const table = styles(/^\.study-table\.[^ >]+$/);
-	assert.equal(table.get('min-width'), 'calc(var(--worklist-width) - 2px)');
+	assert.equal(table.get('min-width'), 'calc(var(--worklist-min-width) - 2px)');
 	assert.equal(table.get('table-layout'), 'fixed');
 	const metrics = styles(/^\.report-metrics\.[^ >]+$/);
 	assert.equal(metrics.get('display'), 'flex');
@@ -162,6 +162,7 @@ test('the entire worklist has a compact width cap instead of redistributing spar
 	assert.equal(box.get('min-width'), '0');
 	assert.equal(box.get('max-width'), '100%');
 	assert.equal(styles(/^\.report-metrics\.[^ >]+ strong/).get('font-size'), '0.875rem');
+	for (const declaration of css.code.matchAll(/font-size:\s*([\d.]+)rem/g)) assert.ok(parseFloat(declaration[1]) >= 0.6875, `Worklist text is at least 11px: ${declaration[0]}`);
 });
 
 test('row actions share compact button sizing and the reports button fits its label instead of filling the column', () => {

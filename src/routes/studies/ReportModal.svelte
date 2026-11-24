@@ -295,7 +295,7 @@
         Close (Esc)
       </button>
       <button
-        class="btn btn-outline disabled:opacity-50"
+        class="btn btn-primary min-w-40 font-semibold disabled:opacity-50"
         type="button"
         disabled={!editable || state.saving || transcribing || state.loading || !!state.error || !state.text.trim()}
         onclick={save}

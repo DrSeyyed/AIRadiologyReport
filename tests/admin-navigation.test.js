@@ -168,6 +168,8 @@ test('shared header stays above page content and below the navigation drawer', a
 		assert.match(body, /<header class="sticky top-0 z-30 [^"]*flex-wrap[^"]*border-slate-200 bg-white[^"]*shadow-sm/);
 		assert.match(body, /<aside[^>]*class="drawer-side z-40"/);
 		assert.match(body, /aria-label="Open navigation"/);
+		assert.match(body, /class="drawer [^"]*lg:drawer-open/);
+		assert.match(body, /class="btn btn-primary drawer-button lg:hidden"/);
 		assert.ok(body.includes(user ? 'Logout' : 'Login'));
 	}
 });
