@@ -55,7 +55,8 @@
 		{ label: 'Patient', columns: [{ key: 's.patient_code', label: 'Code' }, { key: 's.patient_fullname', label: 'Full name' }, { key: 's.patient_age', label: 'Age' }] },
 		{ label: 'Examination', columns: [{ key: 's.exam_date_jalali', label: 'Date / time' }, { key: 'source_modality', label: 'Source modality' }, { key: 'source_description', label: 'Source description' }] },
 		{ label: 'Review team', columns: [{ key: 'attending_fullname', label: 'Study attending' }, { key: 'residents', label: 'Resident' }] },
-		{ label: 'Reporting', columns: [{ key: 'recording_count', label: 'Recordings' }, { key: 'report_count', label: 'Reports' }, { key: 'resident_checked_count', label: 'R', name: 'Resident signatures' }, { key: 'attending_checked_count', label: 'A', name: 'Attending signatures' }, { key: 'typist_checked_count', label: 'T', name: 'Typist signatures' }] },
+		{ label: 'Reporting', columns: [{ key: 'recording_count', label: 'Recordings' }, { key: 'report_count', label: 'Reports' }] },
+		{ label: 'Signatures', columns: [{ key: 'resident_checked_count', label: 'R', name: 'Resident signatures' }, { key: 'attending_checked_count', label: 'A', name: 'Attending signatures' }, { key: 'typist_checked_count', label: 'T', name: 'Typist signatures' }] },
 		{ label: 'Actions', columns: [{ key: 'is_favorite', label: 'My favorites' }] }
 	];
 	const signatureRoles = [
@@ -153,8 +154,8 @@
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users need to focus this region to scroll the table.) -->
 	<div id="study-worklist-table" bind:this={tableScroll} class="study-table-scroll w-full min-w-0 max-w-full overflow-x-auto" role="region" aria-label="Studies table, scroll horizontally" tabindex="0" onscroll={updateTableScroll}>
 		<table bind:this={tableElement} class="study-table">
-			<caption class="sr-only">Study worklist grouped by patient, examination, review team, reporting and actions.</caption>
-			<colgroup><col class="patient-column" /><col class="examination-column" /><col class="team-column" /><col class="reporting-column" /><col class="actions-column" /></colgroup>
+			<caption class="sr-only">Study worklist grouped by patient, examination, review team, reporting, signatures and actions.</caption>
+			<colgroup><col class="patient-column" /><col class="examination-column" /><col class="team-column" /><col class="reporting-column" /><col class="signatures-column" /><col class="actions-column" /></colgroup>
 			<thead>
 				<tr>
 					{#each headers as header (header.label)}
@@ -208,8 +209,9 @@
 								<div><strong>{recordingCount}</strong><span>Recordings</span></div>
 								<div><strong>{study.report_count ?? 0}</strong><span>Reports</span></div>
 							</div>
-							<div class="signature-heading">Signatures <span>signed / recordings</span></div>
-							<div class="signature-list">
+						</td>
+						<td>
+							<div class="signature-list" title="Signed / recordings">
 								{#each signatureRoles as role (role.key)}
 									{@const checked = study[role.key] ?? 0}
 									<span class="signature-chip" class:signature-complete={recordingCount > 0 && checked === recordingCount} aria-label={`${role.label} signatures: ${checked} of ${recordingCount}`} title={`${role.label} signatures`}><span>{role.short}</span> {checked}/{recordingCount}</span>
@@ -239,7 +241,7 @@
 							</div>
 						</td>
 					</tr>
-				{:else}<tr><td colspan="5" class="empty-state"><strong>No studies found</strong><span>Try a different search, date range or status.</span></td></tr>{/each}
+				{:else}<tr><td colspan="6" class="empty-state"><strong>No studies found</strong><span>Try a different search, date range or status.</span></td></tr>{/each}
 			</tbody>
 		</table>
 	</div>
@@ -336,11 +338,12 @@
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
 	.study-table-scroll { border-top: 1px solid var(--app-border); }
 	.study-table { width: 100%; min-width: calc(var(--worklist-min-width) - 2px); table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
-	.patient-column { width: 22%; }
-	.examination-column { width: 17%; }
-	.team-column { width: 18%; }
-	.reporting-column { width: 20%; }
-	.actions-column { width: 23%; }
+	.patient-column { width: 20%; }
+	.examination-column { width: 16%; }
+	.team-column { width: 17%; }
+	.reporting-column { width: 13%; }
+	.signatures-column { width: 13%; }
+	.actions-column { width: 21%; }
 	.study-table th { vertical-align: top; padding: 0.625rem 0.875rem; background: var(--app-surface-muted); border-bottom: 1px solid var(--app-border); font-weight: 500; }
 	.study-table td { vertical-align: top; padding: 0.75rem 0.875rem; border-bottom: 1px solid var(--app-border-soft); white-space: normal; overflow-wrap: anywhere; }
 	.study-table td > * { min-width: 0; max-width: 100%; }
@@ -377,8 +380,6 @@
 	.report-metrics > div { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid var(--app-border); border-radius: 0.375rem; background: var(--app-surface); }
 	.report-metrics strong { min-width: 0; font-size: 0.875rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
 	.report-metrics span { white-space: nowrap; font-size: 0.6875rem; color: var(--app-text-muted); }
-	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.625rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: var(--app-text-secondary); }
-	.signature-heading > span { font-weight: 400; font-size: 0.6875rem; color: var(--app-text-muted); }
 	.signature-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: var(--app-surface-subtle); color: var(--app-text-secondary); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 	.signature-chip > span { font-weight: 700; }
@@ -400,10 +401,11 @@
 	.study-workspace { container-type: inline-size; }
 	@container (min-width: 72rem) {
 		.patient-column { width: 21%; }
-		.examination-column { width: 27%; }
-		.team-column { width: 17%; }
-		.reporting-column { width: 15%; }
-		.actions-column { width: 20%; }
+		.examination-column { width: 19%; }
+		.team-column { width: 19%; }
+		.reporting-column { width: 11%; }
+		.signatures-column { width: 11%; }
+		.actions-column { width: 19%; }
 		.study-table th { padding: 0.5rem 0.75rem; }
 		.study-table td { padding: 0.5rem 0.75rem; }
 		.patient-meta { display: inline-flex; margin: 0 0.5rem 0 0; }
@@ -417,8 +419,6 @@
 		.reviewer > div { display: flex; flex-wrap: wrap; gap: 0 0.375rem; }
 		.attention-disclosure { display: inline-block; margin-top: 0.125rem; }
 		.attention-preview { -webkit-line-clamp: 1; margin-top: 0.125rem; }
-		.signature-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-		.report-metrics { margin-bottom: 0.25rem; }
 		.row-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem; }
 		.quick-actions { gap: 0.375rem; }
 		.quick-actions > :global(.mb-2) { margin-bottom: 0; }
