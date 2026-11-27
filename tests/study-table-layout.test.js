@@ -102,7 +102,7 @@ test('six grouped columns have fixed proportions, wrapped content and keyboard-a
 	assert.match(source, /role="region"[^>]*tabindex="0"/);
 	assert.match(source, /\.study-table\s*\{[^}]*min-width: calc\(var\(--worklist-min-width\) - 2px\);[^}]*table-layout: fixed;/);
 	assert.match(source, /\.study-table td\s*\{[^}]*vertical-align: top;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
-	for (const name of ['patient', 'examination', 'team', 'reporting', 'signatures', 'actions']) assert.match(source, new RegExp(`\\.${name}-column\\s*\\{ width: \\d+%;`));
+	for (const name of ['patient', 'examination', 'team', 'reporting', 'status', 'actions']) assert.match(source, new RegExp(`\\.${name}-column\\s*\\{ width: \\d+%;`));
 	for (const name of ['StudyAttention.svelte', 'PacsViewer.svelte']) {
 		assert.match(read(name), /w-full min-w-0/);
 		assert.doesNotMatch(read(name), /min-w-48|min-w-\[13rem\]/);
@@ -127,9 +127,9 @@ test('overflow controls follow actual table size instead of a mobile-only breakp
 	assert.match(source, /scrollBy\(/);
 	assert.doesNotMatch(source, /max-width: 1150px|table-scroll-hint/);
 	assert.match(source, /\.examination-column\s*\{ width: 16%;/);
-	assert.match(source, /\.reporting-column\s*\{ width: 13%;/);
-	assert.match(source, /\.signatures-column\s*\{ width: 13%;/);
-	assert.match(source, /\.actions-column\s*\{ width: 21%;/);
+	assert.match(source, /\.reporting-column\s*\{ width: 17%;/);
+	assert.match(source, /\.status-column\s*\{ width: 10%;/);
+	assert.match(source, /\.actions-column\s*\{ width: 20%;/);
 	assert.match(source, /\.row-actions\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
 	assert.match(source, /\.report-button\s*\{[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*white-space: normal;/);
 });
@@ -140,8 +140,8 @@ test('the worklist uses wide screens up to a readable cap while keeping a minimu
 	const rules = [];
 	postcss.parse(css.code).walkRules(rule => rules.push(rule));
 	const styles = selector => new Map(rules.find(rule => selector.test(rule.selector)).nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value]));
-	const widths = ['patient', 'examination', 'team', 'reporting', 'signatures', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
-	assert.deepEqual(widths, [20, 16, 17, 13, 13, 21]);
+	const widths = ['patient', 'examination', 'team', 'reporting', 'status', 'actions'].map(name => parseFloat(styles(new RegExp(`^\\.${name}-column\\.`)).get('width')));
+	assert.deepEqual(widths, [20, 16, 17, 17, 10, 20]);
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
 	const workspace = styles(/^\.study-workspace\.[^ >]+$/);
 	assert.equal(workspace.get('--worklist-min-width'), '60rem');
@@ -178,7 +178,7 @@ test('wide worklists switch to compact horizontal cell layouts instead of wideni
 		container[0].walkRules((rule) => { if (rule.selector.startsWith(prefix)) rule.walkDecls((decl) => values.set(decl.prop, decl.value)); });
 		return values;
 	};
-	const widths = ['patient', 'examination', 'team', 'reporting', 'signatures', 'actions'].map((name) => parseFloat(declarations(`.${name}-column.`).get('width')));
+	const widths = ['patient', 'examination', 'team', 'reporting', 'status', 'actions'].map((name) => parseFloat(declarations(`.${name}-column.`).get('width')));
 	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
 	assert.ok(widths[1] <= Math.max(widths[0], widths[2]), 'Examination does not take the spare width on wide screens');
 	assert.equal(declarations('.reviewer.').get('display'), 'flex');
@@ -256,7 +256,7 @@ test('table preserves study information, sorting, workflow buttons, and role res
 		assert.match(body, /Recordings &amp; reports/);
 		assert.equal((body.match(/<th\b/g) || []).length, 5);
 		assert.equal((body.match(/<td\b/g) || []).length, 5);
-		for (const label of ['Patient', 'Examination', 'Review team', 'Reporting', 'Signatures', 'Actions']) assert.ok(body.includes(label));
+		for (const label of ['Patient', 'Examination', 'Review team', 'Reporting', 'Status', 'Actions']) assert.ok(body.includes(label));
 		assert.match(body, /Resident signatures: 2 of 2/);
 		assert.match(body, /Attending signatures: 0 of 2/);
 		assert.match(body, /Typist signatures: 0 of 2/);
@@ -280,6 +280,7 @@ test('grouped header sorting retains all fourteen fields and only the active gro
 		assert.equal((body.match(/aria-sort="descending"/g) || []).length, 1);
 		for (const key of keys) assert.ok(body.includes(`orderedby=${encodeURIComponent(key)}`));
 		assert.match(body, /colspan="6"/);
+		assert.doesNotMatch(body, /Sort status/);
 		assert.match(body, /No studies found/);
 	}
 });

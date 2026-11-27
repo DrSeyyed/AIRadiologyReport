@@ -55,8 +55,8 @@
 		{ label: 'Patient', columns: [{ key: 's.patient_code', label: 'Code' }, { key: 's.patient_fullname', label: 'Full name' }, { key: 's.patient_age', label: 'Age' }] },
 		{ label: 'Examination', columns: [{ key: 's.exam_date_jalali', label: 'Date / time' }, { key: 'source_modality', label: 'Source modality' }, { key: 'source_description', label: 'Source description' }] },
 		{ label: 'Review team', columns: [{ key: 'attending_fullname', label: 'Study attending' }, { key: 'residents', label: 'Resident' }] },
-		{ label: 'Reporting', columns: [{ key: 'recording_count', label: 'Recordings' }, { key: 'report_count', label: 'Reports' }] },
-		{ label: 'Signatures', columns: [{ key: 'resident_checked_count', label: 'R', name: 'Resident signatures' }, { key: 'attending_checked_count', label: 'A', name: 'Attending signatures' }, { key: 'typist_checked_count', label: 'T', name: 'Typist signatures' }] },
+		{ label: 'Reporting', columns: [{ key: 'recording_count', label: 'Recordings' }, { key: 'report_count', label: 'Reports' }, { key: 'resident_checked_count', label: 'R', name: 'Resident signatures' }, { key: 'attending_checked_count', label: 'A', name: 'Attending signatures' }, { key: 'typist_checked_count', label: 'T', name: 'Typist signatures' }] },
+		{ label: 'Status', columns: [] },
 		{ label: 'Actions', columns: [{ key: 'is_favorite', label: 'My favorites' }] }
 	];
 	const signatureRoles = [
@@ -154,14 +154,15 @@
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users need to focus this region to scroll the table.) -->
 	<div id="study-worklist-table" bind:this={tableScroll} class="study-table-scroll w-full min-w-0 max-w-full overflow-x-auto" role="region" aria-label="Studies table, scroll horizontally" tabindex="0" onscroll={updateTableScroll}>
 		<table bind:this={tableElement} class="study-table">
-			<caption class="sr-only">Study worklist grouped by patient, examination, review team, reporting, signatures and actions.</caption>
-			<colgroup><col class="patient-column" /><col class="examination-column" /><col class="team-column" /><col class="reporting-column" /><col class="signatures-column" /><col class="actions-column" /></colgroup>
+			<caption class="sr-only">Study worklist grouped by patient, examination, review team, reporting, status and actions.</caption>
+			<colgroup><col class="patient-column" /><col class="examination-column" /><col class="team-column" /><col class="reporting-column" /><col class="status-column" /><col class="actions-column" /></colgroup>
 			<thead>
 				<tr>
 					{#each headers as header (header.label)}
 						{@const activeColumn = header.columns.find((column) => column.key === data.paging.orderedby)}
 						<th scope="col" aria-sort={activeColumn ? data.paging.orderdir === 'ASC' ? 'ascending' : 'descending' : 'none'}>
 							<div class="column-title">{header.label}</div>
+							{#if header.columns.length}
 							<details class="column-sort" use:floatingDisclosure>
 								<summary aria-label={`Sort ${header.label.toLowerCase()}`}>{activeColumn ? `${activeColumn.label} ${data.paging.orderdir === 'ASC' ? '↑' : '↓'}` : 'Sort'}</summary>
 								<div class="sort-options floating-panel" data-floating-panel>
@@ -176,6 +177,7 @@
 									{/each}
 								</div>
 							</details>
+							{/if}
 						</th>
 					{/each}
 				</tr>
@@ -189,7 +191,6 @@
 							<div class="patient-name" class:line-through={Boolean(study.disabled)} dir="auto">{patientName(study)}</div>
 							<div class="patient-meta"><span class="field-label">ID</span> <span class="patient-code" dir="auto">{study.patient_code}</span></div>
 							<div class="secondary-text">Age {study.patient_age == null ? '—' : `${study.patient_age} ${study.patient_age_unit ?? 'Y'}`}</div>
-							<span class="status-badge" class:disabled-badge={Boolean(study.disabled)}>{studyRowStatuses.find((item) => item.key === status)?.label}</span>
 						</td>
 						<td>
 							<div class="exam-heading"><span class="modality-badge" dir="auto">{study.source_modality || study.modality_code || '—'}</span><span class="exam-date">{study.exam_date_jalali}<span class="exam-time">{study.exam_time}</span></span></div>
@@ -209,14 +210,15 @@
 								<div><strong>{recordingCount}</strong><span>Recordings</span></div>
 								<div><strong>{study.report_count ?? 0}</strong><span>Reports</span></div>
 							</div>
-						</td>
-						<td>
-							<div class="signature-list" title="Signed / recordings">
+							<div class="signature-list" title="Signatures: signed / recordings">
 								{#each signatureRoles as role (role.key)}
 									{@const checked = study[role.key] ?? 0}
 									<span class="signature-chip" class:signature-complete={recordingCount > 0 && checked === recordingCount} aria-label={`${role.label} signatures: ${checked} of ${recordingCount}`} title={`${role.label} signatures`}><span>{role.short}</span> {checked}/{recordingCount}</span>
 								{/each}
 							</div>
+						</td>
+						<td>
+							<span class="status-badge" class:disabled-badge={Boolean(study.disabled)}>{studyRowStatuses.find((item) => item.key === status)?.label}</span>
 						</td>
 						<td>
 							<div class="row-actions">
@@ -341,9 +343,9 @@
 	.patient-column { width: 20%; }
 	.examination-column { width: 16%; }
 	.team-column { width: 17%; }
-	.reporting-column { width: 13%; }
-	.signatures-column { width: 13%; }
-	.actions-column { width: 21%; }
+	.reporting-column { width: 17%; }
+	.status-column { width: 10%; }
+	.actions-column { width: 20%; }
 	.study-table th { vertical-align: top; padding: 0.625rem 0.875rem; background: var(--app-surface-muted); border-bottom: 1px solid var(--app-border); font-weight: 500; }
 	.study-table td { vertical-align: top; padding: 0.75rem 0.875rem; border-bottom: 1px solid var(--app-border-soft); white-space: normal; overflow-wrap: anywhere; }
 	.study-table td > * { min-width: 0; max-width: 100%; }
@@ -363,7 +365,7 @@
 	.patient-name { font-size: 0.8125rem; line-height: 1.5; font-weight: 600; }
 	.patient-meta { display: flex; align-items: baseline; gap: 0.375rem; margin: 0.25rem 0 0.125rem; }
 	.patient-code { min-width: 0; font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--app-text-secondary); }
-	.status-badge { display: inline-block; max-width: 100%; margin-top: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }
+	.status-badge { display: inline-block; max-width: 100%; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }
 	.disabled-badge { width: max-content; white-space: nowrap; overflow-wrap: normal; flex-shrink: 0; }
 	.exam-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.625rem; }
 	.modality-badge { max-width: 100%; padding: 0.25rem 0.5rem; background: var(--app-accent-tint); border: 1px solid var(--app-accent-border); border-radius: 0.375rem; color: var(--app-accent-ink); font-size: 0.75rem; font-weight: 700; }
@@ -376,7 +378,7 @@
 	.attention-disclosure > .attention-active { color: var(--app-warning-ink); font-weight: 700; }
 	.attention-editor { width: 18rem; max-width: calc(100vw - 1rem); padding: 0.75rem; color: var(--app-text); font-size: 0.8125rem; }
 	.attention-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 0.375rem; color: var(--app-warning-ink); font-size: 0.6875rem; white-space: pre-wrap; }
-	.report-metrics { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+	.report-metrics { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-bottom: 0.375rem; }
 	.report-metrics > div { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid var(--app-border); border-radius: 0.375rem; background: var(--app-surface); }
 	.report-metrics strong { min-width: 0; font-size: 0.875rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
 	.report-metrics span { white-space: nowrap; font-size: 0.6875rem; color: var(--app-text-muted); }
@@ -400,17 +402,16 @@
 	   instead of stacking them and leaving the extra width as empty space between columns. */
 	.study-workspace { container-type: inline-size; }
 	@container (min-width: 72rem) {
-		.patient-column { width: 21%; }
-		.examination-column { width: 19%; }
-		.team-column { width: 19%; }
-		.reporting-column { width: 11%; }
-		.signatures-column { width: 11%; }
-		.actions-column { width: 19%; }
+		.patient-column { width: 19%; }
+		.examination-column { width: 18%; }
+		.team-column { width: 18%; }
+		.reporting-column { width: 16%; }
+		.status-column { width: 11%; }
+		.actions-column { width: 18%; }
 		.study-table th { padding: 0.5rem 0.75rem; }
 		.study-table td { padding: 0.5rem 0.75rem; }
 		.patient-meta { display: inline-flex; margin: 0 0.5rem 0 0; }
 		.patient-meta + .secondary-text { display: inline; }
-		.status-badge { margin: 0 0 0 0.5rem; padding: 0.0625rem 0.375rem; }
 		.exam-heading { gap: 0.5rem; align-items: baseline; }
 		.exam-time { display: inline; margin: 0 0 0 0.375rem; }
 		.exam-description { margin-top: 0.25rem; }
