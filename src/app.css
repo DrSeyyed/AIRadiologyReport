@@ -6,6 +6,57 @@
 	--app-font-size: 0.875rem;
 	--page-title-size: 1.5rem;
 	--section-title-size: 1.125rem;
+	--app-page: #f8fafc;
+	--app-surface: #fff;
+	--app-surface-muted: #f8fafc;
+	--app-surface-subtle: #f1f5f9;
+	--app-text: #334155;
+	--app-text-strong: #1e293b;
+	--app-text-secondary: #475569;
+	--app-text-muted: #64748b;
+	--app-border: #e2e8f0;
+	--app-border-soft: #edf2f7;
+	--app-border-strong: #cbd5e1;
+	--app-row-hover: #fafbff;
+	--app-focus: #6366f1;
+	--app-focus-strong: #4f46e5;
+	--app-accent-ink: #4338ca;
+	--app-accent-tint: #eef2ff;
+	--app-accent-border: #e0e7ff;
+	--app-warning-ink: #854d0e;
+	--app-warning-tint: #fef9c3;
+	--app-warning-surface: #fffbeb;
+	--app-warning-border: #fcd34d;
+	--app-success-ink: #166534;
+	--app-success-tint: #f0fdf4;
+}
+
+/* Dark theme for dim reading rooms. Light remains the default unless chosen or set by the OS. */
+html[data-theme='dark'] {
+	color-scheme: dark;
+	--app-page: #0f172a;
+	--app-surface: #111827;
+	--app-surface-muted: #1e293b;
+	--app-surface-subtle: #1e293b;
+	--app-text: #cbd5e1;
+	--app-text-strong: #f1f5f9;
+	--app-text-secondary: #cbd5e1;
+	--app-text-muted: #94a3b8;
+	--app-border: #334155;
+	--app-border-soft: #1f2a3c;
+	--app-border-strong: #475569;
+	--app-row-hover: #172033;
+	--app-focus: #818cf8;
+	--app-focus-strong: #a5b4fc;
+	--app-accent-ink: #c7d2fe;
+	--app-accent-tint: #1e1b4b;
+	--app-accent-border: #3730a3;
+	--app-warning-ink: #fde68a;
+	--app-warning-tint: #422006;
+	--app-warning-surface: #2a1a05;
+	--app-warning-border: #a16207;
+	--app-success-ink: #bbf7d0;
+	--app-success-tint: #052e16;
 }
 
 .page-title.page-title {
@@ -13,7 +64,7 @@
 	font-weight: 600;
 	line-height: 1.3;
 	letter-spacing: -0.025em;
-	color: #1e293b;
+	color: var(--app-text-strong);
 }
 
 .section-title.section-title {
@@ -21,7 +72,7 @@
 	font-weight: 600;
 	line-height: 1.4;
 	letter-spacing: -0.015em;
-	color: #1e293b;
+	color: var(--app-text-strong);
 }
 
 /* Button-only tokens leave badges, alerts and other DaisyUI surfaces unchanged.
@@ -145,6 +196,47 @@
 	pointer-events: none;
 }
 
+html[data-theme='dark'] :is(.btn.btn, .button-tint.button-tint) {
+	--button-bg: #1e293b;
+	--button-hover: #273449;
+	--button-active: #334155;
+	--button-text: #e2e8f0;
+	--button-border: #64748b;
+}
+html[data-theme='dark'] :is(.btn, .button-tint).btn-primary { --button-bg: #172554; --button-hover: #1e3a8a; --button-active: #1e40af; --button-text: #dbeafe; --button-border: #3b82f6; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-secondary { --button-bg: #2e1065; --button-hover: #3b0764; --button-active: #4c1d95; --button-text: #ede9fe; --button-border: #8b5cf6; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-accent { --button-bg: #042f2e; --button-hover: #134e4a; --button-active: #115e59; --button-text: #ccfbf1; --button-border: #14b8a6; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-info { --button-bg: #082f49; --button-hover: #0c4a6e; --button-active: #075985; --button-text: #e0f2fe; --button-border: #0ea5e9; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-success { --button-bg: #052e16; --button-hover: #14532d; --button-active: #166534; --button-text: #dcfce7; --button-border: #22c55e; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-warning { --button-bg: #2a1a05; --button-hover: #422006; --button-active: #713f12; --button-text: #fef3c7; --button-border: #d97706; }
+html[data-theme='dark'] :is(.btn, .button-tint).btn-error { --button-bg: #2a0a0a; --button-hover: #450a0a; --button-active: #7f1d1d; --button-text: #fee2e2; --button-border: #ef4444; }
+html[data-theme='dark'] :is(.btn.btn, .button-tint.button-tint):is(:disabled, [disabled], .btn-disabled, [aria-disabled='true']) {
+	background-color: #1e293b;
+	color: #94a3b8;
+	border-color: #334155;
+}
+
+/* Fixed Tailwind palette classes used by the shell, login and admin pages follow the theme. */
+html[data-theme='dark'] :is(.bg-white, .bg-slate-50, .bg-gray-50) { background-color: var(--app-surface); }
+html[data-theme='dark'] .drawer.bg-slate-50 { background-color: var(--app-page); }
+html[data-theme='dark'] :is(.border-slate-200, .border-slate-300) { border-color: var(--app-border); }
+html[data-theme='dark'] .border-slate-500 { border-color: var(--app-border-strong); }
+html[data-theme='dark'] :is(.text-slate-500, .text-slate-600) { color: var(--app-text-muted); }
+html[data-theme='dark'] .text-slate-700 { color: var(--app-text); }
+html[data-theme='dark'] .text-slate-900 { color: var(--app-text-strong); }
+html[data-theme='dark'] .ring-slate-200 { --tw-ring-color: var(--app-border); }
+html[data-theme='dark'] .bg-red-50 { background-color: #2a0a0a; }
+html[data-theme='dark'] .border-red-200 { border-color: #7f1d1d; }
+html[data-theme='dark'] :is(.text-red-600, .text-red-700) { color: #fca5a5; }
+html[data-theme='dark'] .border-green-200 { border-color: #14532d; }
+html[data-theme='dark'] .text-green-700 { color: #86efac; }
+/* Plain form controls (styled by @tailwindcss/forms rather than DaisyUI) default to white. */
+html[data-theme='dark'] :is(input, select, textarea):not(.input, .select, .textarea, [type='checkbox'], [type='radio'], [type='range'], [type='file']) {
+	background-color: var(--app-surface);
+	color: var(--app-text-strong);
+	border-color: var(--app-border-strong);
+}
+
 @layer components {
 	/* Compact DaisyUI selects otherwise inherit a line height as tall as the control. */
 	select.select {
@@ -166,8 +258,13 @@
 		font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif;
 		font-size: var(--app-font-size);
 		line-height: 1.5;
-		color: #334155;
+		color: var(--app-text);
 		@apply bg-slate-50;
+	}
+
+	html[data-theme='dark'],
+	html[data-theme='dark'] body {
+		background-color: var(--app-page);
 	}
 
 	main {
@@ -190,6 +287,30 @@
 			--fallback-b2: #f2f2f2;
 			--fallback-b3: #e5e6e6;
 			--fallback-bc: #1f2937;
+			--fallback-in: #00b3f0;
+			--fallback-inc: #000000;
+			--fallback-su: #00ca92;
+			--fallback-suc: #000000;
+			--fallback-wa: #ffc22d;
+			--fallback-wac: #000000;
+			--fallback-er: #ff6f70;
+			--fallback-erc: #000000;
+		}
+
+		html[data-theme='dark'] {
+			color-scheme: dark;
+			--fallback-p: #7582ff;
+			--fallback-pc: #050617;
+			--fallback-s: #ff71cf;
+			--fallback-sc: #190211;
+			--fallback-a: #00c7b5;
+			--fallback-ac: #000e0c;
+			--fallback-n: #2a323c;
+			--fallback-nc: #a6adbb;
+			--fallback-b1: #1d232a;
+			--fallback-b2: #191e24;
+			--fallback-b3: #15191e;
+			--fallback-bc: #a6adbb;
 			--fallback-in: #00b3f0;
 			--fallback-inc: #000000;
 			--fallback-su: #00ca92;

@@ -6,10 +6,27 @@
 	import { canManageTemplates } from '$lib/template-permissions.js';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/page-title.js';
+	import { onMount } from 'svelte';
+	import { applyThemeChoice, storedThemeChoice, themeChoices } from '$lib/theme.js';
 
 	let { data, children } = $props();
 	let drawerOpen = $state(false);
 	let navigationButton = $state();
+	let themeChoice = $state('system');
+
+	onMount(() => {
+		themeChoice = storedThemeChoice();
+		const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+		const followSystem = () => { if (themeChoice === 'system') applyThemeChoice('system'); };
+		media?.addEventListener?.('change', followSystem);
+		return () => media?.removeEventListener?.('change', followSystem);
+	});
+
+	function chooseTheme(event) {
+		themeChoice = event.currentTarget.value;
+		applyThemeChoice(themeChoice);
+	}
+
 	const adminPanelActive = $derived(page.route.id === '/admin' || Boolean(page.route.id?.startsWith('/admin/')));
 
 	function closeNavigation() {
@@ -46,6 +63,12 @@
 				<h1 class="min-w-0 break-words font-semibold">Personal Taleghani PACS</h1>
 			</div>
 			<div class="flex min-w-0 flex-wrap items-center gap-3 text-sm">
+				<label class="flex items-center gap-1.5">
+					<span class="opacity-80">Theme</span>
+					<select class="select select-bordered select-sm" aria-label="Color theme" value={themeChoice} onchange={chooseTheme}>
+						{#each themeChoices as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+					</select>
+				</label>
 				{#if data.user}
 					<span class="min-w-0 break-words opacity-80">Logged in as <strong>{data.user.full_name}</strong> ({data.user.role})</span>
 					<button class="btn btn-primary shrink-0" onclick={logout}>Logout</button>

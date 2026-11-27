@@ -50,6 +50,19 @@ test('report modal compiles accessibly and uses shared persisted typography for 
 	assert.match(source, /font,\s+size: fontSize/);
 });
 
+test('report editor shows Markdown and preview side by side on wide screens and protects unsaved edits', () => {
+	assert.match(source, /class="modal-box [^"]*max-w-6xl/);
+	assert.match(source, /role="tablist" class="tabs tabs-boxed w-fit lg:hidden"/);
+	assert.match(source, /lg:grid-cols-2/);
+	assert.equal((source.match(/\{state\.tab === 'write' \? 'flex' : 'hidden'\} lg:flex|state\.tab === 'preview' \? 'flex' : 'hidden'\} lg:flex/g) ?? []).length, 2);
+	assert.match(source, /role="toolbar" aria-label="Report formatting and export"/);
+	assert.match(source, /const dirty = \$derived\(state\.text !== savedText\)/);
+	assert.match(source, /if \(dirty && editable && !confirm\('Discard unsaved report changes\?'\)\) return;/);
+	assert.match(source, /if \(e\.key === 'Escape'\) \{\s*requestClose\(\);/);
+	assert.match(source, /class="modal-backdrop"[^>]*onclick=\{requestClose\}/);
+	assert.match(source, /\.report-paper \{ background: #fff; color: #000; \}/);
+});
+
 test('modal starts at Times New Roman 11.0, loads account settings without saving and blocks early changes', async () => {
 	const loaded = deferred();
 	const saves = [];

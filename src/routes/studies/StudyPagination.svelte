@@ -35,13 +35,13 @@
 </nav>
 
 <style>
-	.study-pagination { padding: 0.75rem 1rem; border-top: 1px solid #e2e8f0; }
+	.study-pagination { padding: 0.75rem 1rem; border-top: 1px solid var(--app-border); }
 	.study-pagination.inline { padding: 0; border-top: 0; }
 	.inline form { gap: 0.5rem; }
 	.inline label { gap: 0.375rem; font-size: 0.6875rem; }
 	.inline select { min-width: 3.5rem; padding-left: 0.5rem; padding-right: 1.5rem; }
 	.inline .btn { padding-left: 0.5rem; padding-right: 0.5rem; font-size: 0.6875rem; }
 	form { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.75rem; }
-	label { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; max-width: 100%; font-size: 0.75rem; color: #475569; }
-	select { min-width: 4.5rem; max-width: 100%; height: 2rem; border: 1px solid #cbd5e1; }
+	label { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; max-width: 100%; font-size: 0.75rem; color: var(--app-text-secondary); }
+	select { min-width: 4.5rem; max-width: 100%; height: 2rem; border: 1px solid var(--app-border-strong); }
 </style>

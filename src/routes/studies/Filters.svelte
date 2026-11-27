@@ -162,7 +162,7 @@
 </div>
 
 <style>
-	.worklist-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 0.75rem; padding: 0.75rem 1rem; border-top: 1px solid #e2e8f0; }
+	.worklist-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 0.75rem; padding: 0.75rem 1rem; border-top: 1px solid var(--app-border); }
 	.study-filters { display: contents; }
 	.quick-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 0.375rem; grid-column: 1; grid-row: 1; min-width: 0; }
 	.quick-filters .label-text { margin-bottom: 0.25rem; font-size: 0.6875rem; }
@@ -172,7 +172,7 @@
 	.quick-filters input, .quick-filters select { height: 2rem; font-size: 0.75rem; padding-left: 0.5rem; padding-right: 0.5rem; }
 	.quick-filters .btn { padding-left: 0.5rem; padding-right: 0.5rem; font-size: 0.6875rem; }
 	.top-pagination { grid-column: 2; grid-row: 1; min-width: 0; }
-	.advanced-filters { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; min-width: 0; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; }
+	.advanced-filters { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; min-width: 0; padding-top: 0.75rem; border-top: 1px solid var(--app-border); }
 	.advanced-filters[hidden] { display: none; }
 	h3 { width: 100%; font-size: 0.8125rem; font-weight: 600; }
 	@media (max-width: 54rem) {
@@ -183,12 +183,12 @@
 
 	.study-filters :global(.input),
 	.study-filters :global(.select) {
-		border: 1px solid #cbd5e1;
+		border: 1px solid var(--app-border-strong);
 	}
 
 	.study-filters :global(.input:focus),
 	.study-filters :global(.select:focus) {
-		border-color: #6366f1;
+		border-color: var(--app-focus);
 	}
 
 	label {

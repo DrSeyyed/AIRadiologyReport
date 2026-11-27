@@ -15,6 +15,7 @@
 	import { page } from '$app/state';
 	import { studySortHref } from '$lib/study-sorting.js';
 	import { studyRowStatus, studyRowStatuses, studyStatusHref } from '$lib/study-row-status.js';
+	import { floatingDisclosure } from '$lib/floating-disclosure.js';
 
 	let { data, showNewModal = $bindable(), showEditModal = $bindable(), recordingsForStudy = $bindable() } = $props();
 	let warning = $state('');
@@ -160,9 +161,9 @@
 						{@const activeColumn = header.columns.find((column) => column.key === data.paging.orderedby)}
 						<th scope="col" aria-sort={activeColumn ? data.paging.orderdir === 'ASC' ? 'ascending' : 'descending' : 'none'}>
 							<div class="column-title">{header.label}</div>
-							<details class="column-sort">
+							<details class="column-sort" use:floatingDisclosure>
 								<summary aria-label={`Sort ${header.label.toLowerCase()}`}>{activeColumn ? `${activeColumn.label} ${data.paging.orderdir === 'ASC' ? '↑' : '↓'}` : 'Sort'}</summary>
-								<div class="sort-options">
+								<div class="sort-options floating-panel" data-floating-panel>
 									{#each header.columns as column (column.key)}
 										{@const active = data.paging.orderedby === column.key}
 										{@const nextDirection = active && data.paging.orderdir === 'ASC' ? 'descending' : 'ascending'}
@@ -196,9 +197,9 @@
 						<td>
 							<div class="reviewer"><span class="field-label">Attending</span><span dir="auto">{study.attending_fullname || 'Unassigned'}</span></div>
 							<div class="reviewer"><span class="field-label">Resident</span><div>{#each study.residents as resident (resident.id)}<div dir="auto">{resident.full_name}</div>{:else}<span class="secondary-text">Unassigned</span>{/each}</div></div>
-							<details class="attention-disclosure">
+							<details class="attention-disclosure" use:floatingDisclosure>
 								<summary class:attention-active={Boolean(study.needs_attention)}>{study.needs_attention ? 'Needs attention' : study.attention_note ? 'Attention note' : readOnly || study.disabled ? 'Attention' : 'Add attention note'}</summary>
-								<div class="attention-editor"><StudyAttention {study} user={data.user} /></div>
+								<div class="attention-editor floating-panel" data-floating-panel><StudyAttention {study} user={data.user} /></div>
 							</details>
 							{#if study.attention_note}<p class="attention-preview" dir="auto">{study.attention_note}</p>{/if}
 						</td>
@@ -219,9 +220,9 @@
 							<div class="row-actions">
 								<button class="btn btn-xs btn-primary report-button" onclick={() => { recordingsForStudy = study; }}>Recordings & reports <span aria-hidden="true">→</span></button>
 								<div class="quick-actions"><PacsViewer {study} template={data.pacsViewerUrl} user={data.user} /><StudyFavorite {study} compact /></div>
-								<details class="more-actions">
+								<details class="more-actions" use:floatingDisclosure>
 									<summary class="btn btn-xs btn-ghost" aria-label={`More actions for study ${study.patient_code}`}>More actions</summary>
-									<div class="action-list">
+									<div class="action-list floating-panel" data-floating-panel>
 										<button class="btn btn-xs btn-ghost action-button" onclick={() => (favoriteForStudy = study)}>Favorite categories{study.favorite_category_ids?.length ? ` (${study.favorite_category_ids.length})` : ''}</button>
 										{#if isAdmin}
 											<button class="btn btn-xs btn-ghost action-button" disabled={refreshingTelegramId !== null} onclick={() => refreshTelegram(study)}>{refreshingTelegramId === study.id ? 'Queuing Telegram refresh…' : 'Refresh Telegram message'}</button>
@@ -252,10 +253,10 @@
 		min-width: 0;
 		max-width: 96rem;
 		overflow: hidden;
-		border: 1px solid #dbe3ed;
+		border: 1px solid var(--app-border);
 		border-radius: 1rem;
-		background: #fff;
-		color: #1e293b;
+		background: var(--app-surface);
+		color: var(--app-text-strong);
 		box-shadow: 0 4px 18px rgb(15 23 42 / 4%);
 	}
 
@@ -272,7 +273,7 @@
 	.field-label {
 		font-size: 0.6875rem;
 		font-weight: 600;
-		color: #64748b;
+		color: var(--app-text-muted);
 	}
 
 	.eyebrow {
@@ -290,8 +291,8 @@
 	.result-count {
 		padding: 0.125rem 0.5rem;
 		border-radius: 0.5rem;
-		background: #f1f5f9;
-		color: #475569;
+		background: var(--app-surface-subtle);
+		color: var(--app-text-secondary);
 		font-size: 0.8125rem;
 		letter-spacing: normal;
 	}
@@ -299,7 +300,7 @@
 	.toolbar-caption,
 	.secondary-text {
 		font-size: 0.75rem;
-		color: #64748b;
+		color: var(--app-text-muted);
 	}
 
 	.toolbar-caption { margin-top: 0.25rem; }
@@ -309,9 +310,9 @@
 	summary:focus-visible,
 	a:focus-visible,
 	button:focus-visible,
-	.study-table-scroll:focus-visible { outline: 2px solid #4f46e5; outline-offset: -2px; }
+	.study-table-scroll:focus-visible { outline: 2px solid var(--app-focus-strong); outline-offset: -2px; }
 
-	.status-navigation { border-top: 1px solid #e2e8f0; padding: 0.75rem 1.5rem; }
+	.status-navigation { border-top: 1px solid var(--app-border); padding: 0.75rem 1.5rem; }
 	.status-navigation ul { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 	.study-status { --status-ink: #475569; --status-tint: #f1f5f9; --status-dot: #94a3b8; }
 	.study-status[data-study-status='attention'] { --status-ink: #854d0e; --status-tint: #fef9c3; --status-dot: #eab308; }
@@ -319,73 +320,80 @@
 	.study-status[data-study-status='unsigned'] { --status-ink: #9d174d; --status-tint: #fdf2f8; --status-dot: #ec4899; }
 	.study-status[data-study-status='signed'] { --status-ink: #166534; --status-tint: #f0fdf4; --status-dot: #22c55e; }
 	.study-status[data-study-status='disabled'] { --status-ink: #4b5563; --status-tint: #f3f4f6; --status-dot: #9ca3af; }
-	.status-filter { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 2rem; padding: 0.375rem 0.625rem; border-radius: 0.5rem; font-size: 0.75rem; color: #64748b; }
-	.status-filter:hover { background: #f8fafc; }
+	:global([data-theme='dark']) .study-status { --status-ink: #cbd5e1; --status-tint: #1e293b; }
+	:global([data-theme='dark']) .study-status[data-study-status='attention'] { --status-ink: #fde68a; --status-tint: #422006; }
+	:global([data-theme='dark']) .study-status[data-study-status='no-recording'] { --status-ink: #fecaca; --status-tint: #450a0a; }
+	:global([data-theme='dark']) .study-status[data-study-status='unsigned'] { --status-ink: #fbcfe8; --status-tint: #500724; }
+	:global([data-theme='dark']) .study-status[data-study-status='signed'] { --status-ink: #bbf7d0; --status-tint: #052e16; }
+	:global([data-theme='dark']) .study-status[data-study-status='disabled'] { --status-ink: #d1d5db; --status-tint: #1f2937; }
+	.status-filter { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 2rem; padding: 0.375rem 0.625rem; border-radius: 0.5rem; font-size: 0.75rem; color: var(--app-text-muted); }
+	.status-filter:hover { background: var(--app-surface-muted); }
 	.status-filter[aria-current='true'] { background: var(--status-tint); color: var(--status-ink); font-weight: 700; box-shadow: inset 0 0 0 1px var(--status-dot); }
 	.status-dot { width: 0.375rem; height: 0.375rem; flex-shrink: 0; border-radius: 50%; background: var(--status-dot); }
 
-	.table-scroll-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid #e2e8f0; background: #f8fafc; color: #64748b; font-size: 0.75rem; }
+	.table-scroll-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-top: 1px solid var(--app-border); background: var(--app-surface-muted); color: var(--app-text-muted); font-size: 0.75rem; }
 	.scroll-buttons { display: flex; gap: 0.375rem; }
 	.scroll-buttons button { width: 2rem; height: 2rem; min-height: 2rem; border-radius: 0.375rem; }
-	.study-table-scroll { border-top: 1px solid #e2e8f0; }
+	.study-table-scroll { border-top: 1px solid var(--app-border); }
 	.study-table { width: 100%; min-width: calc(var(--worklist-min-width) - 2px); table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 0.8125rem; }
 	.patient-column { width: 22%; }
 	.examination-column { width: 17%; }
 	.team-column { width: 18%; }
 	.reporting-column { width: 20%; }
 	.actions-column { width: 23%; }
-	.study-table th { vertical-align: top; padding: 0.625rem 0.875rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
-	.study-table td { vertical-align: top; padding: 0.75rem 0.875rem; border-bottom: 1px solid #edf2f7; white-space: normal; overflow-wrap: anywhere; }
+	.study-table th { vertical-align: top; padding: 0.625rem 0.875rem; background: var(--app-surface-muted); border-bottom: 1px solid var(--app-border); font-weight: 500; }
+	.study-table td { vertical-align: top; padding: 0.75rem 0.875rem; border-bottom: 1px solid var(--app-border-soft); white-space: normal; overflow-wrap: anywhere; }
 	.study-table td > * { min-width: 0; max-width: 100%; }
 	.study-table tbody tr:last-child td { border-bottom: 0; }
-	.study-table tbody tr:hover { background: #fafbff; }
-	.study-table tbody tr[data-study-status='disabled'] { background: #f8fafc; }
+	.study-table tbody tr:hover { background: var(--app-row-hover); }
+	.study-table tbody tr[data-study-status='disabled'] { background: var(--app-surface-muted); }
 	.study-table tbody td:first-child { border-left: 3px solid var(--status-dot); }
-	.column-title { font-size: 0.75rem; font-weight: 700; color: #475569; }
-	.column-sort { margin-top: 0.125rem; font-size: 0.6875rem; color: #64748b; }
+	.column-title { font-size: 0.75rem; font-weight: 700; color: var(--app-text-secondary); }
+	.column-sort { margin-top: 0.125rem; font-size: 0.6875rem; color: var(--app-text-muted); }
 	.column-sort > summary { width: fit-content; }
-	.sort-options { display: grid; gap: 0.25rem; margin-top: 0.5rem; padding: 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
-	.sort-link { display: flex; justify-content: space-between; gap: 0.375rem; padding: 0.25rem; color: #475569; }
+	.floating-panel { position: fixed; z-index: 35; border: 1px solid var(--app-border); border-radius: 0.5rem; background: var(--app-surface); box-shadow: 0 10px 30px rgb(15 23 42 / 14%); }
+	.sort-options { display: grid; gap: 0.25rem; min-width: 11rem; padding: 0.375rem; }
+	.sort-link { display: flex; justify-content: space-between; gap: 0.375rem; padding: 0.25rem; color: var(--app-text-secondary); }
 	.sort-link:hover,
-	.sort-active { color: #4338ca; text-decoration: underline; }
+	.sort-active { color: var(--app-accent-ink); text-decoration: underline; }
 
 	.patient-name { font-size: 0.8125rem; line-height: 1.5; font-weight: 600; }
 	.patient-meta { display: flex; align-items: baseline; gap: 0.375rem; margin: 0.25rem 0 0.125rem; }
-	.patient-code { min-width: 0; font-family: ui-monospace, monospace; font-size: 0.75rem; color: #475569; }
+	.patient-code { min-width: 0; font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--app-text-secondary); }
 	.status-badge { display: inline-block; max-width: 100%; margin-top: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--status-tint); color: var(--status-ink); font-size: 0.6875rem; font-weight: 600; }
 	.disabled-badge { width: max-content; white-space: nowrap; overflow-wrap: normal; flex-shrink: 0; }
 	.exam-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.625rem; }
-	.modality-badge { max-width: 100%; padding: 0.25rem 0.5rem; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 0.375rem; color: #4338ca; font-size: 0.75rem; font-weight: 700; }
+	.modality-badge { max-width: 100%; padding: 0.25rem 0.5rem; background: var(--app-accent-tint); border: 1px solid var(--app-accent-border); border-radius: 0.375rem; color: var(--app-accent-ink); font-size: 0.75rem; font-weight: 700; }
 	.exam-date { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-	.exam-time { display: block; margin-top: 0.125rem; color: #64748b; font-size: 0.6875rem; font-weight: 400; }
-	.exam-description { margin-top: 0.5rem; line-height: 1.5; color: #475569; }
+	.exam-time { display: block; margin-top: 0.125rem; color: var(--app-text-muted); font-size: 0.6875rem; font-weight: 400; }
+	.exam-description { margin-top: 0.5rem; line-height: 1.5; color: var(--app-text-secondary); }
 	.reviewer { display: grid; gap: 0.125rem; margin-bottom: 0.375rem; }
 	.attention-disclosure { margin-top: 0.5rem; }
-	.attention-disclosure > summary { font-size: 0.6875rem; color: #64748b; }
-	.attention-disclosure > .attention-active { color: #854d0e; font-weight: 700; }
-	.attention-editor { margin-top: 0.75rem; }
-	.attention-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 0.375rem; color: #854d0e; font-size: 0.6875rem; white-space: pre-wrap; }
+	.attention-disclosure > summary { font-size: 0.6875rem; color: var(--app-text-muted); }
+	.attention-disclosure > .attention-active { color: var(--app-warning-ink); font-weight: 700; }
+	.attention-editor { width: 18rem; max-width: calc(100vw - 1rem); padding: 0.75rem; color: var(--app-text); font-size: 0.8125rem; }
+	.attention-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 0.375rem; color: var(--app-warning-ink); font-size: 0.6875rem; white-space: pre-wrap; }
 	.report-metrics { display: flex; flex-wrap: wrap; gap: 0.375rem; }
-	.report-metrics > div { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.375rem; background: #fff; }
+	.report-metrics > div { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0.25rem 0.375rem; border: 1px solid var(--app-border); border-radius: 0.375rem; background: var(--app-surface); }
 	.report-metrics strong { min-width: 0; font-size: 0.875rem; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
-	.report-metrics span { white-space: nowrap; font-size: 0.6875rem; color: #64748b; }
-	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.625rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: #475569; }
-	.signature-heading > span { font-weight: 400; font-size: 0.6875rem; color: #64748b; }
+	.report-metrics span { white-space: nowrap; font-size: 0.6875rem; color: var(--app-text-muted); }
+	.signature-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; margin: 0.625rem 0 0.375rem; font-size: 0.6875rem; font-weight: 600; color: var(--app-text-secondary); }
+	.signature-heading > span { font-weight: 400; font-size: 0.6875rem; color: var(--app-text-muted); }
 	.signature-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: #f1f5f9; color: #475569; font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
+	.signature-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.375rem; border-radius: 0.375rem; background: var(--app-surface-subtle); color: var(--app-text-secondary); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 	.signature-chip > span { font-weight: 700; }
-	.signature-complete { background: #f0fdf4; color: #166534; }
+	.signature-complete { background: var(--app-success-tint); color: var(--app-success-ink); }
 	.row-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 	.row-actions :global(.btn) { min-height: 2rem; height: auto; border-radius: 0.375rem; padding: 0.375rem 0.625rem; font-size: 0.6875rem; line-height: 1.4; font-weight: 600; }
 	.report-button { display: inline-flex; justify-content: center; gap: 0.5rem; width: fit-content; min-width: 0; max-width: 100%; white-space: normal; text-align: left; }
 	.quick-actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; }
 	.quick-actions > :global(*) { min-width: 0; max-width: 100%; }
 	.more-actions > summary { width: fit-content; }
-	.action-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.375rem; width: fit-content; max-width: 100%; margin-top: 0.5rem; padding: 0.375rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; background: #fff; }
+	.action-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.375rem; width: max-content; min-width: 11rem; max-width: calc(100vw - 1rem); padding: 0.375rem; }
 	.action-button { justify-content: flex-start; white-space: normal; text-align: left; }
 	.empty-state { text-align: center; padding: 3rem 1rem !important; }
 	.empty-state strong { display: block; font-size: 1rem; }
-	.empty-state span { display: block; margin-top: 0.5rem; color: #64748b; }
+	.empty-state span { display: block; margin-top: 0.5rem; color: var(--app-text-muted); }
 
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }

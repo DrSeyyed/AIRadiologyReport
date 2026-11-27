@@ -189,8 +189,8 @@ test('row actions share compact button sizing and the reports button fits its la
 test('quick filters share the pagination row and more filters retains the full bordered form', async () => {
 	const { Component } = await component('Filters.svelte');
 	const filters = read('Filters.svelte');
-	assert.match(filters, /\.study-filters :global\(\.input\),\s*\.study-filters :global\(\.select\)\s*\{\s*border: 1px solid #cbd5e1;/);
-	assert.match(filters, /\.study-filters :global\(\.input:focus\),\s*\.study-filters :global\(\.select:focus\)\s*\{\s*border-color: #6366f1;/);
+	assert.match(filters, /\.study-filters :global\(\.input\),\s*\.study-filters :global\(\.select\)\s*\{\s*border: 1px solid var\(--app-border-strong\);/);
+	assert.match(filters, /\.study-filters :global\(\.input:focus\),\s*\.study-filters :global\(\.select:focus\)\s*\{\s*border-color: var\(--app-focus\);/);
 	assert.match(filters, /aria-expanded=\{showMore\} aria-controls="advanced-study-filters"/);
 	assert.match(filters, /id="advanced-study-filters" class="advanced-filters" hidden=\{!showMore\}/);
 	assert.match(filters, /\.advanced-filters\[hidden\] \{ display: none; \}/);
