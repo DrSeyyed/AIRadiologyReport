@@ -53,12 +53,12 @@
 	}
 }} />
 
-<div class="drawer min-h-screen w-full min-w-0 min-[80rem]:drawer-open bg-slate-50">
+<div class="drawer min-h-screen w-full min-w-0 xl:drawer-open bg-slate-50">
 	<input id="main-drawer" type="checkbox" class="drawer-toggle" aria-label="Open navigation" bind:checked={drawerOpen} />
 	<div class="drawer-content flex min-h-screen min-w-0 flex-col">
 		<header class="sticky top-0 z-30 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 text-slate-700 shadow-sm">
 			<div class="flex min-w-0 items-center gap-2">
-				<button type="button" bind:this={navigationButton} class="btn btn-primary drawer-button min-[80rem]:hidden" aria-label="Open navigation"
+				<button type="button" bind:this={navigationButton} class="btn btn-primary drawer-button xl:hidden" aria-label="Open navigation"
 					aria-controls="main-navigation" aria-expanded={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)}>☰</button>
 				<h1 class="min-w-0 break-words font-semibold">Personal Taleghani PACS</h1>
 			</div>
@@ -89,10 +89,10 @@
 	</div>
 	<aside id="main-navigation" class="drawer-side z-40" aria-label="Navigation">
 		<label for="main-drawer" aria-label="Close navigation" class="drawer-overlay"></label>
-		<ul class="menu min-h-full w-64 max-w-full border-r border-slate-200 bg-white p-4 text-slate-700 shadow-xl min-[80rem]:shadow-none">
+		<ul class="menu min-h-full w-64 max-w-full border-r border-slate-200 bg-white p-4 text-slate-700 shadow-xl xl:shadow-none">
 			<li class="menu-title flex-row items-center justify-between gap-2">
 				<span>Dashboard</span>
-				<button type="button" class="btn btn-ghost btn-square btn-sm min-[80rem]:hidden" aria-label="Close navigation" onclick={closeNavigation}>
+				<button type="button" class="btn btn-ghost btn-square btn-sm xl:hidden" aria-label="Close navigation" onclick={closeNavigation}>
 					<span aria-hidden="true">✕</span>
 				</button>
 			</li>

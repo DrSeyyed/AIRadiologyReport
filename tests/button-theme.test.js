@@ -137,7 +137,7 @@ test('custom login, administration and report controls opt in without legacy sat
 	);
 	assert.equal([...report.matchAll(/class="tab button-tint btn-primary/g)].length, 2);
 	const layout = readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8');
-	assert.match(layout, /class="btn btn-primary drawer-button min-\[80rem\]:hidden"/);
+	assert.match(layout, /class="btn btn-primary drawer-button xl:hidden"/);
 	assert.match(report, /class="btn btn-primary min-w-40 font-semibold[^"]*"[\s\S]*?onclick=\{save\}/);
 	assert.match(layout, /class="btn btn-primary shrink-0"[^>]*>Logout<\/button>/);
 });
