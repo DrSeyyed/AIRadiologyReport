@@ -395,6 +395,36 @@
 	.empty-state strong { display: block; font-size: 1rem; }
 	.empty-state span { display: block; margin-top: 0.5rem; color: var(--app-text-muted); }
 
+	/* Wide monitors: lay each cell's details out horizontally so rows are about two lines tall,
+	   instead of stacking them and leaving the extra width as empty space between columns. */
+	.study-workspace { container-type: inline-size; }
+	@container (min-width: 72rem) {
+		.patient-column { width: 21%; }
+		.examination-column { width: 27%; }
+		.team-column { width: 17%; }
+		.reporting-column { width: 15%; }
+		.actions-column { width: 20%; }
+		.study-table th { padding: 0.5rem 0.75rem; }
+		.study-table td { padding: 0.5rem 0.75rem; }
+		.patient-meta { display: inline-flex; margin: 0 0.5rem 0 0; }
+		.patient-meta + .secondary-text { display: inline; }
+		.status-badge { margin: 0 0 0 0.5rem; padding: 0.0625rem 0.375rem; }
+		.exam-heading { gap: 0.5rem; align-items: baseline; }
+		.exam-time { display: inline; margin: 0 0 0 0.375rem; }
+		.exam-description { margin-top: 0.25rem; }
+		.exam-description :global(.description-preview) { -webkit-line-clamp: 2; }
+		.reviewer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.375rem; margin-bottom: 0.125rem; }
+		.reviewer > div { display: flex; flex-wrap: wrap; gap: 0 0.375rem; }
+		.attention-disclosure { display: inline-block; margin-top: 0.125rem; }
+		.attention-preview { -webkit-line-clamp: 1; margin-top: 0.125rem; }
+		.signature-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+		.report-metrics { margin-bottom: 0.25rem; }
+		.row-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem; }
+		.quick-actions { gap: 0.375rem; }
+		.quick-actions > :global(.mb-2) { margin-bottom: 0; }
+		.row-actions :global(.btn) { min-height: 1.75rem; padding: 0.25rem 0.5rem; }
+	}
+
 	@media (max-width: 640px) {
 		.worklist-toolbar { padding: 1rem; }
 		.status-navigation { padding: 0.75rem 1rem; }

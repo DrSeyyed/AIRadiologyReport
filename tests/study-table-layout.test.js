@@ -165,6 +165,28 @@ test('the worklist uses wide screens up to a readable cap while keeping a minimu
 	for (const declaration of css.code.matchAll(/font-size:\s*([\d.]+)rem/g)) assert.ok(parseFloat(declaration[1]) >= 0.6875, `Worklist text is at least 11px: ${declaration[0]}`);
 });
 
+test('wide worklists switch to compact horizontal cell layouts instead of widening empty columns', () => {
+	const source = read('StudyTable.svelte');
+	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
+	const root = postcss.parse(css.code);
+	assert.match(css.code, /container-type: inline-size/);
+	const container = [];
+	root.walkAtRules('container', (rule) => container.push(rule));
+	assert.equal(container.length, 1);
+	assert.equal(container[0].params, '(min-width: 72rem)');
+	const declarations = (prefix) => {
+		const values = new Map();
+		container[0].walkRules((rule) => { if (rule.selector.startsWith(prefix)) rule.walkDecls((decl) => values.set(decl.prop, decl.value)); });
+		return values;
+	};
+	const widths = ['patient', 'examination', 'team', 'reporting', 'actions'].map((name) => parseFloat(declarations(`.${name}-column.`).get('width')));
+	assert.equal(widths.reduce((sum, width) => sum + width, 0), 100);
+	assert.equal(declarations('.reviewer.').get('display'), 'flex');
+	assert.equal(declarations('.row-actions.').get('display'), 'flex');
+	assert.equal(declarations('.exam-time.').get('display'), 'inline');
+	assert.match(source, /\.signature-heading \{ position: absolute; width: 1px;/, 'signature heading stays available to screen readers');
+});
+
 test('row actions share compact button sizing and the reports button fits its label instead of filling the column', () => {
 	const source = read('StudyTable.svelte');
 	const { css } = compile(source, { filename: 'StudyTable.svelte', generate: 'server' });
